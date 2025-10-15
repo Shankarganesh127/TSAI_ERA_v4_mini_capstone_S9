@@ -1,0 +1,12 @@
+2025-10-14 22:50:26 - utils_test - INFO - Logger initialized for utils_test
+2025-10-14 22:50:26 - utils_test - INFO - Log file: logs\utils_test_20251014_225026.log
+2025-10-14 22:50:26 - utils_test - INFO - Python version: 3.10.9 | packaged by Anaconda, Inc. | (main, Mar  1 2023, 18:18:15) [MSC v.1916 64 bit (AMD64)]
+2025-10-14 22:50:26 - utils_test - INFO - Working directory: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9
+2025-10-14 22:50:26 - utils_test - INFO - ImageNet training utilities loaded successfully
+2025-10-14 22:50:26 - utils_test - INFO - Average meter test: 0.200
+2025-10-14 22:50:26 - utils_test - INFO - Epoch 0: LR multiplier = 1.000
+2025-10-14 22:50:26 - utils_test - INFO - Epoch 29: LR multiplier = 1.000
+2025-10-14 22:50:26 - utils_test - INFO - Epoch 30: LR multiplier = 0.100
+2025-10-14 22:50:26 - utils_test - INFO - Epoch 59: LR multiplier = 0.100
+2025-10-14 22:50:26 - utils_test - INFO - Epoch 60: LR multiplier = 0.010
+2025-10-14 22:50:26 - utils_test - INFO - Epoch 89: LR multiplier = 0.010

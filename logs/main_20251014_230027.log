@@ -1,0 +1,22 @@
+2025-10-14 23:00:27 - main - INFO - Logger initialized for main
+2025-10-14 23:00:27 - main - INFO - Log file: logs\main_20251014_230027.log
+2025-10-14 23:00:27 - main - INFO - Python version: 3.10.9 | packaged by Anaconda, Inc. | (main, Mar  1 2023, 18:18:15) [MSC v.1916 64 bit (AMD64)]
+2025-10-14 23:00:27 - main - INFO - Working directory: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9
+2025-10-14 23:00:27 - main - INFO - ============================================================
+2025-10-14 23:00:27 - main - INFO - TSAI ERAv4 Mini Capstone S9 - ImageNet Training
+2025-10-14 23:00:27 - main - INFO - ============================================================
+2025-10-14 23:00:27 - main - INFO - ResNet50 training on ImageNet-1K with modern tooling
+2025-10-14 23:00:27 - main - INFO - 
+2025-10-14 23:00:27 - main - INFO - PyTorch version: 1.12.1
+2025-10-14 23:00:27 - main - INFO - CUDA available: False
+2025-10-14 23:00:27 - main - INFO - Platform: Windows-10-10.0.26200-SP0
+2025-10-14 23:00:27 - main - INFO - Architecture: ('64bit', 'WindowsPE')
+2025-10-14 23:00:27 - main - INFO - Processor: Intel64 Family 6 Model 154 Stepping 4, GenuineIntel
+2025-10-14 23:00:27 - main - INFO - 
+2025-10-14 23:00:27 - main - INFO - Project Features:
+2025-10-14 23:00:27 - main - INFO -   ✓ ResNet50 optimized for ImageNet-1K
+2025-10-14 23:00:27 - main - INFO -   ✓ Professional logging system
+2025-10-14 23:00:27 - main - INFO -   ✓ UV-based dependency management
+2025-10-14 23:00:27 - main - INFO -   ✓ Comprehensive data augmentation
+2025-10-14 23:00:27 - main - INFO -   ✓ Automatic checkpointing
+2025-10-14 23:00:27 - main - INFO -   ✓ Multi-GPU ready

@@ -1,0 +1,51 @@
+[project]
+name = "tsai-erav4-mini-capstone-s9"
+version = "0.1.0"
+description = "ImageNet-1K training with ResNet50 and TSAI ERAv4 mini capstone"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "numpy>=1.21.0",
+    "matplotlib>=3.5.0",
+    "tqdm>=4.64.0",
+    "pillow>=9.0.0",
+    "psutil>=5.9.0",
+    "gputil>=1.4.0",
+    "torchsummary>=1.5.1",
+    "pandas>=1.5.0",
+    "seaborn>=0.11.0",
+    "jupyter>=1.0.0",
+    "ipywidgets>=8.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+train-imagenet = "train_imagenet:main"
+test-setup = "test_setup:main"
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
+[tool.ruff]
+line-length = 88
+target-version = "py38"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[project.urls]
+Homepage = "https://github.com/Shankarganesh127/ERAv4_mini_capstone_S9"
+Repository = "https://github.com/Shankarganesh127/ERAv4_mini_capstone_S9"
+Documentation = "https://github.com/Shankarganesh127/ERAv4_mini_capstone_S9/blob/main/README.md"
+"Bug Reports" = "https://github.com/Shankarganesh127/ERAv4_mini_capstone_S9/issues"

@@ -1,0 +1,9 @@
+2025-10-14 22:50:38 - imagenet_models - INFO - Logger initialized for imagenet_models
+2025-10-14 22:50:38 - imagenet_models - INFO - Log file: logs\imagenet_models_20251014_225038.log
+2025-10-14 22:50:38 - imagenet_models - INFO - Python version: 3.10.9 | packaged by Anaconda, Inc. | (main, Mar  1 2023, 18:18:15) [MSC v.1916 64 bit (AMD64)]
+2025-10-14 22:50:38 - imagenet_models - INFO - Working directory: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9
+2025-10-14 22:50:38 - imagenet_models - INFO - ResNet-50 for ImageNet:
+2025-10-14 22:50:38 - imagenet_models - INFO - Total parameters: 25,557,032
+2025-10-14 22:50:38 - imagenet_models - INFO - Trainable parameters: 25,557,032
+2025-10-14 22:50:40 - imagenet_models - INFO - Input shape: torch.Size([1, 3, 224, 224])
+2025-10-14 22:50:40 - imagenet_models - INFO - Output shape: torch.Size([1, 1000])

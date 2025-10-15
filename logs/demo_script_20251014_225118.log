@@ -1,0 +1,25 @@
+2025-10-14 22:51:18 - demo_script - INFO - Logger initialized for demo_script
+2025-10-14 22:51:18 - demo_script - INFO - Log file: logs\demo_script_20251014_225118.log
+2025-10-14 22:51:18 - demo_script - INFO - Python version: 3.10.9 | packaged by Anaconda, Inc. | (main, Mar  1 2023, 18:18:15) [MSC v.1916 64 bit (AMD64)]
+2025-10-14 22:51:18 - demo_script - INFO - Working directory: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9
+2025-10-14 22:51:18 - demo_script - INFO - Starting demonstration of the logging system
+2025-10-14 22:51:20 - demo_script - INFO - PyTorch version: 1.12.1
+2025-10-14 22:51:20 - demo_script - INFO - CUDA available: False
+2025-10-14 22:51:20 - demo_script - INFO - Platform: Windows-10-10.0.26200-SP0
+2025-10-14 22:51:20 - demo_script - INFO - Architecture: ('64bit', 'WindowsPE')
+2025-10-14 22:51:20 - demo_script - INFO - Processor: Intel64 Family 6 Model 154 Stepping 4, GenuineIntel
+2025-10-14 22:51:20 - demo_script - INFO - This is an info message (appears in console and log)
+2025-10-14 22:51:20 - demo_script - WARNING - This is a warning message
+2025-10-14 22:51:20 - demo_script - ERROR - This is an error message
+2025-10-14 22:51:20 - demo_script - INFO - Simulating training loop...
+2025-10-14 22:51:20 - demo_script - INFO - Epoch 1/3
+2025-10-14 22:51:20 - demo_script - INFO - Training - Loss: 2.500, Accuracy: 20.0%
+2025-10-14 22:51:20 - demo_script - INFO - Validation - Loss: 2.600, Accuracy: 18.0%
+2025-10-14 22:51:20 - demo_script - INFO - Epoch 2/3
+2025-10-14 22:51:20 - demo_script - INFO - Training - Loss: 2.000, Accuracy: 35.0%
+2025-10-14 22:51:20 - demo_script - INFO - Validation - Loss: 2.100, Accuracy: 33.0%
+2025-10-14 22:51:21 - demo_script - INFO - Epoch 3/3
+2025-10-14 22:51:21 - demo_script - INFO - Training - Loss: 1.500, Accuracy: 50.0%
+2025-10-14 22:51:21 - demo_script - INFO - Validation - Loss: 1.600, Accuracy: 48.0%
+2025-10-14 22:51:21 - demo_script - INFO - Demonstration completed successfully
+2025-10-14 22:51:21 - demo_script - INFO - Check the logs/ directory for the complete log file

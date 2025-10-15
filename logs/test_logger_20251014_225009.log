@@ -1,0 +1,12 @@
+2025-10-14 22:50:09 - test_logger - INFO - Logger initialized for test_logger
+2025-10-14 22:50:09 - test_logger - INFO - Log file: logs\test_logger_20251014_225009.log
+2025-10-14 22:50:09 - test_logger - INFO - Python version: 3.10.9 | packaged by Anaconda, Inc. | (main, Mar  1 2023, 18:18:15) [MSC v.1916 64 bit (AMD64)]
+2025-10-14 22:50:09 - test_logger - INFO - Working directory: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9
+2025-10-14 22:50:09 - test_logger - INFO - This is an info message
+2025-10-14 22:50:09 - test_logger - WARNING - This is a warning message
+2025-10-14 22:50:09 - test_logger - ERROR - This is an error message
+2025-10-14 22:50:12 - test_logger - INFO - PyTorch version: 1.12.1
+2025-10-14 22:50:12 - test_logger - INFO - CUDA available: False
+2025-10-14 22:50:12 - test_logger - INFO - Platform: Windows-10-10.0.26200-SP0
+2025-10-14 22:50:12 - test_logger - INFO - Architecture: ('64bit', 'WindowsPE')
+2025-10-14 22:50:12 - test_logger - INFO - Processor: Intel64 Family 6 Model 154 Stepping 4, GenuineIntel
