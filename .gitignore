@@ -11,3 +11,6 @@ wheels/
 
 
 # reference folders
+dataset_analysis/datasets/
+dataset_analysis/analysis_outputs/
+venv/
