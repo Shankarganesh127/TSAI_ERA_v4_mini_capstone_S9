@@ -8,7 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from logger_setup import get_logger
 
-
 class BasicBlock(nn.Module):
     """Basic residual block for ResNet-18/34"""
     expansion = 1
