@@ -21,6 +21,7 @@ dependencies = [
     "plotly>=5.0.0",
     "scikit-learn>=1.0.0",
     "opencv-python>=4.5.0",
+    "torch-lr-finder>=0.2.2",
 ]
 
 [project.optional-dependencies]
