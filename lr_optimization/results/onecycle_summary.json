@@ -1,0 +1,15 @@
+{
+  "recommended": {
+    "wd": 0.0,
+    "lr_min": 0.0005035075376884422,
+    "lr_max": 0.005035075376884422,
+    "epochs": 200,
+    "batch_size": 128,
+    "grad_accum_steps": 2
+  },
+  "final_val": {
+    "loss": 6.666215461730957,
+    "top1": 0.65,
+    "top5": 2.25
+  }
+}

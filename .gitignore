@@ -16,5 +16,11 @@ dataset_analysis/analysis_outputs/
 venv/
 dataset_sets/
 datasets/
+lr_optimization/checkpoints/
+
 
 .python-version
+
+#tiny imagenet training outputs
+tiny_imagenet_training/logs/
+tiny_imagenet_training/runs_tiny_imagenet_model/

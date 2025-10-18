@@ -289,21 +289,16 @@ def setup(cfg: TrainConfig):
     return device, model, criterion, optimizer, scheduler, scaler, train_loader, val_loader
 
 def calculate_accuracy(output, target):
-    """Calculate top-1 accuracy"""
-    with torch.no_grad():
-        batch_size = target.size(0)
-        _, pred = output.topk(1, 1, True, True)
-        pred = pred.t()
-        correct = pred.eq(target.view(1, -1).expand_as(pred))
-        correct_k = correct[:1].reshape(-1).float().sum(0, keepdim=True)
-        accuracy = correct_k.mul_(100.0 / batch_size).item()
-        return accuracy, batch_size
+    """Calculate accuracy like CIFAR-10 training - simple and direct"""
+    pred = output.argmax(dim=1, keepdim=True)
+    correct = pred.eq(target.view_as(pred)).sum().item()
+    return correct, len(target)
 
 def train_epoch(cfg: TrainConfig, device, model, criterion, optimizer, scheduler, scaler, train_loader, epoch, logger=None):
     model.train()
     running_loss = 0.0
     correct = 0
-    total = 0
+    processed = 0  # Track total samples processed like CIFAR-10
     
     optimizer.zero_grad(set_to_none=True)
 
@@ -334,15 +329,15 @@ def train_epoch(cfg: TrainConfig, device, model, criterion, optimizer, scheduler
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
         
-        # Calculate accuracy like train_imagenet.py
-        batch_correct, batch_total = calculate_accuracy(out, y)
+        # Calculate accuracy like CIFAR-10 training - simple and direct
+        batch_correct, batch_size = calculate_accuracy(out, y)
         correct += batch_correct
-        total += batch_total
+        processed += batch_size
         running_loss += loss.item() * cfg.grad_accum_steps
         
-        # Update progress bar every 10 batches
+        # Update progress bar every 10 batches with CIFAR-10 style metrics
         if batch_idx % 10 == 0:
-            current_acc = 100. * correct / total if total > 0 else 0.0
+            current_acc = 100. * correct / processed if processed > 0 else 0.0
             current_loss = running_loss / (batch_idx + 1)
             pbar.set_postfix({
                 'Loss': f'{current_loss:.3f}',
@@ -353,7 +348,7 @@ def train_epoch(cfg: TrainConfig, device, model, criterion, optimizer, scheduler
         if (batch_idx + 1) % max(1, getattr(cfg, 'log_every', 500)) == 0:
             cur_lr = optimizer.param_groups[0]['lr']
             lr_pct = (cur_lr / max(1e-12, cfg.lr_max)) * 100.0
-            batch_acc = 100. * correct / total if total > 0 else 0.0
+            batch_acc = 100. * correct / processed if processed > 0 else 0.0
             current_loss = running_loss / (batch_idx + 1)
             # Log to file only to avoid console interference
             if logger:
@@ -364,8 +359,9 @@ def train_epoch(cfg: TrainConfig, device, model, criterion, optimizer, scheduler
                     f"lr {cur_lr:.6f} ({lr_pct:.2f}%)"
                 )
     
+    # Calculate final metrics like CIFAR-10
     final_loss = running_loss / len(train_loader)
-    final_acc = 100. * correct / total if total > 0 else 0.0
+    final_acc = 100. * correct / processed if processed > 0 else 0.0
     
     return {
         'loss': final_loss,
@@ -377,7 +373,7 @@ def evaluate(cfg: TrainConfig, device, model, criterion, val_loader):
     model.eval()
     running_loss = 0.0
     correct = 0
-    total = 0
+    processed = 0  # Track total samples processed like CIFAR-10
     
     pbar = tqdm(val_loader, desc='Validating', 
                 ncols=120, leave=True, dynamic_ncols=False,
@@ -394,13 +390,14 @@ def evaluate(cfg: TrainConfig, device, model, criterion, val_loader):
                 out = model(x)
                 loss = criterion(out, y)
             
-            batch_correct, batch_total = calculate_accuracy(out, y)
+            # Calculate accuracy like CIFAR-10 training - simple and direct
+            batch_correct, batch_size = calculate_accuracy(out, y)
             correct += batch_correct
-            total += batch_total
+            processed += batch_size
             running_loss += loss.item()
     
     final_loss = running_loss / len(val_loader)
-    final_acc = 100. * correct / total if total > 0 else 0.0
+    final_acc = 100. * correct / processed if processed > 0 else 0.0
     
     return {
         'loss': final_loss,
