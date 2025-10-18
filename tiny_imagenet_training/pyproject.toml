@@ -1,0 +1,26 @@
+[project]
+name = "tiny-imagenet-training"
+version = "0.1.0"
+description = "Simplified Tiny-ImageNet Training"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+	"numpy>=1.23",
+	"pillow>=10.0",
+	"torch>=2.2",
+	"torchvision>=0.17",
+	"tqdm>=4.0",
+]
+
+[project.scripts]
+tiny-imagenet-train = "train:main"
+
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+include = ["train.py", "__init__.py"]
