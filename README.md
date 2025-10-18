@@ -1,158 +1,300 @@
-# TSAI ERAv4 Mini Capstone S9
+# TSAI ERAv4 Mini Capstone S9 🚀
 
-ImageNet-1K training with ResNet50 using modern Python tooling.
+Advanced ImageNet training with systematic hyperparameter optimization and simplified Tiny-ImageNet training.
 
-## 🚀 Quick Start with UV
+## 🌟 **NEW: Complete 7-Step ImageNet Training Pipeline**
 
-### One-Command Setup
+A systematic approach to ImageNet training with automated hyperparameter optimization:
+
+### 🎯 **Quick Start - ImageNet Pipeline**
+
 ```bash
-cd setup
-python setup_uv.py
+# Full production pipeline (recommended)
+./run_imagenet_pipeline.sh --data /path/to/imagenet --mode full
+
+# Quick testing mode (faster iterations)
+./run_imagenet_pipeline.sh --data /path/to/imagenet --mode quick
+
+# Minimal validation (very fast)
+./run_imagenet_pipeline.sh --data /path/to/imagenet --mode test
+
+# Direct execution with uv
+uv run python imagenet_training_pipeline.py --data /path/to/imagenet --quick-mode
 ```
 
-### Start Training (Recommended Method)
+### 🔬 **The 7-Step Process**
+1. **LR Range Test** → Finds optimal learning rate bounds
+2. **Pick LR bounds** → Extracts min/max LR from range test  
+3. **OneCycle LR + cyclical momentum** → Configures advanced scheduler
+4. **Choose batch size** → Auto-detects optimal GPU memory usage
+5. **Tune weight-decay & regularizers** → Grid search with validation
+6. **Full OneCycle training** → Complete training with all optimizations
+7. **Monitor & iterate** → Comprehensive analysis and visualization
+
+---
+
+## 🎯 **Simplified Tiny-ImageNet Training**
+
+Single-file implementation with all features:
+
 ```bash
-# Auto-detect dataset and start training
-python main.py
+# Navigate to tiny-imagenet training
+cd tiny_imagenet_training
 
-# Or specify dataset location
-python main.py --data-dir /path/to/imagenet
+# Full training (recommended)
+uv run python train.py --data ./datasets/tiny-imagenet-200 --out ./runs --epochs 20 --batch-size 128
 
-# Quick training (10 epochs)
-python main.py --quick
+# Quick test (1 epoch)
+uv run python train.py --data ./datasets/tiny-imagenet-200 --out ./runs_test --epochs 1 --batch-size 64
 
-# Test mode (1 epoch, small batch)
-python main.py --test
+# Custom configuration
+uv run python train.py --data ./datasets/tiny-imagenet-200 --out ./runs_custom \
+  --epochs 50 --batch-size 256 --lr-max 0.2 --wd 5e-4
 ```
 
-### Manual Setup
-```bash
-# Install UV (if not already installed)
-# Windows:
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+**Features**: Mixed precision (AMP), OneCycleLR, gradient accumulation, label smoothing, clean progress bars, no warnings.
 
-# Create virtual environment and install dependencies
-uv venv --python 3.11
-uv pip install -e .
+---
 
-# Activate environment
-.venv\Scripts\activate  # Windows
-# source .venv/bin/activate  # macOS/Linux
-
-# Test setup
-cd setup
-python test_setup.py
-
-# Start training (requires ImageNet dataset)
-python train_imagenet.py --data-dir /path/to/imagenet
-
-# OR use the main.py entry point (recommended)
-python main.py --data-dir /path/to/imagenet
-
-# Quick start with main.py (auto-detects dataset)
-python main.py
-
-# Quick training mode (10 epochs, smaller batch)
-python main.py --quick
-
-# Test mode (1 epoch, tiny batch)
-python main.py --test
-
-# Show project information
-python main.py --info
-```
-
-## 📁 Project Structure
+## 📁 **Complete Project Structure**
 
 ```
 TSAI_ERAv4_mini_capstone_S9/
-├── main.py                   # 🚀 MAIN ENTRY POINT - Use this to start training
-├── imagenet_models.py         # ResNet50 for ImageNet-1K
-├── imagenet_dataset.py        # Dataset loader with transforms
-├── train_imagenet.py          # Core training script (called by main.py)
-├── utils.py                  # Training utilities
-├── logger_setup.py           # Comprehensive logging system
-├── pyproject.toml           # Dependencies and project config
-├── logs/                    # Automatic log files (script_name_timestamp.log)
-├── setup/                   # Setup and configuration tools
-│   ├── setup_uv.py          # Automated UV environment setup
-│   ├── test_setup.py        # Setup verification
-│   ├── quick_setup.py       # Dataset configuration
-│   └── README.md           # Setup documentation
-├── dataset_tools/            # Dataset download and management
-│   ├── imagenet_subset_downloader.ipynb  # Interactive dataset downloader
-│   └── README.md            # Dataset tools documentation
-├── lr_optimization/          # Learning rate optimization tools
-│   ├── learning_rate_finder.ipynb        # LR Range Test implementation
-│   └── README.md            # LR optimization documentation
-├── data_exploration/         # Dataset visualization tools
-│   ├── imagenet_dataset_explorer.ipynb   # Interactive dataset explorer
-│   └── README.md            # Data exploration documentation
-├── docs/                    # Project documentation
-│   ├── CLEANUP_SUMMARY.md   # Project cleanup history
-│   ├── project_requirements.md  # Project specifications
-│   ├── EC2_instance.md      # AWS EC2 setup guide
-│   ├── learning_rate_finder.md  # LR optimization docs
-│   └── README.md            # Documentation index
-└── README.md               # Main project documentation
+├── 🚀 IMAGENET TRAINING PIPELINE (NEW)
+│   ├── imagenet_training_pipeline.py    # Complete 7-step pipeline
+│   ├── run_imagenet_pipeline.sh         # Easy launcher script  
+│   ├── test_imagenet_pipeline.py        # Pipeline validation tests
+│   ├── IMAGENET_PIPELINE_README.md      # Detailed pipeline docs
+│   └── IMPLEMENTATION_SUMMARY.md        # Complete overview
+│
+├── �� TINY-IMAGENET SIMPLIFIED (NEW)
+│   └── tiny_imagenet_training/
+│       ├── train.py                     # Single-file complete training
+│       ├── pyproject.toml              # Simplified dependencies
+│       ├── README.md                   # Tiny-ImageNet docs
+│       ├── datasets/                   # Dataset location
+│       ├── runs*/                      # Training outputs
+│       └── logs/                       # Training logs
+│
+├── 📊 IMAGENET CORE MODULES
+│   ├── main.py                         # Main entry point
+│   ├── train_imagenet.py               # Core ImageNet training
+│   ├── imagenet_models.py              # ResNet50 for ImageNet
+│   ├── imagenet_dataset.py             # Dataset loaders
+│   ├── logger_setup.py                 # Logging system
+│   └── utils.py                        # Training utilities
+│
+├── 🔬 LR OPTIMIZATION SUITE
+│   └── lr_optimization/
+│       ├── learning_rate_finder.ipynb         # Interactive LR finder
+│       ├── imagenet_lr_finder_*.ipynb         # ImageNet-specific LR tools
+│       ├── imagenet_one_cycle.ipynb           # OneCycle analysis
+│       ├── universal_lr_finder.ipynb          # Universal LR finder
+│       ├── paper_project_step_by_step.ipynb   # Research methodology
+│       ├── configs/                           # LR configurations
+│       ├── experiments/                       # LR experiments
+│       ├── results/                           # LR optimization results
+│       └── README.md                          # LR optimization docs
+│
+├── 🗂️ DATA ANALYSIS & TOOLS
+│   ├── dataset_analysis/                      # Dataset statistics
+│   ├── imagenet_data_exploration/             # Data exploration tools
+│   ├── imagenet_dataset_tools/                # Dataset utilities
+│   └── image_process_lib/                     # Image processing
+│
+├── 📚 DOCUMENTATION & SETUP
+│   ├── docs/                                  # Project documentation
+│   ├── setup/                                 # Setup scripts
+│   ├── README_ImageNet_Setup.md               # ImageNet setup guide
+│   └── pyproject.toml                         # Main dependencies
+│
+└── 📁 OUTPUTS & LOGS
+    ├── datasets/                              # Dataset storage
+    ├── logs/                                  # Training logs
+    └── dist/                                  # Build artifacts
 ```
 
-## 🎯 Features
 
+---
+
+## 🚀 **Quick Start Guide**
+
+### **Option 1: ImageNet Pipeline (Production)**
+```bash
+# Validate pipeline works
+uv run python test_imagenet_pipeline.py
+
+# Run complete pipeline
+./run_imagenet_pipeline.sh --data /path/to/imagenet --mode full --epochs 90
+
+# Quick testing
+./run_imagenet_pipeline.sh --data /path/to/imagenet --mode quick --epochs 20
+```
+
+### **Option 2: Tiny-ImageNet Training (Learning)**
+```bash
+cd tiny_imagenet_training
+
+# Quick start (1 epoch test)
+uv run python train.py --data ./datasets/tiny-imagenet-200 --out ./runs_test --epochs 1
+
+# Full training (20 epochs)
+uv run python train.py --data ./datasets/tiny-imagenet-200 --out ./runs --epochs 20
+```
+
+### **Option 3: Traditional ImageNet Training**
+```bash
+# Basic training
+uv run python main.py --data-dir /path/to/imagenet
+
+# Quick mode
+uv run python main.py --quick
+
+# Test mode
+uv run python main.py --test
+```
+
+---
+
+## 🎛️ **Pipeline Modes & Commands**
+
+### **ImageNet Pipeline Modes**
+| Mode | Purpose | Time | Command |
+|------|---------|------|---------|
+| `full` | Production training with all 7 steps | ~2-3 days | `--mode full --epochs 90` |
+| `quick` | Fast testing with reduced iterations | ~4-6 hours | `--mode quick --epochs 20` |
+| `test` | Minimal validation | ~30-60 min | `--mode test --epochs 5` |
+| `custom` | Skip LR/WD search for experts | ~1-2 days | `--mode custom --skip-lr-test` |
+
+### **Tiny-ImageNet Training Options**
+```bash
+# Basic options
+--data PATH           # Dataset path (required)
+--out DIR            # Output directory
+--epochs N           # Number of epochs (default: 20)
+--batch-size N       # Batch size (default: 64)
+
+# Advanced options  
+--lr-max FLOAT       # Maximum learning rate (default: 0.1)
+--lr-min FLOAT       # Minimum learning rate (default: 0.001)
+--wd FLOAT          # Weight decay (default: 1e-4)
+```
+
+---
+
+## 🎯 **Key Features**
+
+### **🔬 ImageNet Pipeline Features**
+- **Automated LR Range Testing** with smart stopping
+- **Memory Optimization** - auto-detects optimal batch size
+- **Hyperparameter Search** - grid search for weight decay
+- **Advanced Training** - OneCycle + cyclical momentum + label smoothing
+- **Real-time Monitoring** - live progress, plots, comprehensive logging
+- **Multiple Modes** - full/quick/test/custom for different use cases
+
+### **🎯 Tiny-ImageNet Features**  
+- **Single-file Implementation** - simplified from complex multi-file structure
+- **Advanced Training** - Mixed precision, gradient accumulation, OneCycleLR
+- **Clean Progress Bars** - tqdm with no warning interference
+- **Proper Accuracy Calculation** - fixed CIFAR-10 style accuracy tracking
+- **Professional Logging** - comprehensive logging with timestamps
+
+### **📊 Core ImageNet Features**
 - **ResNet50** optimized for ImageNet-1K (224x224, 1000 classes)
-- **UV-based** dependency management for fast, reliable setup
-- **Simple training loop** with standard ImageNet augmentations
-- **Pretrained weights** support for transfer learning
-- **Comprehensive logging** system with automatic log file creation
-- **Professional logging** - All print statements replaced with proper logging
-- **Multi-GPU** ready (with minimal modifications)
+- **UV-based** dependency management
+- **Multi-GPU ready** with minimal modifications
+- **Comprehensive logging** with automatic file creation
 
-## 🔧 Requirements
+---
 
+## 📊 **Expected Results**
+
+### **ImageNet (ResNet50)**
+- **Top-1 Accuracy**: 75-78% (systematic optimization)
+- **Training Time**: 24-48 hours (pipeline), 8-16 hours (basic)
+- **Model Size**: ~25.6M parameters
+- **Optimal Settings**: Auto-discovered and saved
+
+### **Tiny-ImageNet (ResNet50 adapted)**
+- **Top-1 Accuracy**: 60-70% (20 epochs)
+- **Training Time**: 2-4 hours (depending on GPU)
+- **Model Size**: ~23.9M parameters
+- **Input Size**: 64x64, 200 classes
+
+---
+
+## 🔧 **Requirements & Setup**
+
+### **System Requirements**
 - Python 3.8+
-- CUDA-capable GPU (recommended)
-- ImageNet-1K dataset
+- CUDA-capable GPU (8GB+ recommended)
+- 16GB+ RAM
 - UV package manager
 
-## 📝 Logging System
+### **Dataset Requirements**
+- **ImageNet-1K**: Full dataset (~150GB) in standard structure
+- **Tiny-ImageNet**: Subset dataset (~250MB) in `/tiny_imagenet_training/datasets/`
 
-The project uses a comprehensive logging system that automatically:
-- Creates a `logs/` directory for all log files
-- Names log files as `{script_name}_{timestamp}.log`
-- Logs to both console (INFO level) and file (DEBUG level)
-- Includes system information, training configuration, and progress
-- Provides detailed timestamps and structured formatting
+### **Quick Setup**
+```bash
+# Install UV (if needed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-**Example log file**: `logs/train_imagenet_20251014_225009.log`
+# Clone and setup
+git clone <repository>
+cd TSAI_ERAv4_mini_capstone_S9
 
-All print statements have been replaced with proper logging for professional development.
+# Test pipeline
+uv run python test_imagenet_pipeline.py
 
-## 📊 Expected Results
+# Start training
+./run_imagenet_pipeline.sh --data /path/to/imagenet --mode test
+```
 
-With full ImageNet-1K training:
-- **Top-1 Accuracy**: ~76% (90 epochs from scratch)
-- **Training Time**: ~24-48 hours on modern GPU
-- **Model Size**: ~25.6M parameters
+---
 
-## 📚 Documentation
+## 📚 **Documentation**
 
-- [Project Documentation](docs/README.md) - Complete documentation index
-- [Setup Guide](setup/README.md) - Complete setup and UV documentation
-- [Dataset Tools](dataset_tools/README.md) - ImageNet dataset download and management
-- [LR Optimization](lr_optimization/README.md) - Learning rate finding tools
-- [Data Exploration](data_exploration/README.md) - Dataset visualization and analysis
+- **[🚀 ImageNet Pipeline Guide](IMAGENET_PIPELINE_README.md)** - Complete pipeline documentation
+- **[📋 Implementation Summary](IMPLEMENTATION_SUMMARY.md)** - Detailed overview of all components
+- **[🎯 Tiny-ImageNet Guide](tiny_imagenet_training/README.md)** - Simplified training documentation
+- **[🔬 LR Optimization](lr_optimization/README.md)** - Learning rate optimization tools
+- **[📊 Dataset Analysis](dataset_analysis/README.md)** - Data exploration and analysis
+- **[⚙️ Setup Guide](setup/README.md)** - Complete setup documentation
 
-## 🤝 Contributing
+---
+
+## 🎉 **What's New**
+
+### **✨ Latest Updates (October 2025)**
+- **🚀 Complete 7-Step ImageNet Pipeline** - Automated hyperparameter optimization
+- **🎯 Simplified Tiny-ImageNet Training** - Single-file implementation
+- **🔧 Fixed Accuracy Calculation** - CIFAR-10 style accuracy tracking
+- **📊 Enhanced Progress Bars** - Clean tqdm with no warnings
+- **⚡ UV Integration** - All commands updated to use `uv run`
+- **📝 Comprehensive Documentation** - Updated guides and examples
+
+### **🏗️ Architecture Improvements**
+- **Modular Design** - Pipeline components can be used independently
+- **Error Handling** - Robust error detection and recovery
+- **Memory Management** - Smart GPU memory optimization
+- **Professional Logging** - Structured logging throughout
+
+---
+
+## 🤝 **Contributing**
 
 1. Fork the repository
-2. Create feature branch: `git checkout -b feature-name`
-3. Make changes and test: `cd setup && python test_setup.py`
+2. Create feature branch: `git checkout -b feature-name`  
+3. Test changes: `uv run python test_imagenet_pipeline.py`
 4. Submit pull request
 
-## 📄 License
+---
+
+## 📄 **License**
 
 MIT License - see project files for details.
 
 ---
 
-**TSAI ERAv4 - Building the future of AI education** 🚀
+**TSAI ERAv4 - Building the future of AI education with systematic optimization** 🚀✨
