@@ -101,6 +101,29 @@ if [[ ! -d "$DATA_PATH/train" ]] || [[ ! -d "$DATA_PATH/val" ]]; then
     fi
 fi
 
+case $MODE in
+    full)
+        echo -e "${GREEN}🚀 Running FULL pipeline (all 7 steps)${NC}"
+        echo -e "${BLUE}This will take several hours to complete${NC}"
+        ;;
+    quick)
+        echo -e "${YELLOW}⚡ Running QUICK pipeline (reduced iterations)${NC}"
+        EPOCHS=20  # Update epochs variable for display
+        ;;
+    test)
+        echo -e "${YELLOW}🧪 Running TEST pipeline (minimal validation)${NC}"
+        EPOCHS=5  # Update epochs variable for display
+        ;;
+    custom)
+        echo -e "${BLUE}🎛️  Running CUSTOM pipeline (skip LR test & WD search)${NC}"
+        ;;
+    *)
+        echo -e "${RED}Error: Unknown mode: $MODE${NC}"
+        echo -e "${YELLOW}Available modes: full, quick, test, custom${NC}"
+        exit 1
+        ;;
+esac
+
 # Build command based on mode
 CMD="uv run python imagenet_training_pipeline.py --data \"$DATA_PATH\" --output \"$OUTPUT_DIR\" --epochs $EPOCHS"
 
@@ -109,27 +132,16 @@ if [[ -n "$BATCH_SIZE" ]]; then
     CMD="$CMD --batch-size $BATCH_SIZE"
 fi
 
+# Add mode-specific flags
 case $MODE in
-    full)
-        echo -e "${GREEN}🚀 Running FULL pipeline (all 7 steps)${NC}"
-        echo -e "${BLUE}This will take several hours to complete${NC}"
-        ;;
     quick)
-        echo -e "${YELLOW}⚡ Running QUICK pipeline (reduced iterations)${NC}"
         CMD="$CMD --quick-mode"
         ;;
     test)
-        echo -e "${YELLOW}🧪 Running TEST pipeline (minimal validation)${NC}"
-        CMD="$CMD --quick-mode --epochs 5"
+        CMD="$CMD --quick-mode"
         ;;
     custom)
-        echo -e "${BLUE}🎛️  Running CUSTOM pipeline (skip LR test & WD search)${NC}"
         CMD="$CMD --skip-lr-test --skip-wd-search"
-        ;;
-    *)
-        echo -e "${RED}Error: Unknown mode: $MODE${NC}"
-        echo -e "${YELLOW}Available modes: full, quick, test, custom${NC}"
-        exit 1
         ;;
 esac
 

@@ -18,7 +18,6 @@ dataset_sets/
 datasets/
 lr_optimization/checkpoints/
 
-
 .python-version
 
 #tiny imagenet training outputs

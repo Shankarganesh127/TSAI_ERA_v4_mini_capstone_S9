@@ -77,8 +77,8 @@ TSAI_ERAv4_mini_capstone_S9/
 │       └── logs/                       # Training logs
 │
 ├── 📊 IMAGENET CORE MODULES
-│   ├── main.py                         # Main entry point
-│   ├── train_imagenet.py               # Core ImageNet training
+│   ├── main.py                         # User-friendly training launcher (recommended)
+│   ├── train_imagenet.py               # Core ImageNet training engine
 │   ├── imagenet_models.py              # ResNet50 for ImageNet
 │   ├── imagenet_dataset.py             # Dataset loaders
 │   ├── logger_setup.py                 # Logging system
@@ -142,16 +142,96 @@ uv run python train.py --data ./datasets/tiny-imagenet-200 --out ./runs_test --e
 uv run python train.py --data ./datasets/tiny-imagenet-200 --out ./runs --epochs 20
 ```
 
-### **Option 3: Traditional ImageNet Training**
+### **Option 3: Traditional ImageNet Training (main.py)**
 ```bash
-# Basic training
+# Basic training with auto-detected dataset
+uv run python main.py
+
+# Specify dataset path
 uv run python main.py --data-dir /path/to/imagenet
 
-# Quick mode
+# Quick mode (10 epochs, batch size 128)
 uv run python main.py --quick
 
-# Test mode
+# Test mode (1 epoch, batch size 32)
 uv run python main.py --test
+
+# Custom configuration
+uv run python main.py --data-dir /path/to/imagenet --epochs 50 --batch-size 256 --lr 0.05
+
+# Fine-tuning with pretrained weights
+uv run python main.py --pretrained --epochs 20 --lr 0.01
+
+# Show project info and system details
+uv run python main.py --info
+```
+
+**Key Features of main.py:**
+- 🔍 **Auto-dataset detection** - Searches common locations for ImageNet datasets
+- 🎛️ **User-friendly interface** - Simplified command-line arguments
+- 📊 **Comprehensive logging** - Detailed progress and configuration logging  
+- 🔧 **Convenience modes** - Built-in `--quick` and `--test` modes
+- ⚙️ **Error handling** - Validates dataset structure and dependencies
+- 🚀 **Training launcher** - Internally calls `train_imagenet.py` with optimized parameters
+
+#### **Complete main.py Arguments:**
+```bash
+# Dataset options
+--data-dir PATH       # ImageNet dataset path (auto-detected if not specified)
+
+# Training parameters
+--epochs N           # Number of training epochs (default: 90)
+--batch-size N       # Batch size for training (default: 256)
+--lr FLOAT          # Initial learning rate (default: 0.1)
+--momentum FLOAT    # SGD momentum (default: 0.9)
+--weight-decay FLOAT # Weight decay (default: 1e-4)
+
+# Model options
+--pretrained         # Use pretrained weights for fine-tuning
+
+# System options
+--num-workers N      # Number of data loading workers (default: 4)
+--save-dir PATH     # Directory to save checkpoints (default: ./checkpoints)
+
+# Convenience modes
+--quick             # Quick training mode (10 epochs, batch size 128)
+--test              # Test mode (1 epoch, batch size 32)
+--info              # Show project information and exit
+```
+
+#### **Common Use Cases:**
+
+**1. First-time Setup & Testing:**
+```bash
+# Check if everything is working
+uv run python main.py --info
+
+# Quick test with minimal resources
+uv run python main.py --test
+```
+
+**2. Educational/Learning:**
+```bash
+# Quick training for learning
+uv run python main.py --quick
+
+# Custom short training
+uv run python main.py --epochs 5 --batch-size 64
+```
+
+**3. Baseline Training:**
+```bash
+# Standard training with auto-detected dataset
+uv run python main.py
+
+# Full training with specific dataset
+uv run python main.py --data-dir /datasets/imagenet --epochs 90
+```
+
+**4. Fine-tuning:**
+```bash
+# Fine-tune pretrained model
+uv run python main.py --pretrained --epochs 20 --lr 0.01 --batch-size 128
 ```
 
 ---
@@ -179,6 +259,52 @@ uv run python main.py --test
 --lr-min FLOAT       # Minimum learning rate (default: 0.001)
 --wd FLOAT          # Weight decay (default: 1e-4)
 ```
+
+---
+
+## 🔄 **Script Comparison: main.py vs imagenet_training_pipeline.py**
+
+| Aspect | main.py | imagenet_training_pipeline.py |
+|--------|---------|-------------------------------|
+| **Purpose** | User-friendly training launcher | Advanced 7-step optimization pipeline |
+| **Complexity** | Simple, beginner-friendly | Advanced, research-oriented |
+| **Automation** | Basic dataset auto-detection | Full hyperparameter optimization |
+| **Time to Results** | Minutes to hours | Hours to days |
+| **Configuration** | Manual parameter setting | Automated optimization |
+| **Use Case** | Quick training, education | Production, research |
+
+### **When to Use main.py:**
+✅ **Quick training experiments**  
+✅ **Learning and education**  
+✅ **Simple baseline training**  
+✅ **Testing with known hyperparameters**  
+✅ **Fast iteration and debugging**  
+
+### **When to Use imagenet_training_pipeline.py:**
+✅ **Production model training**  
+✅ **Research and benchmarking**  
+✅ **Optimal hyperparameter discovery**  
+✅ **Systematic optimization**  
+✅ **Publication-quality results**  
+
+### **Technical Differences:**
+
+**main.py Features:**
+- Direct training with `train_imagenet.py`
+- Manual hyperparameter specification  
+- Auto-dataset detection
+- Built-in convenience modes (`--quick`, `--test`)
+- Immediate training start
+- Simple logging and progress tracking
+
+**imagenet_training_pipeline.py Features:**
+- 7-step systematic optimization process
+- LR Range Test → Batch Size Optimization → Weight Decay Search
+- OneCycle LR scheduler with momentum cycling
+- Memory-aware batch size detection
+- Comprehensive result analysis and visualization
+- Professional experiment tracking
+- Automated checkpoint management
 
 ---
 

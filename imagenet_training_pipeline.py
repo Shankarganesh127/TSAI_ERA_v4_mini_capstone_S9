@@ -22,6 +22,7 @@ import logging
 
 from imagenet_models import resnet50_imagenet
 from imagenet_dataset import get_imagenet_dataloaders
+from ilsvrc_dataset import get_ilsvrc_dataloaders
 from logger_setup import setup_logger, log_system_info, log_training_config
 
 
@@ -170,23 +171,29 @@ class BatchSizeFinder:
     
     @staticmethod
     def find_max_batch_size(model, input_shape, device, max_batch_size=2048):
-        """Find maximum batch size that fits in memory"""
-        model.eval()
+        """Find maximum batch size that fits in memory during training (more realistic test)"""
+        model.train()  # Use training mode for realistic memory usage
         batch_size = 1
+        criterion = nn.CrossEntropyLoss()
         
-        print("🔍 Finding maximum batch size...")
+        print("🔍 Finding maximum batch size (training mode)...")
         while batch_size <= max_batch_size:
             try:
-                # Create dummy input
+                # Create dummy input and target
                 dummy_input = torch.randn(batch_size, *input_shape).to(device)
-                with torch.no_grad():
-                    _ = model(dummy_input)
+                dummy_target = torch.randint(0, 1000, (batch_size,)).to(device)
+                
+                # Test forward and backward pass (more realistic)
+                outputs = model(dummy_input)
+                loss = criterion(outputs, dummy_target)
+                loss.backward()
                 
                 # Clean up
-                del dummy_input
+                model.zero_grad()
+                del dummy_input, dummy_target, outputs, loss
                 torch.cuda.empty_cache()
                 
-                print(f"✅ Batch size {batch_size} works")
+                print(f"✅ Batch size {batch_size} works (train mode)")
                 batch_size *= 2
                 
             except RuntimeError as e:
@@ -480,6 +487,65 @@ class FullTrainer:
         torch.save(checkpoint, os.path.join(self.save_dir, 'best_model.pth'))
 
 
+def detect_dataset_format(data_path):
+    """
+    Detect whether the dataset is in standard ImageNet format or ILSVRC format
+    
+    Args:
+        data_path: Path to dataset directory
+        
+    Returns:
+        'imagenet' or 'ilsvrc'
+    """
+    print(f"🔍 Checking dataset format for: {data_path}")
+    
+    # Case 1: Check if data_path points directly to ILSVRC root
+    ilsvrc_root_indicators = [
+        os.path.join(data_path, "Data", "CLS-LOC"),
+        os.path.join(data_path, "ImageSets", "CLS-LOC"),
+        os.path.join(data_path, "ImageSets", "CLS-LOC", "val.txt")
+    ]
+    
+    if all(os.path.exists(path) for path in ilsvrc_root_indicators):
+        print("✅ Detected ILSVRC format (root directory)")
+        return 'ilsvrc'
+    
+    # Case 2: Check if data_path points to CLS-LOC subdirectory
+    # Look for parent ILSVRC structure
+    if data_path.endswith("Data/CLS-LOC") or data_path.endswith("Data\\CLS-LOC"):
+        # Go up two levels to find ILSVRC root
+        potential_root = os.path.dirname(os.path.dirname(data_path))
+        imagesets_path = os.path.join(potential_root, "ImageSets", "CLS-LOC", "val.txt")
+        if os.path.exists(imagesets_path):
+            print("✅ Detected ILSVRC format (CLS-LOC subdirectory)")
+            return 'ilsvrc'
+    
+    # Case 3: Check if we have flat validation directory (ILSVRC-style)
+    val_dir = os.path.join(data_path, "val")
+    if os.path.exists(val_dir):
+        # Check if validation directory has subdirectories (standard) or flat files (ILSVRC)
+        val_contents = os.listdir(val_dir)
+        if val_contents:
+            first_item = os.path.join(val_dir, val_contents[0])
+            if os.path.isfile(first_item) and first_item.lower().endswith(('.jpg', '.jpeg')):
+                print("✅ Detected ILSVRC format (flat validation directory)")
+                return 'ilsvrc'
+    
+    # Case 4: Check for standard ImageNet format
+    standard_paths = [
+        os.path.join(data_path, "train"),
+        os.path.join(data_path, "val")
+    ]
+    
+    if all(os.path.exists(path) for path in standard_paths):
+        print("✅ Detected standard ImageNet format")
+        return 'imagenet'
+    
+    # Default to ILSVRC if we can't determine
+    print("⚠️  Could not determine format, defaulting to ILSVRC")
+    return 'ilsvrc'
+
+
 def main():
     """Main training pipeline"""
     parser = argparse.ArgumentParser(description='ImageNet Training Pipeline')
@@ -500,20 +566,64 @@ def main():
     os.makedirs(args.output, exist_ok=True)
     
     # Setup logging
-    logger = setup_logger('imagenet_pipeline', 
-                         os.path.join(args.output, 'pipeline.log'))
+    logger = setup_logger('imagenet_pipeline')
     
-    # Load data
-    print("📂 Loading ImageNet dataset...")
-    initial_batch_size = args.batch_size or 256
-    train_loader, val_loader = get_imagenet_dataloaders(
-        args.data, batch_size=initial_batch_size, num_workers=8)
-    
-    print(f"📊 Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
+    # Detect dataset format
+    dataset_format = detect_dataset_format(args.data)
+    print(f"📂 Detected dataset format: {dataset_format.upper()}")
     
     # Model factory
     def create_model():
         return resnet50_imagenet(num_classes=1000, pretrained=False)
+    
+    # STEP 0: Batch Size Detection (if not specified)
+    if args.batch_size is None:
+        print("\n" + "="*60)
+        print("� STEP 0: Batch Size Detection")
+        print("="*60)
+        
+        # Clear GPU cache if available
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print(f"🖥️  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
+        
+        # Create a temporary model to test batch sizes
+        temp_model = create_model().to(device)
+        max_batch_size = BatchSizeFinder.find_max_batch_size(temp_model, (3, 224, 224), device)
+        
+        # Use different safety factors based on mode
+        if args.quick_mode:
+            safety_factor = 0.25  # Very conservative for quick mode (training uses more memory than inference)
+            print("🚀 Quick mode: Using very conservative batch size for training stability")
+        else:
+            safety_factor = 0.5  # Conservative safety factor (training uses ~2x memory of inference)
+        
+        initial_batch_size = int(max_batch_size * safety_factor)
+        # Ensure it's a power of 2 and at least 1
+        initial_batch_size = max(1, 2 ** int(np.log2(initial_batch_size))) if initial_batch_size > 0 else 32
+        
+        print(f"🎯 Optimal batch size: {initial_batch_size} (max: {max_batch_size}, safety: {safety_factor})")
+        
+        # Clean up temporary model
+        del temp_model
+        torch.cuda.empty_cache()
+    else:
+        initial_batch_size = args.batch_size
+        print(f"� Using specified batch size: {initial_batch_size}")
+    
+    # Load data
+    print("📂 Loading ImageNet dataset...")
+    
+    if dataset_format == 'ilsvrc':
+        print("Using ILSVRC dataset loader (handles flat validation directory)")
+        train_loader, val_loader = get_ilsvrc_dataloaders(
+            args.data, batch_size=initial_batch_size, num_workers=4)
+    else:
+        print("Using standard ImageNet dataset loader")
+        train_loader, val_loader = get_imagenet_dataloaders(
+            args.data, batch_size=initial_batch_size, num_workers=4)
+    
+    print(f"📊 Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
     
     # STEP 1: LR Range Test
     lr_config = None
@@ -529,6 +639,8 @@ def main():
         lr_finder = LRFinder(model, optimizer, criterion, device)
         
         num_iter = 100 if args.quick_mode else 200
+        
+        print(f"🔍 Running LR range test with optimized batch size {initial_batch_size}")
         lrs, losses = lr_finder.range_test(train_loader, num_iter=num_iter)
         
         # Plot results
@@ -555,28 +667,9 @@ def main():
     # STEP 2 & 3: Already incorporated in lr_config
     print(f"\n✅ LR bounds selected: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
     
-    # STEP 4: Batch Size Optimization
-    if args.batch_size is None:
-        print("\n" + "="*60)
-        print("📦 STEP 4: Batch Size Optimization")
-        print("="*60)
-        
-        model = create_model().to(device)
-        max_batch_size = BatchSizeFinder.find_max_batch_size(model, (3, 224, 224), device)
-        
-        # Use 75% of max batch size for safety
-        optimal_batch_size = int(max_batch_size * 0.75)
-        # Ensure it's a power of 2
-        optimal_batch_size = 2 ** int(np.log2(optimal_batch_size))
-        
-        print(f"🎯 Optimal batch size: {optimal_batch_size}")
-        
-        # Reload data with optimal batch size
-        train_loader, val_loader = get_imagenet_dataloaders(
-            args.data, batch_size=optimal_batch_size, num_workers=8)
-    else:
-        optimal_batch_size = args.batch_size
-        print(f"📦 Using specified batch size: {optimal_batch_size}")
+    # STEP 4: Batch Size Already Optimized
+    optimal_batch_size = initial_batch_size
+    print(f"\n✅ Using optimized batch size: {optimal_batch_size}")
     
     # STEP 5: Weight Decay Search
     best_weight_decay = 1e-4  # Default

@@ -1,0 +1,4 @@
+2025-10-19 11:38:46 - imagenet_pipeline - INFO - Logger initialized for imagenet_pipeline
+2025-10-19 11:38:46 - imagenet_pipeline - INFO - Log file: logs/imagenet_pipeline_20251019_113846.log
+2025-10-19 11:38:46 - imagenet_pipeline - INFO - Python version: 3.12.10 (main, Oct 11 2025, 01:36:14) [GCC 13.3.0]
+2025-10-19 11:38:46 - imagenet_pipeline - INFO - Working directory: /home/ubuntu/user/shankar/TSAI_ERAv4_mini_capstone_S9/TSAI_ERA_v4_mini_capstone_S9
