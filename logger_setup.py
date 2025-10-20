@@ -236,4 +236,4 @@ if __name__ == "__main__":
     
     log_system_info(logger)
     
-    print("\nLogger test completed. Check the logs/ directory for output.")
+    logger.info("Logger test completed. Check the logs/ directory for output.")

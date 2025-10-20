@@ -23,7 +23,7 @@ import logging
 from imagenet_models import resnet50_imagenet
 from imagenet_dataset import get_imagenet_dataloaders
 from ilsvrc_dataset import get_ilsvrc_dataloaders
-from logger_setup import setup_logger, log_system_info, log_training_config
+from logger_setup import setup_logger, log_system_info, log_training_config, get_logger
 
 
 class LRFinder:
@@ -38,7 +38,8 @@ class LRFinder:
         
     def range_test(self, dataloader, start_lr=1e-7, end_lr=1, num_iter=100, smooth_factor=0.05):
         """Perform LR range test"""
-        print(f"🔍 Starting LR Range Test: {start_lr:.2e} → {end_lr:.2e}")
+        logger = get_logger()
+        logger.info(f"🔍 Starting LR Range Test: {start_lr:.2e} → {end_lr:.2e}")
         
         # Calculate multiplicative factor
         lr_lambda = (end_lr / start_lr) ** (1.0 / num_iter)
@@ -83,7 +84,7 @@ class LRFinder:
             
             # Stop if loss explodes
             if smoothed_loss > 4 * best_loss or torch.isnan(loss):
-                print(f"\n💥 Stopping early at iteration {i}, loss exploded")
+                logger.warning(f"💥 Stopping early at iteration {i}, loss exploded")
                 break
                 
             if smoothed_loss < best_loss:
@@ -172,11 +173,12 @@ class BatchSizeFinder:
     @staticmethod
     def find_max_batch_size(model, input_shape, device, max_batch_size=2048):
         """Find maximum batch size that fits in memory during training (more realistic test)"""
+        logger = get_logger()
         model.train()  # Use training mode for realistic memory usage
         batch_size = 1
         criterion = nn.CrossEntropyLoss()
         
-        print("🔍 Finding maximum batch size (training mode)...")
+        logger.info("🔍 Finding maximum batch size (training mode)...")
         while batch_size <= max_batch_size:
             try:
                 # Create dummy input and target
@@ -193,14 +195,14 @@ class BatchSizeFinder:
                 del dummy_input, dummy_target, outputs, loss
                 torch.cuda.empty_cache()
                 
-                print(f"✅ Batch size {batch_size} works (train mode)")
+                logger.info(f"✅ Batch size {batch_size} works (train mode)")
                 batch_size *= 2
                 
             except RuntimeError as e:
                 if "out of memory" in str(e):
-                    print(f"❌ Batch size {batch_size} failed (OOM)")
+                    logger.warning(f"❌ Batch size {batch_size} failed (OOM)")
                     max_working_batch_size = batch_size // 2
-                    print(f"🎯 Maximum batch size: {max_working_batch_size}")
+                    logger.info(f"🎯 Maximum batch size: {max_working_batch_size}")
                     return max_working_batch_size
                 else:
                     raise e
@@ -219,12 +221,13 @@ class HyperparameterOptimizer:
         
     def weight_decay_search(self, lr_config, batch_size, wd_values=[1e-5, 5e-5, 1e-4, 5e-4, 1e-3], epochs=5):
         """Search for optimal weight decay"""
-        print(f"🔍 Weight Decay Search: {wd_values}")
+        logger = get_logger()
+        logger.info(f"🔍 Weight Decay Search: {wd_values}")
         
         results = []
         
         for wd in wd_values:
-            print(f"\n📊 Testing Weight Decay: {wd:.2e}")
+            logger.info(f"📊 Testing Weight Decay: {wd:.2e}")
             
             # Create fresh model
             model = self.model_fn().to(self.device)
@@ -253,12 +256,12 @@ class HyperparameterOptimizer:
             }
             results.append(result)
             
-            print(f"📈 Results - Val Acc: {result['final_val_acc']:.2f}%, "
+            logger.info(f"📈 Results - Val Acc: {result['final_val_acc']:.2f}%, "
                   f"Val Loss: {result['final_val_loss']:.3f}")
         
         # Find best weight decay
         best_result = max(results, key=lambda x: x['best_val_acc'])
-        print(f"\n🎯 Best Weight Decay: {best_result['weight_decay']:.2e} "
+        logger.info(f"🎯 Best Weight Decay: {best_result['weight_decay']:.2e} "
               f"(Val Acc: {best_result['best_val_acc']:.2f}%)")
         
         return results, best_result['weight_decay']
@@ -343,11 +346,12 @@ class FullTrainer:
               save_checkpoints=True, early_stopping_patience=10):
         """Full training with OneCycle LR and cyclical momentum"""
         
-        print(f"🚀 Starting Full Training:")
-        print(f"   📚 Epochs: {epochs}")
-        print(f"   📏 LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
-        print(f"   ⚖️  Weight Decay: {weight_decay:.2e}")
-        print(f"   📦 Batch Size: {batch_size}")
+        logger = get_logger()
+        logger.info("🚀 Starting Full Training:")
+        logger.info(f"   📚 Epochs: {epochs}")
+        logger.info(f"   📏 LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
+        logger.info(f"   ⚖️  Weight Decay: {weight_decay:.2e}")
+        logger.info(f"   📦 Batch Size: {batch_size}")
         
         # Setup optimizer and scheduler
         optimizer = optim.SGD(self.model.parameters(), lr=lr_config['min_lr'],
@@ -372,7 +376,7 @@ class FullTrainer:
         patience_counter = 0
         
         for epoch in range(epochs):
-            print(f"\n🔄 Epoch {epoch+1}/{epochs}")
+            logger.info(f"🔄 Epoch {epoch+1}/{epochs}")
             
             # Training
             train_loss, train_acc = self._train_epoch(optimizer, criterion, scheduler)
@@ -389,9 +393,9 @@ class FullTrainer:
             self.history['momentum'].append(optimizer.param_groups[0]['momentum'])
             
             # Logging
-            print(f"📊 Train - Loss: {train_loss:.4f}, Acc: {train_acc:.2f}%")
-            print(f"📊 Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.2f}%")
-            print(f"📈 LR: {optimizer.param_groups[0]['lr']:.2e}, "
+            logger.info(f"📊 Train - Loss: {train_loss:.4f}, Acc: {train_acc:.2f}%")
+            logger.info(f"📊 Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.2f}%")
+            logger.info(f"📈 LR: {optimizer.param_groups[0]['lr']:.2e}, "
                   f"Momentum: {optimizer.param_groups[0]['momentum']:.3f}")
             
             # Save best model
@@ -400,16 +404,16 @@ class FullTrainer:
                 patience_counter = 0
                 if save_checkpoints:
                     self._save_checkpoint(epoch, val_acc, optimizer, scheduler)
-                print(f"💾 New best model saved! Val Acc: {val_acc:.2f}%")
+                logger.info(f"💾 New best model saved! Val Acc: {val_acc:.2f}%")
             else:
                 patience_counter += 1
             
             # Early stopping
             if patience_counter >= early_stopping_patience:
-                print(f"⏰ Early stopping after {patience_counter} epochs without improvement")
+                logger.info(f"⏰ Early stopping after {patience_counter} epochs without improvement")
                 break
                 
-        print(f"🎯 Training completed! Best Val Acc: {best_val_acc:.2f}%")
+        logger.info(f"🎯 Training completed! Best Val Acc: {best_val_acc:.2f}%")
         return self.history
     
     def _train_epoch(self, optimizer, criterion, scheduler):
@@ -497,7 +501,8 @@ def detect_dataset_format(data_path):
     Returns:
         'imagenet' or 'ilsvrc'
     """
-    print(f"🔍 Checking dataset format for: {data_path}")
+    logger = get_logger()
+    logger.info(f"🔍 Checking dataset format for: {data_path}")
     
     # Case 1: Check if data_path points directly to ILSVRC root
     ilsvrc_root_indicators = [
@@ -507,7 +512,7 @@ def detect_dataset_format(data_path):
     ]
     
     if all(os.path.exists(path) for path in ilsvrc_root_indicators):
-        print("✅ Detected ILSVRC format (root directory)")
+        logger.info("✅ Detected ILSVRC format (root directory)")
         return 'ilsvrc'
     
     # Case 2: Check if data_path points to CLS-LOC subdirectory
@@ -517,7 +522,7 @@ def detect_dataset_format(data_path):
         potential_root = os.path.dirname(os.path.dirname(data_path))
         imagesets_path = os.path.join(potential_root, "ImageSets", "CLS-LOC", "val.txt")
         if os.path.exists(imagesets_path):
-            print("✅ Detected ILSVRC format (CLS-LOC subdirectory)")
+            logger.info("✅ Detected ILSVRC format (CLS-LOC subdirectory)")
             return 'ilsvrc'
     
     # Case 3: Check if we have flat validation directory (ILSVRC-style)
@@ -528,7 +533,7 @@ def detect_dataset_format(data_path):
         if val_contents:
             first_item = os.path.join(val_dir, val_contents[0])
             if os.path.isfile(first_item) and first_item.lower().endswith(('.jpg', '.jpeg')):
-                print("✅ Detected ILSVRC format (flat validation directory)")
+                logger.info("✅ Detected ILSVRC format (flat validation directory)")
                 return 'ilsvrc'
     
     # Case 4: Check for standard ImageNet format
@@ -538,11 +543,11 @@ def detect_dataset_format(data_path):
     ]
     
     if all(os.path.exists(path) for path in standard_paths):
-        print("✅ Detected standard ImageNet format")
+        logger.info("✅ Detected standard ImageNet format")
         return 'imagenet'
     
     # Default to ILSVRC if we can't determine
-    print("⚠️  Could not determine format, defaulting to ILSVRC")
+    logger.warning("⚠️  Could not determine format, defaulting to ILSVRC")
     return 'ilsvrc'
 
 
@@ -559,18 +564,18 @@ def main():
     
     args = parser.parse_args()
     
-    # Setup
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"🖥️  Using device: {device}")
-    
-    os.makedirs(args.output, exist_ok=True)
-    
     # Setup logging
     logger = setup_logger('imagenet_pipeline')
     
+    # Setup
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"🖥️  Using device: {device}")
+    
+    os.makedirs(args.output, exist_ok=True)
+    
     # Detect dataset format
     dataset_format = detect_dataset_format(args.data)
-    print(f"📂 Detected dataset format: {dataset_format.upper()}")
+    logger.info(f"📂 Detected dataset format: {dataset_format.upper()}")
     
     # Model factory
     def create_model():
@@ -578,14 +583,14 @@ def main():
     
     # STEP 0: Batch Size Detection (if not specified)
     if args.batch_size is None:
-        print("\n" + "="*60)
-        print("� STEP 0: Batch Size Detection")
-        print("="*60)
+        logger.info("="*60)
+        logger.info("🔧 STEP 0: Batch Size Detection")
+        logger.info("="*60)
         
         # Clear GPU cache if available
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            print(f"🖥️  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
+            logger.info(f"🖥️  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
         
         # Create a temporary model to test batch sizes
         temp_model = create_model().to(device)
@@ -594,7 +599,7 @@ def main():
         # Use different safety factors based on mode
         if args.quick_mode:
             safety_factor = 0.25  # Very conservative for quick mode (training uses more memory than inference)
-            print("🚀 Quick mode: Using very conservative batch size for training stability")
+            logger.info("🚀 Quick mode: Using very conservative batch size for training stability")
         else:
             safety_factor = 0.5  # Conservative safety factor (training uses ~2x memory of inference)
         
@@ -602,35 +607,35 @@ def main():
         # Ensure it's a power of 2 and at least 1
         initial_batch_size = max(1, 2 ** int(np.log2(initial_batch_size))) if initial_batch_size > 0 else 32
         
-        print(f"🎯 Optimal batch size: {initial_batch_size} (max: {max_batch_size}, safety: {safety_factor})")
+        logger.info(f"🎯 Optimal batch size: {initial_batch_size} (max: {max_batch_size}, safety: {safety_factor})")
         
         # Clean up temporary model
         del temp_model
         torch.cuda.empty_cache()
     else:
         initial_batch_size = args.batch_size
-        print(f"� Using specified batch size: {initial_batch_size}")
+        logger.info(f"📏 Using specified batch size: {initial_batch_size}")
     
     # Load data
-    print("📂 Loading ImageNet dataset...")
+    logger.info("📂 Loading ImageNet dataset...")
     
     if dataset_format == 'ilsvrc':
-        print("Using ILSVRC dataset loader (handles flat validation directory)")
+        logger.info("Using ILSVRC dataset loader (handles flat validation directory)")
         train_loader, val_loader = get_ilsvrc_dataloaders(
             args.data, batch_size=initial_batch_size, num_workers=4)
     else:
-        print("Using standard ImageNet dataset loader")
+        logger.info("Using standard ImageNet dataset loader")
         train_loader, val_loader = get_imagenet_dataloaders(
             args.data, batch_size=initial_batch_size, num_workers=4)
     
-    print(f"📊 Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
+    logger.info(f"📊 Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
     
     # STEP 1: LR Range Test
     lr_config = None
     if not args.skip_lr_test:
-        print("\n" + "="*60)
-        print("🔍 STEP 1: LR Range Test")
-        print("="*60)
+        logger.info("="*60)
+        logger.info("🔍 STEP 1: LR Range Test")
+        logger.info("="*60)
         
         model = create_model().to(device)
         optimizer = optim.SGD(model.parameters(), lr=1e-7, momentum=0.9)
@@ -640,7 +645,7 @@ def main():
         
         num_iter = 100 if args.quick_mode else 200
         
-        print(f"🔍 Running LR range test with optimized batch size {initial_batch_size}")
+        logger.info(f"🔍 Running LR range test with optimized batch size {initial_batch_size}")
         lrs, losses = lr_finder.range_test(train_loader, num_iter=num_iter)
         
         # Plot results
@@ -651,10 +656,10 @@ def main():
         # Get suggestions
         lr_config = lr_finder.suggest_lr()
         
-        print(f"📈 LR Range Test Results:")
-        print(f"   Min LR: {lr_config['min_lr']:.2e}")
-        print(f"   Max LR: {lr_config['max_lr']:.2e}")
-        print(f"   Steepest decline LR: {lr_config['steepest_decline_lr']:.2e}")
+        logger.info("📈 LR Range Test Results:")
+        logger.info(f"   Min LR: {lr_config['min_lr']:.2e}")
+        logger.info(f"   Max LR: {lr_config['max_lr']:.2e}")
+        logger.info(f"   Steepest decline LR: {lr_config['steepest_decline_lr']:.2e}")
         
         # Save results
         with open(os.path.join(args.output, 'lr_config.json'), 'w') as f:
@@ -662,21 +667,21 @@ def main():
     else:
         # Default LR config
         lr_config = {'min_lr': 1e-3, 'max_lr': 0.1}
-        print("⏭️  Skipping LR Range Test, using default config")
+        logger.info("⏭️  Skipping LR Range Test, using default config")
     
     # STEP 2 & 3: Already incorporated in lr_config
-    print(f"\n✅ LR bounds selected: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
+    logger.info(f"✅ LR bounds selected: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
     
     # STEP 4: Batch Size Already Optimized
     optimal_batch_size = initial_batch_size
-    print(f"\n✅ Using optimized batch size: {optimal_batch_size}")
+    logger.info(f"✅ Using optimized batch size: {optimal_batch_size}")
     
     # STEP 5: Weight Decay Search
     best_weight_decay = 1e-4  # Default
     if not args.skip_wd_search:
-        print("\n" + "="*60)
-        print("⚖️  STEP 5: Weight Decay Search")
-        print("="*60)
+        logger.info("="*60)
+        logger.info("⚖️  STEP 5: Weight Decay Search")
+        logger.info("="*60)
         
         optimizer = HyperparameterOptimizer(create_model, train_loader, val_loader, device)
         
@@ -690,14 +695,14 @@ def main():
         with open(os.path.join(args.output, 'weight_decay_search.json'), 'w') as f:
             json.dump(wd_results, f, indent=2)
             
-        print(f"🎯 Best weight decay: {best_weight_decay:.2e}")
+        logger.info(f"🎯 Best weight decay: {best_weight_decay:.2e}")
     else:
-        print("⏭️  Skipping weight decay search, using default 1e-4")
+        logger.info("⏭️  Skipping weight decay search, using default 1e-4")
     
     # STEP 6: Full Training
-    print("\n" + "="*60)
-    print("🚀 STEP 6: Full OneCycle Training")
-    print("="*60)
+    logger.info("="*60)
+    logger.info("🚀 STEP 6: Full OneCycle Training")
+    logger.info("="*60)
     
     model = create_model().to(device)
     trainer = FullTrainer(model, train_loader, val_loader, device, args.output)
@@ -713,9 +718,9 @@ def main():
     )
     
     # STEP 7: Results Analysis and Plotting
-    print("\n" + "="*60)
-    print("📊 STEP 7: Results Analysis")
-    print("="*60)
+    logger.info("="*60)
+    logger.info("📊 STEP 7: Results Analysis")
+    logger.info("="*60)
     
     # Plot training curves
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
@@ -772,15 +777,15 @@ def main():
     with open(os.path.join(args.output, 'final_results.json'), 'w') as f:
         json.dump(final_results, f, indent=2)
     
-    print(f"\n🎉 Pipeline Complete!")
-    print(f"📊 Final Results:")
-    print(f"   Best Validation Accuracy: {final_results['best_val_acc']:.2f}%")
-    print(f"   Final Training Accuracy: {final_results['final_train_acc']:.2f}%")
-    print(f"   Final Validation Accuracy: {final_results['final_val_acc']:.2f}%")
-    print(f"   Optimal Batch Size: {optimal_batch_size}")
-    print(f"   Best Weight Decay: {best_weight_decay:.2e}")
-    print(f"   LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
-    print(f"📁 Results saved to: {args.output}")
+    logger.info("🎉 Pipeline Complete!")
+    logger.info("📊 Final Results:")
+    logger.info(f"   Best Validation Accuracy: {final_results['best_val_acc']:.2f}%")
+    logger.info(f"   Final Training Accuracy: {final_results['final_train_acc']:.2f}%")
+    logger.info(f"   Final Validation Accuracy: {final_results['final_val_acc']:.2f}%")
+    logger.info(f"   Optimal Batch Size: {optimal_batch_size}")
+    logger.info(f"   Best Weight Decay: {best_weight_decay:.2e}")
+    logger.info(f"   LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
+    logger.info(f"📁 Results saved to: {args.output}")
 
 
 if __name__ == '__main__':
