@@ -312,11 +312,18 @@ class SageMakerPipelineOrchestrator:
                 cmd_args.extend(["--batch-size", str(training_args.get("batch_size"))])
                 
             try:
-                result = subprocess.run(cmd_args, capture_output=True, text=True, cwd=Path(__file__).parent)
+                # Launch training job in non-blocking mode with better feedback
+                self.logger.info("🚀 Launching SageMaker training job (this may take 5-10 minutes to start)...")
+                self.logger.info("💡 You can monitor progress in the AWS SageMaker console")
+                self.logger.info(f"📊 Job name: {job_name}")
+                
+                # Option 1: Non-blocking launch (recommended for long training)
+                result = subprocess.run(cmd_args, capture_output=True, text=True, cwd=Path(__file__).parent, timeout=300)  # 5 minute timeout for launch only
                 success = result.returncode == 0
                 
                 if success:
-                    self.logger.info("✅ Training launch completed successfully")
+                    self.logger.info("✅ Training job launch initiated successfully")
+                    self.logger.info("🔗 Monitor training at: https://console.aws.amazon.com/sagemaker/home#/jobs")
                 else:
                     self.logger.error(f"❌ Training launch failed: {result.stderr}")
                     
