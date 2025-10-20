@@ -33,8 +33,10 @@ except ImportError:
 
 try:
     from sagemaker.pytorch import PyTorch
+    from sagemaker.inputs import TrainingInput
 except ImportError:
     PyTorch = None
+    TrainingInput = None
 
 def main():
     # Setup logging
@@ -46,6 +48,13 @@ def main():
     parser.add_argument('--job-name', required=True, help='SageMaker training job name')
     parser.add_argument('--role-arn', required=True, help='SageMaker execution role ARN')
     parser.add_argument('--s3-bucket', required=True, help='S3 bucket (s3://bucket-name)')
+    
+    # Data configuration
+    parser.add_argument('--train-data-s3', type=str, help='S3 path to training data (overrides default)')
+    parser.add_argument('--data-prefix', type=str, default='imagenet-data', 
+                       help='Data prefix in S3 bucket (default: imagenet-data)')
+    parser.add_argument('--distribution-mode', choices=['FastFile', 'File', 'Pipe'], default='FastFile',
+                       help='Data distribution mode (default: FastFile for better performance)')
     
     # Instance configuration
     parser.add_argument('--instance-type', default='ml.p3.2xlarge', help='Instance type')
@@ -76,6 +85,53 @@ def main():
     if PyTorch is None:
         logger.error("❌ SageMaker SDK not available. Install with: pip install sagemaker")
         return
+        
+    # Determine data S3 path
+    if args.train_data_s3:
+        data_s3_path = args.train_data_s3
+        logger.info(f"📂 Using custom training data path: {data_s3_path}")
+    else:
+        data_s3_path = f"{args.s3_bucket}/{args.data_prefix}/"
+        logger.info(f"📂 Using default training data path: {data_s3_path}")
+    
+    # Validate S3 path format
+    if not data_s3_path.startswith('s3://'):
+        if data_s3_path.startswith('/'):
+            data_s3_path = f"s3:/{data_s3_path}"
+        else:
+            data_s3_path = f"s3://{data_s3_path}"
+    
+    logger.info(f"🔗 Final S3 data path: {data_s3_path}")
+    
+    # Create S3 data inputs for SageMaker
+    try:
+        from sagemaker.inputs import TrainingInput
+        
+        # Configure training data input with optimal settings
+        train_input = TrainingInput(
+            s3_data=data_s3_path,
+            distribution='FullyReplicated',  # Replicate data to all instances
+            s3_data_type='S3Prefix',        # Treat as directory prefix
+            input_mode=args.distribution_mode.lower(),  # FastFile for performance
+            compression=None                 # No compression for images
+        )
+        
+        data_inputs = {'imagenet': train_input}
+        logger.info(f"✅ S3 data inputs configured:")
+        logger.info(f"   - Source: {data_s3_path}")
+        logger.info(f"   - Distribution: FullyReplicated") 
+        logger.info(f"   - Input Mode: {args.distribution_mode}")
+        logger.info(f"   - Data Type: S3Prefix")
+        
+    except ImportError:
+        # Fallback for older SageMaker SDK versions
+        logger.warning("⚠️ Using legacy S3 input format (consider upgrading SageMaker SDK)")
+        data_inputs = {'imagenet': data_s3_path}
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to configure S3 inputs: {e}")
+        logger.info("🔄 Using simple S3 path as fallback")
+        data_inputs = {'imagenet': data_s3_path}
     
     # Build hyperparameters
     hyperparameters = {
@@ -164,8 +220,10 @@ def main():
     # Launch training
     try:
         logger.info("🚀 Launching SageMaker training job...")
+        logger.info(f"📊 Data inputs: {data_inputs}")
+        
         estimator.fit(
-            inputs={'imagenet': f"{args.s3_bucket}/imagenet-data/"},
+            inputs=data_inputs,
             job_name=args.job_name,
             wait=False
         )
