@@ -15,6 +15,7 @@ import sys
 import subprocess
 import json
 import argparse
+import shutil
 from pathlib import Path
 
 # Add parent directory to path for imports
@@ -71,7 +72,7 @@ class ImageNetSageMakerTrainer:
         return args
     
     def build_pipeline_command(self, args):
-        """Build command for 7-step pipeline execution"""
+        """Build command for 7-step pipeline execution with model saving"""
         cmd = [
             sys.executable,
             os.path.join(parent_dir, "imagenet_training_pipeline.py"),
@@ -79,6 +80,13 @@ class ImageNetSageMakerTrainer:
             "--output", str(args.output_dir), 
             "--epochs", str(args.epochs)
         ]
+        
+        # Model saving configuration - integrate with model_saver.py
+        cmd.extend(["--save-model-every-epoch", "true"])
+        cmd.extend(["--model-save-path", str(Path(args.output_dir) / "models")])
+        cmd.extend(["--replace-model", "true"])  # Replace previous epoch model
+        cmd.extend(["--use-enhanced-saver", "true"])  # Use our model saver
+        cmd.extend(["--model-saver-config", str(Path(args.output_dir) / "model_save_config.json")])
         
         # Batch size control (Step 4)
         if args.batch_size:
@@ -112,6 +120,75 @@ class ImageNetSageMakerTrainer:
         
         return cmd
     
+    def _setup_model_saving_directories(self, args):
+        """Setup directories for model saving and create model saving configuration"""
+        
+        # Create model saving directories
+        models_dir = Path(args.output_dir) / "models"
+        checkpoints_dir = Path(args.output_dir) / "checkpoints"
+        
+        models_dir.mkdir(parents=True, exist_ok=True)
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create model saving configuration file for the training pipeline
+        model_config = {
+            "save_model_every_epoch": True,
+            "replace_previous_model": True,
+            "model_save_directory": str(models_dir),
+            "checkpoint_directory": str(checkpoints_dir),
+            "save_format": "pytorch",
+            "model_naming": {
+                "current_model": "model_current.pth",
+                "best_model": "model_best.pth",
+                "final_model": "model_final.pth"
+            },
+            "sagemaker_integration": {
+                "output_dir": str(args.output_dir),
+                "upload_to_s3": True,
+                "s3_model_path": f"s3://{os.environ.get('SM_OUTPUT_DATA_DIR', args.output_dir)}/models/"
+            }
+        }
+        
+        # Save configuration for training pipeline to use
+        config_file = Path(args.output_dir) / "model_save_config.json"
+        try:
+            with open(config_file, 'w') as f:
+                json.dump(model_config, f, indent=2)
+            
+            self.logger.info(f"💾 Model saving configuration created: {config_file}")
+            self.logger.info(f"📁 Models directory: {models_dir}")
+            self.logger.info(f"🔄 Replace mode: Enabled (overwrites previous epoch model)")
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Could not create model config: {e}")
+    
+    def _start_model_replacement_monitoring(self, args):
+        """Start automatic model replacement monitoring"""
+        
+        try:
+            # Import and start training integration
+            from training_integration import setup_model_replacement_monitoring, patch_training_functions
+            
+            # Setup monitoring
+            config_file = Path(args.output_dir) / "model_save_config.json"
+            monitor = setup_model_replacement_monitoring(args.output_dir, str(config_file))
+            
+            # Patch PyTorch save functions
+            patch_training_functions._monitor = monitor
+            enhanced_save = patch_training_functions()
+            
+            # Store monitor for later cleanup
+            self._model_monitor = monitor
+            
+            self.logger.info("🔍 Model replacement monitoring started")
+            
+            if enhanced_save:
+                self.logger.info("✅ PyTorch save functions patched for automatic replacement")
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Could not start model monitoring: {e}")
+            self._model_monitor = None
+    
     def run_training(self):
         """Execute the complete 7-step training pipeline"""
         self.logger.info("🚀 Starting SageMaker 7-Step ImageNet Training")
@@ -135,6 +212,12 @@ class ImageNetSageMakerTrainer:
         
         # Parse configuration
         args = self.parse_hyperparameters()
+        
+        # Setup model saving directories
+        self._setup_model_saving_directories(args)
+        
+        # Start model replacement monitoring
+        self._start_model_replacement_monitoring(args)
         
         # Build and execute pipeline command
         cmd = self.build_pipeline_command(args)
@@ -161,34 +244,133 @@ class ImageNetSageMakerTrainer:
             self.logger.error(f"stdout: {e.stdout}")
             self.logger.error(f"stderr: {e.stderr}")
             raise
+        finally:
+            # Clean up model monitoring
+            self._cleanup_model_monitoring()
     
     def _process_results(self, result, args):
-        """Process and log training results"""
+        """Process and log training results with model saving"""
         # Log key pipeline outputs
         if result.stdout:
             for line in result.stdout.split('\n'):
-                if any(keyword in line for keyword in ['STEP', 'Best', 'Final', 'Accuracy']):
+                if any(keyword in line for keyword in ['STEP', 'Best', 'Final', 'Accuracy', 'Epoch']):
                     self.logger.info(f"📊 {line.strip()}")
         
-        # Save results summary
+        # Save comprehensive results summary  
         results_file = os.path.join(args.output_dir, 'training_summary.json')
         try:
             summary = {
                 'pipeline_completed': True,
-                'epochs': args.epochs,
-                'batch_size': args.batch_size or 'auto-detected',
-                'lr_finder_used': args.run_lr_finder,
-                'wd_search_used': args.run_wd_search,
-                'quick_mode': args.quick_mode
+                'training_config': {
+                    'epochs': args.epochs,
+                    'batch_size': args.batch_size or 'auto-detected',
+                    'lr_finder_used': args.run_lr_finder,
+                    'wd_search_used': args.run_wd_search,
+                    'quick_mode': args.quick_mode,
+                    'mixed_precision': args.mixed_precision,
+                    'gradient_clip': args.gradient_clip
+                },
+                'sagemaker_info': {
+                    'job_name': os.environ.get('SM_TRAINING_JOB_NAME', 'unknown'),
+                    'instance_type': os.environ.get('SM_CURRENT_INSTANCE_TYPE', 'unknown'),
+                    'region': os.environ.get('AWS_DEFAULT_REGION', 'unknown'),
+                    'output_path': args.output_dir
+                },
+                'model_saving': {
+                    'save_every_epoch': True,
+                    'checkpoint_format': 'pytorch',
+                    'final_model_saved': True
+                }
             }
             
             with open(results_file, 'w') as f:
                 json.dump(summary, f, indent=2)
             
-            self.logger.info(f"💾 Results saved to: {results_file}")
+            self.logger.info(f"💾 Training summary saved: {results_file}")
+            
+            # Create model artifacts structure and verify model saving
+            self._organize_model_artifacts(args.output_dir)
+            self._verify_model_saving(args.output_dir)
             
         except Exception as e:
             self.logger.warning(f"⚠️ Could not save results summary: {e}")
+    
+    def _verify_model_saving(self, output_dir):
+        """Verify that model saving worked correctly"""
+        try:
+            models_dir = Path(output_dir) / "models"
+            if models_dir.exists():
+                model_files = list(models_dir.glob("*.pth")) + list(models_dir.glob("*.pt"))
+                
+                if model_files:
+                    self.logger.info(f"✅ Model saving verification:")
+                    for model_file in sorted(model_files):
+                        file_size = model_file.stat().st_size / (1024 * 1024)  # MB
+                        self.logger.info(f"   📦 {model_file.name} ({file_size:.1f} MB)")
+                    
+                    # Check if current model exists (should be the replaced one)
+                    current_model = models_dir / "model_current.pth"
+                    if current_model.exists():
+                        self.logger.info(f"🔄 Current model (replaced each epoch): {current_model.name}")
+                    
+                    # Check for best model
+                    best_model = models_dir / "model_best.pth"
+                    if best_model.exists():
+                        self.logger.info(f"🏆 Best model saved: {best_model.name}")
+                        
+                else:
+                    self.logger.warning("⚠️ No model files found in models directory")
+            else:
+                self.logger.warning("⚠️ Models directory not found")
+                
+        except Exception as e:
+            self.logger.warning(f"⚠️ Model verification failed: {e}")
+    
+    def _cleanup_model_monitoring(self):
+        """Clean up model replacement monitoring"""
+        
+        try:
+            if hasattr(self, '_model_monitor') and self._model_monitor:
+                self._model_monitor.stop_monitoring()
+                self.logger.info("🛑 Model replacement monitoring stopped")
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error stopping model monitoring: {e}")
+    
+    def _organize_model_artifacts(self, output_dir):
+        """Organize model artifacts for SageMaker"""
+        try:
+            output_path = Path(output_dir)
+            
+            # Create organized structure
+            models_dir = output_path / "models"
+            metrics_dir = output_path / "metrics"
+            graphs_dir = output_path / "graphs"
+            
+            for directory in [models_dir, metrics_dir, graphs_dir]:
+                directory.mkdir(exist_ok=True)
+            
+            # Move any existing model files
+            for file_pattern in ["*.pth", "*.pt", "model*", "checkpoint*"]:
+                for file_path in output_path.glob(file_pattern):
+                    if file_path.is_file() and file_path.parent != models_dir:
+                        shutil.move(str(file_path), str(models_dir / file_path.name))
+            
+            # Move metrics and logs
+            for file_pattern in ["*.json", "*metrics*", "*results*"]:
+                for file_path in output_path.glob(file_pattern):
+                    if file_path.is_file() and file_path.parent != metrics_dir and file_path.name != "training_summary.json":
+                        shutil.move(str(file_path), str(metrics_dir / file_path.name))
+            
+            # Move any graphs
+            for file_pattern in ["*.png", "*.jpg", "*graph*", "*plot*"]:
+                for file_path in output_path.glob(file_pattern):
+                    if file_path.is_file() and file_path.parent != graphs_dir:
+                        shutil.move(str(file_path), str(graphs_dir / file_path.name))
+            
+            self.logger.info("📁 Model artifacts organized successfully")
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Could not organize model artifacts: {e}")
 
 def main():
     """Main SageMaker training entry point"""

@@ -1,0 +1,95 @@
+{
+  "aws": {
+    "region": "us-east-1",
+    "profile": null,
+    "default_role_arn": null
+  },
+  "dataset": {
+    "source_bucket": null,
+    "source_prefix": "ILSVRC",
+    "target_prefix": "imagenet-sagemaker",
+    "validation_required": true,
+    "convert_test_data": true
+  },
+  "training": {
+    "instance_type": "ml.p3.8xlarge",
+    "use_spot": true,
+    "max_runtime": 86400,
+    "checkpoint_interval": 300,
+    "enable_7_stage_pipeline": true,
+    "default_epochs": 90,
+    "save_model_every_epoch": true
+  },
+  "7_stage_pipeline": {
+    "stage_1_lr_finder": {
+      "enabled": true,
+      "num_iterations": 500,
+      "start_lr": 1e-8,
+      "end_lr": 10.0
+    },
+    "stage_2_lr_bounds": {
+      "enabled": true,
+      "auto_detect": true,
+      "manual_lr_min": null,
+      "manual_lr_max": null
+    },
+    "stage_3_onecycle": {
+      "enabled": true,
+      "pct_start": 0.3,
+      "div_factor": 25.0,
+      "final_div_factor": 10000.0
+    },
+    "stage_4_batch_size": {
+      "enabled": true,
+      "auto_detect": true,
+      "manual_batch_size": null,
+      "test_batch_sizes": [32, 64, 128, 256]
+    },
+    "stage_5_weight_decay": {
+      "enabled": true,
+      "search_values": [1e-5, 1e-4, 1e-3, 1e-2],
+      "manual_weight_decay": null
+    },
+    "stage_6_full_training": {
+      "enabled": true,
+      "use_best_params": true
+    },
+    "stage_7_monitoring": {
+      "enabled": true,
+      "detailed_logging": true,
+      "save_metrics": true,
+      "create_graphs": true
+    }
+  },
+  "monitoring": {
+    "enable_detailed_logging": true,
+    "save_metrics": true,
+    "create_graphs": true,
+    "track_costs": true,
+    "log_interval": 30,
+    "metric_collection_interval": 300,
+    "save_checkpoints": true,
+    "generate_reports": true
+  },
+  "optimization": {
+    "mixed_precision": true,
+    "gradient_clipping": true,
+    "gradient_clip_value": 1.0,
+    "data_parallel": true,
+    "channel_last": true
+  },
+  "storage": {
+    "model_output_prefix": "models",
+    "logs_output_prefix": "logs", 
+    "metrics_output_prefix": "metrics",
+    "graphs_output_prefix": "graphs",
+    "checkpoints_output_prefix": "checkpoints"
+  },
+  "cost_optimization": {
+    "use_spot_instances": true,
+    "spot_max_wait_time": 3600,
+    "enable_early_stopping": true,
+    "early_stopping_patience": 10,
+    "managed_warm_pools": false
+  }
+}

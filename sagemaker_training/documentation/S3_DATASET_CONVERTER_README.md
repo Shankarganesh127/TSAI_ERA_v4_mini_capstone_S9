@@ -11,16 +11,23 @@ Converts your existing S3 ILSVRC dataset structure to the format required by Sag
 s3://your-bucket/ILSVRC/
 ├── Data/CLS-LOC/train/     # 1000 class folders
 ├── Data/CLS-LOC/val/       # 50,000 flat validation images
-└── ImageSets/CLS-LOC/val.txt # Validation labels
+├── Data/CLS-LOC/test/      # 100,000 flat test images (optional)
+└── ImageSets/CLS-LOC/
+    ├── val.txt             # Validation labels
+    └── test.txt            # Test labels (optional)
 ```
 
 ### Output Structure (SageMaker-compatible)
 ```
+Original ILSVRC training data (unchanged):
+s3://your-bucket/ILSVRC/Data/CLS-LOC/train/  # Used directly (already organized)
+
+New converted data:
 s3://your-bucket/imagenet-sagemaker/
-├── train/                  # 1000 class folders (copied from ILSVRC)
 ├── val/                    # 1000 class folders (reorganized from flat)
-├── metadata/               # Dataset metadata
-└── manifest.json           # SageMaker manifest
+├── test/                   # 1000 class folders (reorganized from flat, if exists)
+├── metadata/               # Dataset metadata (points to original train + converted val/test)
+└── manifest.json           # SageMaker manifest (mixed paths)
 ```
 
 ## Installation
@@ -74,26 +81,34 @@ python s3_dataset_converter.py \
 
 ## Conversion Process
 
-The converter performs these steps:
+The converter performs these optimized steps:
 
-### 1. Training Data Copy
-- **Source**: `ILSVRC/Data/CLS-LOC/train/`
-- **Target**: `imagenet-sagemaker/train/`
-- **Action**: Direct S3 copy (structure already compatible)
+### 1. Training Data (Skipped) ⚡
+- **Source**: `ILSVRC/Data/CLS-LOC/train/` (already organized)
+- **Action**: **No copy needed** - training data used directly from original location
+- **Benefit**: Saves time and storage space
 
 ### 2. Validation Data Reorganization
 - **Source**: `ILSVRC/Data/CLS-LOC/val/` (flat structure)
 - **Target**: `imagenet-sagemaker/val/` (class folders)
 - **Action**: Uses `ImageSets/CLS-LOC/val.txt` to organize images into class folders
 
-### 3. Metadata Creation
-- **Creates**: `metadata/dataset_metadata.json`
-- **Contains**: Class mappings, dataset statistics, S3 paths
-- **Purpose**: SageMaker training configuration
+### 3. Test Data Reorganization (Optional)
+- **Source**: `ILSVRC/Data/CLS-LOC/test/` (flat structure)
+- **Target**: `imagenet-sagemaker/test/` (class folders)
+- **Action**: Uses `ImageSets/CLS-LOC/test.txt` if available, or distributes evenly across classes
 
-### 4. Manifest Generation
+### 4. Metadata Creation
+- **Creates**: `metadata/dataset_metadata.json`
+- **Contains**: Mixed paths - original training location + converted val/test locations
+- **Purpose**: SageMaker training configuration with optimized data paths
+
+### 5. Manifest Generation
 - **Creates**: `manifest.json`
-- **Contains**: Dataset configuration for SageMaker
+- **Contains**: 
+  - `train_data`: Points to original ILSVRC location
+  - `val_data`: Points to converted location
+  - `test_data`: Points to converted location (if exists)
 - **Purpose**: Training job data input specification
 
 ## Output Verification
@@ -109,6 +124,9 @@ aws s3 ls s3://your-bucket/imagenet-sagemaker/train/ | head -10
 
 # Verify validation classes
 aws s3 ls s3://your-bucket/imagenet-sagemaker/val/ | head -10
+
+# Verify test classes (if converted)
+aws s3 ls s3://your-bucket/imagenet-sagemaker/test/ | head -10
 
 # Check metadata
 aws s3 cp s3://your-bucket/imagenet-sagemaker/manifest.json - | jq
