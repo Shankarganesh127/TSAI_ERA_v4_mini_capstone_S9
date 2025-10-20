@@ -55,7 +55,7 @@ class SageMakerPipelineOrchestrator:
                 "validation_required": True
             },
             "training": {
-                "instance_type": "ml.p3.8xlarge",
+                "instance_type": "ml.g5.12xlarge", #ml.p3.8xlarge",
                 "use_spot": True,
                 "max_runtime": 86400,  # 24 hours
                 "checkpoint_interval": 300,  # 5 minutes
@@ -208,7 +208,11 @@ class SageMakerPipelineOrchestrator:
             # Check if converted validation data exists
             val_prefix = f"{target_prefix}/val/"
             paginator = self.s3_client.get_paginator('list_objects_v2')
-            page_iterator = paginator.paginate(Bucket=bucket, Prefix=val_prefix, MaxItems=1)
+            page_iterator = paginator.paginate(
+                Bucket=bucket, 
+                Prefix=val_prefix,
+                PaginationConfig={'MaxItems': 1}
+            )
             
             for page in page_iterator:
                 if 'Contents' in page and len(page['Contents']) > 0:
@@ -234,7 +238,11 @@ class SageMakerPipelineOrchestrator:
             # Check if test data was converted
             test_prefix = f"{target_prefix}/test/"
             paginator = self.s3_client.get_paginator('list_objects_v2')
-            page_iterator = paginator.paginate(Bucket=bucket, Prefix=test_prefix, MaxItems=1)
+            page_iterator = paginator.paginate(
+                Bucket=bucket, 
+                Prefix=test_prefix,
+                PaginationConfig={'MaxItems': 1}
+            )
             
             for page in page_iterator:
                 if 'Contents' in page and len(page['Contents']) > 0:
@@ -258,7 +266,11 @@ class SageMakerPipelineOrchestrator:
         """Check if S3 path exists and has content"""
         try:
             paginator = self.s3_client.get_paginator('list_objects_v2')
-            page_iterator = paginator.paginate(Bucket=bucket, Prefix=prefix, MaxItems=1)
+            page_iterator = paginator.paginate(
+                Bucket=bucket, 
+                Prefix=prefix,
+                PaginationConfig={'MaxItems': 1}
+            )
             
             for page in page_iterator:
                 if 'Contents' in page and len(page['Contents']) > 0:
