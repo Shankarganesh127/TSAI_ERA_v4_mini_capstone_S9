@@ -118,8 +118,21 @@ class S3DatasetConverter:
             train_classes = self._get_class_list(f"{source_prefix}/Data/CLS-LOC/train/")
             self.logger.info(f"Found {len(train_classes)} classes in training data")
             
+            if len(train_classes) == 0:
+                self.logger.error("No training classes found - check your source prefix path")
+                return False
+            
+            # Show sample of training classes for debugging
+            sample_classes = train_classes[:5] if len(train_classes) > 5 else train_classes
+            self.logger.info(f"Sample training classes: {sample_classes}")
+            
             # Download val.txt for mapping (if available)
             val_mapping = self._get_validation_mapping(source_prefix, train_classes)
+            
+            # If val.txt mapping failed or has too many invalid entries, fall back to even distribution
+            if not val_mapping or len(val_mapping) < 1000:  # Expect reasonable number of valid mappings
+                self.logger.warning("val.txt mapping failed or insufficient - using even distribution fallback")
+                val_mapping = {}
             
             # Process validation images
             val_prefix = f"{source_prefix}/Data/CLS-LOC/val/"
@@ -269,41 +282,57 @@ class S3DatasetConverter:
             return []
 
     def _get_validation_mapping(self, source_prefix, train_classes):
-        """Get validation image to class mapping from val.txt"""
+        """Get validation image to class mapping from val.txt
+        
+        ImageNet val.txt format: image_filename class_id
+        Where class_id is 1-based (1-1000) and corresponds to sorted class folder names
+        """
         try:
             val_txt_key = f"{source_prefix}/ImageSets/CLS-LOC/val.txt"
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=val_txt_key)
             val_content = response['Body'].read().decode('utf-8')
             
+            # Create sorted class list (ImageNet classes are typically sorted alphabetically)
+            sorted_classes = sorted(train_classes)
+            self.logger.info(f"Using {len(sorted_classes)} sorted training classes for validation mapping")
+            
             val_mapping = {}
+            skipped_count = 0
+            
             for line in val_content.strip().split('\n'):
                 if line.strip():
                     parts = line.strip().split()
                     if len(parts) >= 2:
                         image_name = parts[0]
-                        
-                        # Handle different possible formats:
-                        # Format 1: image_name class_folder_name
-                        # Format 2: image_name class_index (1-based)
                         class_identifier = parts[1]
                         
+                        # Handle different possible formats:
                         if class_identifier in train_classes:
                             # Direct class folder name match
                             class_id = class_identifier
                         else:
-                            # Try as numeric index (1-based)
+                            # Standard ImageNet format: 1-based class index
                             try:
-                                class_idx = int(class_identifier) - 1
-                                if 0 <= class_idx < len(train_classes):
-                                    class_id = train_classes[class_idx]
+                                class_idx = int(class_identifier) - 1  # Convert to 0-based
+                                if 0 <= class_idx < len(sorted_classes):
+                                    class_id = sorted_classes[class_idx]
                                 else:
-                                    self.logger.warning(f"Class index {class_identifier} out of range for image {image_name}")
+                                    # Class index out of range - skip this image
+                                    skipped_count += 1
+                                    if skipped_count <= 10:  # Only show first 10 warnings
+                                        self.logger.warning(f"Class index {class_identifier} out of range for image {image_name}")
+                                    elif skipped_count == 11:
+                                        self.logger.warning(f"... suppressing further out-of-range warnings (total skipped: {skipped_count})")
                                     continue
                             except ValueError:
-                                self.logger.warning(f"Unknown class identifier '{class_identifier}' for image {image_name}")
+                                self.logger.warning(f"Invalid class identifier '{class_identifier}' for image {image_name}")
+                                skipped_count += 1
                                 continue
                         
                         val_mapping[image_name] = class_id
+            
+            if skipped_count > 0:
+                self.logger.warning(f"Skipped {skipped_count} validation images with invalid class mappings")
             
             self.logger.info(f"Loaded validation mapping for {len(val_mapping)} images")
             return val_mapping
