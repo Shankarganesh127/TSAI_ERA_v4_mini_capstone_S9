@@ -1,0 +1,90 @@
+{
+  "training_configs": {
+    "development": {
+      "instance_type": "ml.g4dn.xlarge",
+      "instance_count": 1,
+      "epochs": 5,
+      "batch_size": 64,
+      "lr_max": 0.1,
+      "weight_decay": 1e-4,
+      "use_spot_instances": true,
+      "description": "Fast development and testing"
+    },
+    "standard": {
+      "instance_type": "ml.g4dn.2xlarge", 
+      "instance_count": 1,
+      "epochs": 90,
+      "batch_size": 256,
+      "lr_max": 0.4,
+      "weight_decay": 1e-4,
+      "use_spot_instances": true,
+      "description": "Standard ImageNet training"
+    },
+    "high_performance": {
+      "instance_type": "ml.p3.2xlarge",
+      "instance_count": 1,
+      "epochs": 90,
+      "batch_size": 512,
+      "lr_max": 0.6,
+      "weight_decay": 1e-4,
+      "use_spot_instances": true,
+      "description": "High-performance single GPU training"
+    },
+    "distributed": {
+      "instance_type": "ml.g4dn.xlarge",
+      "instance_count": 4,
+      "epochs": 90,
+      "batch_size": 128,
+      "lr_max": 0.4,
+      "weight_decay": 1e-4,
+      "use_spot_instances": true,
+      "description": "Distributed training across multiple instances"
+    }
+  },
+  
+  "data_configurations": {
+    "full_imagenet": {
+      "train_data_s3": "s3://your-bucket/imagenet-1k/",
+      "val_data_s3": null,
+      "description": "Full ImageNet-1K dataset"
+    },
+    "separate_channels": {
+      "train_data_s3": "s3://your-bucket/imagenet-train/",
+      "val_data_s3": "s3://your-bucket/imagenet-val/",
+      "description": "Separate S3 paths for train and validation"
+    },
+    "subset_test": {
+      "train_data_s3": "s3://your-bucket/imagenet-subset/",
+      "val_data_s3": null,
+      "description": "Small subset for testing"
+    }
+  },
+  
+  "cost_optimization": {
+    "spot_instances": {
+      "enabled": true,
+      "max_wait_time": 3600,
+      "checkpoint_frequency": 5,
+      "description": "Use spot instances with checkpointing for cost savings"
+    },
+    "right_sizing": {
+      "batch_size_per_gpu_memory": {
+        "16GB": 256,
+        "32GB": 512,
+        "61GB": 1024
+      },
+      "description": "Recommended batch sizes based on GPU memory"
+    }
+  },
+  
+  "monitoring": {
+    "cloudwatch_metrics": [
+      "ValidationAccuracy",
+      "TrainingLoss",
+      "LearningRate",
+      "GPUUtilization"
+    ],
+    "log_level": "INFO",
+    "save_frequency": 10
+  }
+}
