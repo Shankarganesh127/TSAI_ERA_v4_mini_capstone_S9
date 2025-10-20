@@ -174,7 +174,11 @@ class S3DatasetConverter:
             
             # List test directory to see if it exists and has content
             paginator = self.s3_client.get_paginator('list_objects_v2')
-            page_iterator = paginator.paginate(Bucket=self.bucket_name, Prefix=test_prefix, MaxItems=1)
+            page_iterator = paginator.paginate(
+                Bucket=self.bucket_name, 
+                Prefix=test_prefix, 
+                PaginationConfig={'MaxItems': 1}
+            )
             
             test_exists = False
             for page in page_iterator:
@@ -400,7 +404,11 @@ class S3DatasetConverter:
         try:
             test_prefix = f"{target_prefix}/test/"
             paginator = self.s3_client.get_paginator('list_objects_v2')
-            page_iterator = paginator.paginate(Bucket=self.bucket_name, Prefix=test_prefix, MaxItems=1)
+            page_iterator = paginator.paginate(
+                Bucket=self.bucket_name, 
+                Prefix=test_prefix, 
+                PaginationConfig={'MaxItems': 1}
+            )
             
             for page in page_iterator:
                 if 'Contents' in page and len(page['Contents']) > 0:

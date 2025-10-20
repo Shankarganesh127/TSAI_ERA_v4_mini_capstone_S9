@@ -51,7 +51,7 @@ class SageMakerPipelineOrchestrator:
             "dataset": {
                 "source_bucket": "tsai-era-v4-mini-capstone",
                 "source_prefix": "Datasets/imagenet1k/ILSVRC",
-                "target_prefix": "imagenet-sagemaker",
+                "target_prefix": "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker",
                 "validation_required": True
             },
             "training": {
@@ -231,12 +231,12 @@ class SageMakerPipelineOrchestrator:
         
         try:
             required_paths = {
-                "training": f"Datasets/{source_prefix}/Data/CLS-LOC/train/",
-                "validation": f"Datasets/{target_prefix}/val/"
+                "training": f"{source_prefix}/Data/CLS-LOC/train/",
+                "validation": f"{target_prefix}/val/"
             }
             
             # Check if test data was converted
-            test_prefix = f"Datasets/{target_prefix}/test/"
+            test_prefix = f"{target_prefix}/test/"
             paginator = self.s3_client.get_paginator('list_objects_v2')
             page_iterator = paginator.paginate(
                 Bucket=bucket, 
@@ -441,10 +441,10 @@ def main():
                        help='S3 bucket containing ILSVRC dataset')
     
     # Optional arguments
-    parser.add_argument('--source-prefix', type=str, default='ILSVRC',
-                       help='S3 prefix of ILSVRC dataset (default: ILSVRC)')
-    parser.add_argument('--target-prefix', type=str, default='imagenet-sagemaker',
-                       help='S3 prefix for converted dataset (default: imagenet-sagemaker)')
+    parser.add_argument('--source-prefix', type=str, default='Datasets/imagenet1k/ILSVRC',
+                       help='S3 prefix of ILSVRC dataset (default: Datasets/imagenet1k/ILSVRC)')
+    parser.add_argument('--target-prefix', type=str, default='Datasets/imagenet1k/ILSVRC/imagenet-sagemaker',
+                       help='S3 prefix for converted dataset (default: Datasets/imagenet1k/ILSVRC/imagenet-sagemaker)')
     parser.add_argument('--instance-type', type=str, default='ml.p3.8xlarge',
                        help='SageMaker instance type (default: ml.p3.8xlarge)')
     parser.add_argument('--use-spot', action='store_true',

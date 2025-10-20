@@ -97,8 +97,8 @@ python setup_environment.py
 # Convert existing S3 ILSVRC data to SageMaker format
 python s3_dataset_converter.py \
     --bucket "your-s3-bucket" \
-    --source-prefix "ILSVRC" \
-    --target-prefix "imagenet-sagemaker" \
+    --source-prefix "Datasets/imagenet1k/ILSVRC" \
+    --target-prefix "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker" \
     --convert-val \
     --convert-test
 ```
@@ -109,7 +109,7 @@ python s3_dataset_converter.py \
 python launch_sagemaker.py \
     --job-name "imagenet-training-$(date +%Y%m%d-%H%M)" \
     --role-arn "arn:aws:iam::123456789:role/SageMakerRole" \
-    --train-data-s3 "s3://your-bucket/imagenet-sagemaker/" \
+    --train-data-s3 "s3://your-bucket/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/" \
     --instance-type "ml.p3.8xlarge" \
     --spot-training \
     --epochs 90 \
@@ -184,10 +184,10 @@ s3://your-bucket/ILSVRC/
 ### Output Format (SageMaker-Ready with Model Management)
 ```
 Training Data (used directly):
-s3://your-bucket/ILSVRC/Data/CLS-LOC/train/  # Already organized
+s3://your-bucket/Datasets/imagenet1k/ILSVRC/Data/CLS-LOC/train/  # Already organized
 
 Converted Data:
-s3://your-bucket/imagenet-sagemaker/
+s3://your-bucket/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/
 ├── val/                    # 1000 class folders (reorganized)
 ├── test/                   # 1000 class folders (reorganized, if exists)
 ├── metadata/               # Dataset metadata
@@ -217,14 +217,14 @@ python sagemaker_orchestrator.py \
 # Basic conversion (val + test)
 python s3_dataset_converter.py \
     --bucket "my-imagenet-bucket" \
-    --source-prefix "ILSVRC" \
-    --target-prefix "imagenet-sagemaker"
+    --source-prefix "Datasets/imagenet1k/ILSVRC" \
+    --target-prefix "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker"
 
 # Conversion with specific options
 python s3_dataset_converter.py \
     --bucket "my-imagenet-bucket" \
-    --source-prefix "ILSVRC" \
-    --target-prefix "imagenet-sagemaker" \
+    --source-prefix "Datasets/imagenet1k/ILSVRC" \
+    --target-prefix "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker" \
     --convert-val \
     --convert-test \
     --skip-training-copy \
@@ -237,7 +237,7 @@ python s3_dataset_converter.py \
 python launch_sagemaker.py \
     --job-name "resnet50-production-$(date +%Y%m%d)" \
     --role-arn "arn:aws:iam::123456789:role/SageMakerRole" \
-    --train-data-s3 "s3://my-bucket/imagenet-sagemaker/" \
+    --train-data-s3 "s3://my-bucket/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/" \
     --instance-type "ml.p3.16xlarge" \
     --spot-training \
     --epochs 90 \
@@ -249,7 +249,7 @@ python launch_sagemaker.py \
 python launch_sagemaker.py \
     --job-name "quick-test-$(date +%H%M)" \
     --role-arn "arn:aws:iam::123456789:role/SageMakerRole" \
-    --train-data-s3 "s3://my-bucket/imagenet-sagemaker/" \
+    --train-data-s3 "s3://my-bucket/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/" \
     --instance-type "ml.p3.2xlarge" \
     --epochs 5 \
     --pipeline-stage "lr_range_test" \
@@ -360,16 +360,16 @@ Your SageMaker execution role needs these permissions:
 ### ✅ **Dataset Conversion Verification**
 ```bash
 # Verify converted structure and organization
-aws s3 ls s3://your-bucket/imagenet-sagemaker/
-aws s3 ls s3://your-bucket/imagenet-sagemaker/val/ | head -10
-aws s3 ls s3://your-bucket/imagenet-sagemaker/test/ | head -10
+aws s3 ls s3://your-bucket/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/
+aws s3 ls s3://your-bucket/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/val/ | head -10
+aws s3 ls s3://your-bucket/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/test/ | head -10
 
 # Check dataset manifest and metadata
-aws s3 cp s3://your-bucket/imagenet-sagemaker/manifest.json - | jq
-aws s3 ls s3://your-bucket/imagenet-sagemaker/metadata/
+aws s3 cp s3://your-bucket/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/manifest.json - | jq
+aws s3 ls s3://your-bucket/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/metadata/
 
 # Verify class count and structure
-aws s3 ls s3://your-bucket/imagenet-sagemaker/val/ | wc -l  # Should show 1000 classes
+aws s3 ls s3://your-bucket/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/val/ | wc -l  # Should show 1000 classes
 ```
 
 ### 📊 **Training Job Monitoring**
