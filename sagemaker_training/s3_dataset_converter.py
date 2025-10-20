@@ -281,7 +281,28 @@ class S3DatasetConverter:
                     parts = line.strip().split()
                     if len(parts) >= 2:
                         image_name = parts[0]
-                        class_id = parts[1] if parts[1] in train_classes else train_classes[int(parts[1]) - 1]
+                        
+                        # Handle different possible formats:
+                        # Format 1: image_name class_folder_name
+                        # Format 2: image_name class_index (1-based)
+                        class_identifier = parts[1]
+                        
+                        if class_identifier in train_classes:
+                            # Direct class folder name match
+                            class_id = class_identifier
+                        else:
+                            # Try as numeric index (1-based)
+                            try:
+                                class_idx = int(class_identifier) - 1
+                                if 0 <= class_idx < len(train_classes):
+                                    class_id = train_classes[class_idx]
+                                else:
+                                    self.logger.warning(f"Class index {class_identifier} out of range for image {image_name}")
+                                    continue
+                            except ValueError:
+                                self.logger.warning(f"Unknown class identifier '{class_identifier}' for image {image_name}")
+                                continue
+                        
                         val_mapping[image_name] = class_id
             
             self.logger.info(f"Loaded validation mapping for {len(val_mapping)} images")
@@ -304,15 +325,29 @@ class S3DatasetConverter:
                     parts = line.strip().split()
                     if len(parts) >= 2:
                         image_name = parts[0]
-                        # Test data might not have class labels, so handle gracefully
-                        if len(parts) > 1 and parts[1] in train_classes:
-                            class_id = parts[1]
-                        elif len(parts) > 1 and parts[1].isdigit():
-                            class_idx = int(parts[1]) - 1
-                            class_id = train_classes[class_idx] if class_idx < len(train_classes) else train_classes[0]
+                        class_identifier = parts[1]
+                        
+                        # Handle different possible formats:
+                        if class_identifier in train_classes:
+                            # Direct class folder name match
+                            class_id = class_identifier
+                        elif class_identifier.isdigit():
+                            # Try as numeric index (1-based)
+                            try:
+                                class_idx = int(class_identifier) - 1
+                                if 0 <= class_idx < len(train_classes):
+                                    class_id = train_classes[class_idx]
+                                else:
+                                    self.logger.warning(f"Test class index {class_identifier} out of range for image {image_name}")
+                                    continue
+                            except (ValueError, IndexError):
+                                self.logger.warning(f"Invalid test class identifier '{class_identifier}' for image {image_name}")
+                                continue
                         else:
-                            # If no valid class info, skip this entry
+                            # Unknown format, skip
+                            self.logger.warning(f"Unknown test class identifier '{class_identifier}' for image {image_name}")
                             continue
+                        
                         test_mapping[image_name] = class_id
             
             self.logger.info(f"Loaded test mapping for {len(test_mapping)} images")
