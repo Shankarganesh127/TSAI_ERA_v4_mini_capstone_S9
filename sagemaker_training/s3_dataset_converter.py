@@ -145,9 +145,13 @@ class S3DatasetConverter:
                         continue
                         
                     image_name = os.path.basename(source_key)
+                    image_name_base = os.path.splitext(image_name)[0]  # Remove extension for mapping lookup
                     
                     # Determine class
-                    if val_mapping and image_name in val_mapping:
+                    if val_mapping and image_name_base in val_mapping:
+                        class_id = val_mapping[image_name_base]
+                    elif val_mapping and image_name in val_mapping:
+                        # Fallback: try with extension
                         class_id = val_mapping[image_name]
                     else:
                         # Distribute evenly if no mapping
@@ -336,6 +340,12 @@ class S3DatasetConverter:
                 self.logger.warning(f"Skipped {skipped_count} validation images with invalid class mappings")
             
             self.logger.info(f"Loaded validation mapping for {len(val_mapping)} images")
+            
+            # Debug: Show sample mappings
+            if len(val_mapping) > 0:
+                sample_items = list(val_mapping.items())[:3]
+                self.logger.info(f"Sample mappings: {sample_items}")
+            
             return val_mapping
             
         except Exception as e:
