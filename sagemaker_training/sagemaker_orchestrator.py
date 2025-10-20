@@ -231,12 +231,12 @@ class SageMakerPipelineOrchestrator:
         
         try:
             required_paths = {
-                "training": f"{source_prefix}/Data/CLS-LOC/train/",
-                "validation": f"{target_prefix}/val/"
+                "training": f"Datasets/{source_prefix}/Data/CLS-LOC/train/",
+                "validation": f"Datasets/{target_prefix}/val/"
             }
             
             # Check if test data was converted
-            test_prefix = f"{target_prefix}/test/"
+            test_prefix = f"Datasets/{target_prefix}/test/"
             paginator = self.s3_client.get_paginator('list_objects_v2')
             page_iterator = paginator.paginate(
                 Bucket=bucket, 
