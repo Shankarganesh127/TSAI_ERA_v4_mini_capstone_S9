@@ -129,12 +129,16 @@ class S3DatasetConverter:
             # Download val.txt for mapping (if available)
             val_mapping = self._get_validation_mapping(source_prefix, train_classes)
             
-            # Process validation images
+            # Process validation images using LOC_val_solution.csv (ground truth)
+            self.logger.info("🔄 Processing validation images with ground truth mappings...")
             val_prefix = f"{source_prefix}/Data/CLS-LOC/val/"
             paginator = self.s3_client.get_paginator('list_objects_v2')
             page_iterator = paginator.paginate(Bucket=self.bucket_name, Prefix=val_prefix)
             
             copy_count = 0
+            mapped_count = 0
+            unmapped_count = 0
+            
             for page in page_iterator:
                 if 'Contents' not in page:
                     continue
@@ -147,31 +151,35 @@ class S3DatasetConverter:
                     image_name = os.path.basename(source_key)
                     image_name_base = os.path.splitext(image_name)[0]  # Remove extension for mapping lookup
                     
-                    # Determine class
-                    if val_mapping and image_name_base in val_mapping:
-                        class_id = val_mapping[image_name_base]
-                    elif val_mapping and image_name in val_mapping:
-                        # Fallback: try with extension
-                        class_id = val_mapping[image_name]
+                    # Use ground truth mapping from LOC_val_solution.csv
+                    class_id = None
+                    if val_mapping:
+                        # Try both image_name_base (preferred) and image_name (fallback)
+                        class_id = val_mapping.get(image_name_base) or val_mapping.get(image_name)
+                    
+                    if class_id:
+                        target_key = f"{target_prefix}/val/{class_id}/{image_name}"
+                        
+                        copy_source = {'Bucket': self.bucket_name, 'Key': source_key}
+                        self.s3_client.copy_object(
+                            CopySource=copy_source,
+                            Bucket=self.bucket_name,
+                            Key=target_key
+                        )
+                        copy_count += 1
+                        mapped_count += 1
+                        
+                        if copy_count % 1000 == 0:
+                            self.logger.info(f"   Reorganized {copy_count} validation images with ground truth mapping...")
                     else:
-                        # Distribute evenly if no mapping
-                        class_idx = copy_count % len(train_classes)
-                        class_id = train_classes[class_idx]
-                    
-                    target_key = f"{target_prefix}/val/{class_id}/{image_name}"
-                    
-                    copy_source = {'Bucket': self.bucket_name, 'Key': source_key}
-                    self.s3_client.copy_object(
-                        CopySource=copy_source,
-                        Bucket=self.bucket_name,
-                        Key=target_key
-                    )
-                    copy_count += 1
-                    
-                    if copy_count % 1000 == 0:
-                        self.logger.info(f"   Reorganized {copy_count} validation images...")
+                        unmapped_count += 1
+                        if unmapped_count <= 5:  # Log first few unmapped images
+                            self.logger.warning(f"No ground truth mapping for {image_name} (base: {image_name_base})")
             
-            self.logger.info(f"   Total validation images reorganized: {copy_count}")
+            self.logger.info(f"✅ Total validation images reorganized: {copy_count}")
+            self.logger.info(f"   - Mapped with ground truth: {mapped_count}")
+            self.logger.info(f"   - Unmapped (no ground truth): {unmapped_count}")
+            
             return True
             
         except Exception as e:
@@ -223,9 +231,13 @@ class S3DatasetConverter:
                         continue
                         
                     image_name = os.path.basename(source_key)
+                    image_name_base = os.path.splitext(image_name)[0]  # Remove extension for mapping lookup
                     
                     # Determine class for test image
-                    if test_mapping and image_name in test_mapping:
+                    if test_mapping and image_name_base in test_mapping:
+                        class_id = test_mapping[image_name_base]
+                    elif test_mapping and image_name in test_mapping:
+                        # Fallback: try with extension
                         class_id = test_mapping[image_name]
                     else:
                         # For test data without labels, distribute evenly or use special folder
@@ -281,12 +293,76 @@ class S3DatasetConverter:
             return []
 
     def _get_validation_mapping(self, source_prefix, train_classes):
-        """Get validation image to class mapping from val.txt
+        """Get validation image to class mapping from LOC_val_solution.csv
         
-        ImageNet val.txt format: image_filename class_id
-        Where class_id is 1-based (1-1000) and corresponds to sorted class folder names
+        LOC_val_solution.csv format: ImageId,PredictionString
+        Example: n02017213_7894,n02017213 115 49 448 294
+        We extract: image_id -> synset_id (ignore bounding box coordinates)
         """
         try:
+            # Try to load from LOC_val_solution.csv first (correct ground truth)
+            # LOC_val_solution.csv is typically at the parent level of ILSVRC folder
+            # source_prefix is usually "Datasets/imagenet1k/ILSVRC", so go up one level
+            base_prefix = "/".join(source_prefix.split("/")[:-1]) if "/" in source_prefix else source_prefix
+            val_solution_key = f"{base_prefix}/LOC_val_solution.csv"
+            
+            # Also try direct path in case LOC_val_solution.csv is in ILSVRC folder
+            fallback_solution_key = f"{source_prefix}/LOC_val_solution.csv"
+            
+            try:
+                # Try parent level first (most common location)
+                response = self.s3_client.get_object(Bucket=self.bucket_name, Key=val_solution_key)
+                val_content = response['Body'].read().decode('utf-8')
+                self.logger.info(f"✅ Found LOC_val_solution.csv at: s3://{self.bucket_name}/{val_solution_key}")
+                
+            except Exception as e1:
+                self.logger.warning(f"LOC_val_solution.csv not found at parent level: {val_solution_key}")
+                try:
+                    # Try inside ILSVRC folder as fallback
+                    response = self.s3_client.get_object(Bucket=self.bucket_name, Key=fallback_solution_key)
+                    val_content = response['Body'].read().decode('utf-8')
+                    self.logger.info(f"✅ Found LOC_val_solution.csv at: s3://{self.bucket_name}/{fallback_solution_key}")
+                    
+                except Exception as e2:
+                    raise Exception(f"LOC_val_solution.csv not found at either location: {val_solution_key} or {fallback_solution_key}")
+            
+            # Parse the CSV content (same for both locations)
+            self.logger.info("✅ Using ground truth validation mappings from LOC_val_solution.csv")
+            
+            val_mapping = {}
+            lines = val_content.strip().split('\n')
+            
+            # Skip header line
+            for line in lines[1:]:
+                if line.strip():
+                    parts = line.strip().split(',')
+                    if len(parts) >= 2:
+                        image_id = parts[0]  # e.g., n02017213_7894
+                        prediction_string = parts[1]  # e.g., n02017213 115 49 448 294
+                        
+                        # Extract synset_id (first part before space)
+                        synset_id = prediction_string.split()[0]  # e.g., n02017213
+                        
+                        # Map image to synset class folder
+                        if synset_id in train_classes:
+                            val_mapping[image_id] = synset_id
+                        else:
+                            self.logger.warning(f"Synset {synset_id} not found in training classes for image {image_id}")
+            
+            self.logger.info(f"✅ Loaded {len(val_mapping)} validation mappings from LOC_val_solution.csv")
+            
+            # Debug: Show sample mappings
+            if len(val_mapping) > 0:
+                sample_items = list(val_mapping.items())[:3]
+                self.logger.info(f"Sample ground truth mappings: {sample_items}")
+            
+            return val_mapping
+                
+        except Exception as e:
+            self.logger.warning(f"Could not load LOC_val_solution.csv: {e}")
+            self.logger.info("Falling back to val.txt...")
+            
+            # Fallback to old val.txt method (if LOC_val_solution.csv not available)
             val_txt_key = f"{source_prefix}/ImageSets/CLS-LOC/val.txt"
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=val_txt_key)
             val_content = response['Body'].read().decode('utf-8')
@@ -339,17 +415,17 @@ class S3DatasetConverter:
             if skipped_count > 0:
                 self.logger.warning(f"Skipped {skipped_count} validation images with invalid class mappings")
             
-            self.logger.info(f"Loaded validation mapping for {len(val_mapping)} images")
+            self.logger.info(f"Loaded validation mapping for {len(val_mapping)} images (fallback method)")
             
             # Debug: Show sample mappings
             if len(val_mapping) > 0:
                 sample_items = list(val_mapping.items())[:3]
-                self.logger.info(f"Sample mappings: {sample_items}")
+                self.logger.info(f"Sample fallback mappings: {sample_items}")
             
             return val_mapping
             
         except Exception as e:
-            self.logger.warning(f"Could not load val.txt mapping: {e}")
+            self.logger.warning(f"Could not load any validation mapping: {e}")
             return {}
 
     def _get_test_mapping(self, source_prefix, train_classes):
@@ -359,7 +435,13 @@ class S3DatasetConverter:
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=test_txt_key)
             test_content = response['Body'].read().decode('utf-8')
             
+            # Create sorted class list (same as validation)
+            sorted_classes = sorted(train_classes)
+            self.logger.info(f"Using {len(sorted_classes)} sorted training classes for test mapping")
+            
             test_mapping = {}
+            skipped_count = 0
+            
             for line in test_content.strip().split('\n'):
                 if line.strip():
                     parts = line.strip().split()
@@ -374,23 +456,45 @@ class S3DatasetConverter:
                         elif class_identifier.isdigit():
                             # Try as numeric index (1-based)
                             try:
-                                class_idx = int(class_identifier) - 1
-                                if 0 <= class_idx < len(train_classes):
-                                    class_id = train_classes[class_idx]
+                                class_id_num = int(class_identifier)
+                                
+                                # Handle class IDs > 1000 by wrapping them back to 1-1000
+                                if class_id_num > len(sorted_classes):
+                                    # Use modulo to wrap: 1001 → 1, 1002 → 2, etc.
+                                    wrapped_class_id = ((class_id_num - 1) % len(sorted_classes)) + 1
+                                    class_idx = wrapped_class_id - 1  # Convert to 0-based
+                                    class_id = sorted_classes[class_idx]
+                                    
+                                    # Log the first few wrapping examples
+                                    if skipped_count < 5:
+                                        self.logger.info(f"Wrapping test class {class_id_num} → {wrapped_class_id} ({class_id}) for {image_name}")
                                 else:
-                                    self.logger.warning(f"Test class index {class_identifier} out of range for image {image_name}")
-                                    continue
+                                    # Normal case: class ID within range
+                                    class_idx = class_id_num - 1  # Convert to 0-based
+                                    class_id = sorted_classes[class_idx]
+                                    
                             except (ValueError, IndexError):
                                 self.logger.warning(f"Invalid test class identifier '{class_identifier}' for image {image_name}")
+                                skipped_count += 1
                                 continue
                         else:
                             # Unknown format, skip
                             self.logger.warning(f"Unknown test class identifier '{class_identifier}' for image {image_name}")
+                            skipped_count += 1
                             continue
                         
                         test_mapping[image_name] = class_id
             
+            if skipped_count > 0:
+                self.logger.warning(f"Skipped {skipped_count} test images with invalid class mappings")
+            
             self.logger.info(f"Loaded test mapping for {len(test_mapping)} images")
+            
+            # Debug: Show sample test mappings
+            if len(test_mapping) > 0:
+                sample_items = list(test_mapping.items())[:3]
+                self.logger.info(f"Sample test mappings: {sample_items}")
+            
             return test_mapping
             
         except Exception as e:
