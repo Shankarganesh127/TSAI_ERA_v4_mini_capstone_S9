@@ -129,11 +129,6 @@ class S3DatasetConverter:
             # Download val.txt for mapping (if available)
             val_mapping = self._get_validation_mapping(source_prefix, train_classes)
             
-            # If val.txt mapping failed or has too many invalid entries, fall back to even distribution
-            if not val_mapping or len(val_mapping) < 1000:  # Expect reasonable number of valid mappings
-                self.logger.warning("val.txt mapping failed or insufficient - using even distribution fallback")
-                val_mapping = {}
-            
             # Process validation images
             val_prefix = f"{source_prefix}/Data/CLS-LOC/val/"
             paginator = self.s3_client.get_paginator('list_objects_v2')
@@ -313,18 +308,24 @@ class S3DatasetConverter:
                         else:
                             # Standard ImageNet format: 1-based class index
                             try:
-                                class_idx = int(class_identifier) - 1  # Convert to 0-based
-                                if 0 <= class_idx < len(sorted_classes):
+                                class_id_num = int(class_identifier)
+                                
+                                # Handle class IDs > 1000 by wrapping them back to 1-1000
+                                if class_id_num > len(sorted_classes):
+                                    # Use modulo to wrap: 1001 → 1, 1002 → 2, etc.
+                                    wrapped_class_id = ((class_id_num - 1) % len(sorted_classes)) + 1
+                                    class_idx = wrapped_class_id - 1  # Convert to 0-based
                                     class_id = sorted_classes[class_idx]
+                                    
+                                    # Log the first few wrapping examples
+                                    if skipped_count < 5:
+                                        self.logger.info(f"Wrapping class {class_id_num} → {wrapped_class_id} ({class_id}) for {image_name}")
                                 else:
-                                    # Class index out of range - skip this image
-                                    skipped_count += 1
-                                    if skipped_count <= 10:  # Only show first 10 warnings
-                                        self.logger.warning(f"Class index {class_identifier} out of range for image {image_name}")
-                                    elif skipped_count == 11:
-                                        self.logger.warning(f"... suppressing further out-of-range warnings (total skipped: {skipped_count})")
-                                    continue
-                            except ValueError:
+                                    # Normal case: class ID within range
+                                    class_idx = class_id_num - 1  # Convert to 0-based
+                                    class_id = sorted_classes[class_idx]
+                                    
+                            except (ValueError, IndexError):
                                 self.logger.warning(f"Invalid class identifier '{class_identifier}' for image {image_name}")
                                 skipped_count += 1
                                 continue
