@@ -1,0 +1,11 @@
+2025-10-20 15:46:15 | test_logger | INFO |    job_name: test-job
+2025-10-20 15:46:15 | test_logger | INFO |    instance_type: ml.p3.2xlarge
+2025-10-20 15:46:15 | test_logger | INFO |    epochs: 30
+2025-10-20 15:46:15 | test_logger | INFO |    batch_size: 64
+2025-10-20 15:46:15 | test_logger | INFO |    Training:
+2025-10-20 15:46:15 | test_logger | INFO |      epochs: 30
+2025-10-20 15:46:15 | test_logger | INFO |      batch_size: 64
+2025-10-20 15:46:15 | test_logger | INFO |    Pipeline Control:
+2025-10-20 15:46:15 | test_logger | INFO |      run_lr_finder: True
+2025-10-20 15:46:15 | test_logger | INFO |    AWS/SageMaker:
+2025-10-20 15:46:15 | test_logger | INFO |      data_dir: /opt/ml/input/data/imagenet

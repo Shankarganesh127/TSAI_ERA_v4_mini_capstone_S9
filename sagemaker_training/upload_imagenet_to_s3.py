@@ -7,24 +7,42 @@ Uploads ImageNet dataset to S3 for SageMaker training with proper structure and 
 import boto3
 import os
 import argparse
+import sys
 from pathlib import Path
-from tqdm import tqdm
 import time
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 
+# Add parent directory to path for logger import
+parent_dir = Path(__file__).parent.parent
+sys.path.append(str(parent_dir))
+
+from logger_setup import setup_logger
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    # Fallback if tqdm not available
+    def tqdm(iterable, **kwargs):
+        return iterable
+
 
 class S3ImageNetUploader:
     def __init__(self, bucket_name, aws_profile=None):
         """Initialize S3 uploader"""
+        self.logger = setup_logger("s3_imagenet_uploader")
         self.bucket_name = bucket_name
+        
+        self.logger.info(f"🔧 Initializing S3 ImageNet uploader for bucket: {bucket_name}")
         
         # Initialize S3 client
         if aws_profile:
+            self.logger.info(f"📋 Using AWS profile: {aws_profile}")
             session = boto3.Session(profile_name=aws_profile)
             self.s3_client = session.client('s3')
         else:
+            self.logger.info("📋 Using default AWS credentials")
             self.s3_client = boto3.client('s3')
         
         self.uploaded_files = 0

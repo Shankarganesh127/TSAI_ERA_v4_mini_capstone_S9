@@ -1,161 +1,110 @@
-# SageMaker Training Configuration for ImageNet ResNet50
+# SageMaker Training for 7-Step ImageNet Pipeline
 
-## Quick Setup Guide
+## Overview
 
-### 1. Prerequisites
-- AWS Account with SageMaker permissions
-- ImageNet dataset uploaded to S3
-- SageMaker execution role configured
+Simplified SageMaker integration for your sophisticated 7-step ImageNet training pipeline:
 
-### 2. Installation
+1. **LR Range Test** → Find optimal learning rate bounds
+2. **Pick LR bounds** → Extract min/max LR from range test
+3. **OneCycle LR** → Configure advanced scheduler  
+4. **Choose batch size** → Auto-detect optimal GPU memory usage
+5. **Tune weight-decay** → Grid search with validation
+6. **Full training** → Complete OneCycle training
+7. **Monitor** → Comprehensive analysis and logging
+
+## Files
+
+- **`sagemaker_wrapper.py`** - Single training wrapper preserving 7-step methodology
+- **`launch_sagemaker.py`** - Simple job launcher with hyperparameter control
+- **`monitor_training.py`** - Job monitoring and progress tracking
+- **`upload_imagenet_to_s3.py`** - Data upload utility
+
+## Quick Start
+
+### 1. Upload Data
 ```bash
-cd sagemaker_training
-pip install -r requirements.txt
+python upload_imagenet_to_s3.py --s3-bucket s3://your-bucket
 ```
 
-### 3. Upload ImageNet Dataset to S3
+### 2. Launch Training
 
-#### Option A: Upload entire ImageNet-1K dataset
+**Full Automated Pipeline:**
 ```bash
-# Create S3 bucket (replace with your bucket name)
-aws s3 mb s3://your-imagenet-bucket
-
-# Upload ImageNet dataset (maintaining train/val structure)
-aws s3 sync /path/to/imagenet/ s3://your-imagenet-bucket/imagenet-1k/ --exclude "*.tar" --exclude "*.zip"
-
-# Expected S3 structure:
-# s3://your-imagenet-bucket/imagenet-1k/
-# ├── train/
-# │   ├── n01440764/  # class folders
-# │   ├── n01443537/
-# │   └── ...
-# └── val/
-#     ├── n01440764/
-#     ├── n01443537/
-#     └── ...
+python launch_sagemaker.py \
+  --job-name imagenet-auto \
+  --role-arn arn:aws:iam::123456789012:role/SageMakerRole \
+  --s3-bucket s3://your-bucket
 ```
 
-#### Option B: Upload separate train/validation to different S3 paths
+**Quick Development:**
 ```bash
-aws s3 sync /path/to/imagenet/train/ s3://your-imagenet-bucket/imagenet-train/
-aws s3 sync /path/to/imagenet/val/ s3://your-imagenet-bucket/imagenet-val/
-```
-
-### 4. Launch SageMaker Training
-
-#### Basic Training with Spot Instances (Recommended)
-```bash
-python launch_sagemaker_job.py \
-  --train-data-s3 s3://your-imagenet-bucket/imagenet-1k/ \
-  --instance-type ml.g4dn.xlarge \
-  --epochs 90 \
-  --batch-size 256
-```
-
-#### Advanced Training with Custom Configuration
-```bash
-python launch_sagemaker_job.py \
-  --train-data-s3 s3://your-imagenet-bucket/imagenet-1k/ \
-  --val-data-s3 s3://your-imagenet-bucket/imagenet-val/ \
-  --instance-type ml.g4dn.2xlarge \
-  --instance-count 1 \
-  --epochs 90 \
-  --batch-size 512 \
-  --lr-max 0.4 \
-  --weight-decay 1e-4 \
-  --checkpoint-s3 s3://your-imagenet-bucket/checkpoints/ \
-  --output-s3 s3://your-imagenet-bucket/output/ \
-  --job-name imagenet-resnet50-production
-```
-
-#### Quick Test Mode (For Development)
-```bash
-python launch_sagemaker_job.py \
-  --train-data-s3 s3://your-imagenet-bucket/imagenet-1k/ \
-  --instance-type ml.g4dn.xlarge \
-  --epochs 1 \
-  --batch-size 64 \
+python launch_sagemaker.py \
+  --job-name quick-test \
+  --role-arn arn:aws:iam::123456789012:role/SageMakerRole \
+  --s3-bucket s3://your-bucket \
   --quick-mode \
-  --job-name imagenet-test
+  --epochs 5
 ```
 
-#### Multi-Instance Training (Distributed)
+**Custom Hyperparameters:**
 ```bash
-python launch_sagemaker_job.py \
-  --train-data-s3 s3://your-imagenet-bucket/imagenet-1k/ \
-  --instance-type ml.g4dn.xlarge \
-  --instance-count 4 \
-  --epochs 90 \
-  --batch-size 128 \
-  --job-name imagenet-distributed
+python launch_sagemaker.py \
+  --job-name custom-hp \
+  --role-arn arn:aws:iam::123456789012:role/SageMakerRole \
+  --s3-bucket s3://your-bucket \
+  --batch-size 64 \
+  --skip-lr-finder \
+  --weight-decay 1e-3
 ```
 
-### 5. Instance Type Recommendations
-
-| Instance Type | GPU | Memory | Cost (Spot) | Use Case |
-|---------------|-----|--------|-------------|----------|
-| ml.g4dn.xlarge | 1x T4 | 16GB | ~$0.20/hr | Development, small batch |
-| ml.g4dn.2xlarge | 1x T4 | 32GB | ~$0.40/hr | Standard training |
-| ml.g4dn.4xlarge | 1x T4 | 64GB | ~$0.80/hr | Large batch sizes |
-| ml.p3.2xlarge | 1x V100 | 61GB | ~$0.90/hr | Faster training |
-| ml.p3.8xlarge | 4x V100 | 244GB | ~$3.60/hr | Multi-GPU training |
-
-### 6. Cost Optimization Tips
-
-1. **Use Spot Instances**: 50-70% cost savings
-2. **Enable Checkpointing**: Resume from interruptions
-3. **Right-size instances**: Don't over-provision
-4. **Use S3 Intelligent Tiering**: For dataset storage
-5. **Monitor training**: Stop early if not converging
-
-### 7. Monitoring Training
-
-#### Check Job Status
+### 3. Monitor Progress
 ```bash
-aws sagemaker describe-training-job --training-job-name your-job-name
+python monitor_training.py --job-name your-job-name
 ```
 
-#### View Logs
+## Pipeline Control
+
+| Flag | Description | Impact |
+|------|-------------|---------|
+| `--skip-lr-finder` | Skip LR Range Test (Step 1) | Uses default or manual LR bounds |
+| `--skip-wd-search` | Skip Weight Decay Search (Step 5) | Uses default or manual weight decay |
+| `--quick-mode` | Fast development iterations | Reduced epochs |
+| `--batch-size <N>` | Override auto-detection (Step 4) | Manual batch size |
+| `--lr-min <F>` | Manual minimum LR (Step 2) | Override LR bounds |
+| `--lr-max <F>` | Manual maximum LR (Step 2) | Override LR bounds |
+| `--weight-decay <F>` | Manual weight decay (Step 5) | Override search result |
+
+## Cost Optimization
+
+**Spot Instances (70% savings):**
 ```bash
-aws logs filter-log-events \
-  --log-group-name /aws/sagemaker/TrainingJobs \
-  --log-stream-name-prefix your-job-name
+python launch_sagemaker.py \
+  --job-name cost-optimized \
+  --role-arn <role> \
+  --s3-bucket <bucket> \
+  --spot-training \
+  --instance-type ml.p3.2xlarge
 ```
 
-#### Download Results
-```bash
-# Download model artifacts
-aws s3 sync s3://your-bucket/output/your-job-name/output/ ./results/
+## Key Features
 
-# Download training logs and metrics
-aws s3 sync s3://your-bucket/output/your-job-name/output/data/ ./logs/
+- ✅ **Complete 7-step pipeline preservation** - No changes to original methodology
+- ✅ **Flexible hyperparameter override** - Control each step individually  
+- ✅ **Spot instance support** - Up to 70% cost savings
+- ✅ **Professional logging** - CloudWatch integration
+- ✅ **Simple interface** - Single wrapper, single launcher
+- ✅ **No code changes** - Original `imagenet_training_pipeline.py` unchanged
+
+## Architecture
+
+```
+SageMaker Job Launch
+        ↓
+   sagemaker_wrapper.py
+        ↓
+   imagenet_training_pipeline.py (Original 7-step methodology)
+        ↓
+   Complete training with all optimizations
 ```
 
-### 8. Integration with Your Existing Pipeline
-
-The SageMaker training automatically uses your existing:
-- ✅ `imagenet_training_pipeline.py` (7-step process)
-- ✅ `imagenet_models.py` (ResNet50 implementation)
-- ✅ `imagenet_dataset.py` (DataLoader logic)
-- ✅ `logger_setup.py` (Logging system)
-
-No modifications needed to your existing code!
-
-### 9. Troubleshooting
-
-#### Common Issues:
-1. **Role Permission**: Ensure SageMaker role has S3 access
-2. **Data Format**: Check S3 data structure matches ImageNet format
-3. **Instance Limits**: Check AWS service quotas
-4. **Spot Interruption**: Enable checkpointing for recovery
-
-#### Debug Mode:
-```bash
-# Run with minimal resources for debugging
-python launch_sagemaker_job.py \
-  --train-data-s3 s3://your-bucket/small-dataset/ \
-  --instance-type ml.m5.large \
-  --epochs 1 \
-  --batch-size 8 \
-  --no-spot
-```
+The wrapper preserves your sophisticated 7-step approach while adding professional cloud deployment capabilities.

@@ -8,18 +8,36 @@ import boto3
 import argparse
 import time
 import json
+import sys
 from datetime import datetime
-from tabulate import tabulate
+from pathlib import Path
+
+# Add parent directory to path for logger import
+parent_dir = Path(__file__).parent.parent
+sys.path.append(str(parent_dir))
+
+from logger_setup import setup_logger
+
+try:
+    from tabulate import tabulate
+except ImportError:
+    tabulate = None
 
 
 class SageMakerMonitor:
     def __init__(self, region='us-east-1'):
         """Initialize SageMaker monitor"""
+        self.logger = setup_logger("sagemaker_monitor")
         self.sagemaker = boto3.client('sagemaker', region_name=region)
         self.logs = boto3.client('logs', region_name=region)
+        self.logger.info(f"🔧 SageMaker Monitor initialized for region: {region}")
     
     def list_training_jobs(self, status_filter=None, max_results=10):
         """List training jobs with optional status filter"""
+        
+        self.logger.info(f"📋 Listing training jobs (max: {max_results})")
+        if status_filter:
+            self.logger.info(f"   Filter: {status_filter}")
         
         params = {
             'MaxResults': max_results,
