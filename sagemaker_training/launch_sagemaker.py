@@ -113,7 +113,7 @@ def main():
             s3_data=data_s3_path,
             distribution='FullyReplicated',  # Replicate data to all instances
             s3_data_type='S3Prefix',        # Treat as directory prefix
-            input_mode=args.distribution_mode.lower(),  # FastFile for performance
+            input_mode=args.distribution_mode,  # Keep original case: FastFile, File, or Pipe
             compression=None                 # No compression for images
         )
         
