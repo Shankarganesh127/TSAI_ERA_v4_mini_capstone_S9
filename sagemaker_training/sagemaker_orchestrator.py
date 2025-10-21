@@ -21,9 +21,9 @@ from datetime import datetime
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 
-# Add parent directory to path for imports
-parent_dir = Path(__file__).parent.parent
-sys.path.append(str(parent_dir))
+# All files are in the same directory now
+current_dir = Path(__file__).parent
+sys.path.append(str(current_dir))
 
 # Local imports
 from sagemaker_logging import setup_sagemaker_logger

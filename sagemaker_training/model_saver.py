@@ -14,10 +14,6 @@ import torch
 from pathlib import Path
 from datetime import datetime
 
-# Add parent directory to path for imports
-parent_dir = Path(__file__).parent.parent
-sys.path.append(str(parent_dir))
-
 try:
     from sagemaker_logging import setup_sagemaker_logger
 except ImportError:

@@ -12,10 +12,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Add parent directory to path for logger import
-parent_dir = Path(__file__).parent.parent
-sys.path.append(str(parent_dir))
-
+# Import logger from same directory
 from logger_setup import setup_logger
 
 try:

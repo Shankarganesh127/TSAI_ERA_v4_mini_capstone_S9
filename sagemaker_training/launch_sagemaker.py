@@ -20,15 +20,14 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Add parent directory to path for logger import
-parent_dir = Path(__file__).parent.parent
-sys.path.append(str(parent_dir))
+# All files are now in the same directory
+current_dir = Path(__file__).parent
+sys.path.append(str(current_dir))
 
-# Try to import from parent directory first, fallback to local
+# Import logger from same directory
 try:
     from logger_setup import setup_logger
 except ImportError:
-    # Fallback to local SageMaker logging
     from sagemaker_logging import setup_sagemaker_logger as setup_logger
 
 try:
@@ -203,68 +202,51 @@ def main():
     import tempfile
     import shutil
     
-    with tempfile.TemporaryDirectory() as temp_source_dir:
-        logger.info("📦 Creating optimized source package...")
+    # Use current sagemaker_training directory directly as source
+    # All necessary files are already here - no need to copy
+    current_dir = Path(__file__).parent
+    logger.info("📦 Using sagemaker_training directory as source...")
+    
+    # List files that will be uploaded
+    essential_files = []
+    for file_path in current_dir.glob("*.py"):
+        essential_files.append(file_path.name)
+        logger.info(f"   📄 Will upload: {file_path.name}")
+    
+    # Also include config files
+    for file_path in current_dir.rglob("*.json"):
+        logger.info(f"   � Will upload: {file_path.relative_to(current_dir)}")
+    
+    logger.info(f"✅ Source package ready with {len(essential_files)} Python files")
+    
+    try:
+        estimator = PyTorch(
+            entry_point='sagemaker_wrapper.py',  # Direct file in sagemaker_training directory
+            source_dir=str(current_dir),  # Use current sagemaker_training directory
+            role=args.role_arn,
+            framework_version='2.0.0', 
+            py_version='py310',
+            instance_count=1,
+            instance_type=args.instance_type,
+            hyperparameters=hyperparameters,
+            use_spot_instances=args.spot_training,
+            max_wait=43200 if args.spot_training else None,  # 12 hours (must be >= max_run)
+            max_run=36000,  # 10 hours
+            checkpoint_s3_uri=f"{args.s3_bucket}/checkpoints/{args.job_name}",
+            output_path=f"{args.s3_bucket}/output/{args.job_name}",
+            volume_size=args.volume_size,
+            tags=[
+                {'Key': 'Project', 'Value': 'ImageNet-7Step'},
+                {'Key': 'QuickMode', 'Value': str(args.quick_mode)},
+                {'Key': 'LRFinder', 'Value': str(not args.skip_lr_finder)},
+                {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)}
+            ]
+        )
+        logger.info("✅ SageMaker estimator created successfully")
         
-        # Copy only essential files to temporary directory
-        essential_files = [
-            'imagenet_training_pipeline.py',
-            'imagenet_models.py', 
-            'imagenet_dataset.py',
-            'ilsvrc_dataset.py',
-            'logger_setup.py',
-            'utils.py',
-            'image_process.py'
-        ]
-        
-        # Copy essential Python files
-        project_root = Path('..')
-        copied_files = []
-        for file_name in essential_files:
-            src_path = project_root / file_name
-            if src_path.exists():
-                dst_path = Path(temp_source_dir) / file_name
-                shutil.copy2(src_path, dst_path)
-                copied_files.append(file_name)
-                logger.info(f"   📄 Copied: {file_name}")
-        
-        # Copy sagemaker_training directory
-        sagemaker_src = project_root / 'sagemaker_training'
-        sagemaker_dst = Path(temp_source_dir) / 'sagemaker_training'
-        if sagemaker_src.exists():
-            shutil.copytree(sagemaker_src, sagemaker_dst)
-            logger.info(f"   📁 Copied: sagemaker_training/")
-        
-        logger.info(f"✅ Source package ready with {len(copied_files)} essential files")
-        
-        try:
-            estimator = PyTorch(
-                entry_point='sagemaker_training/sagemaker_wrapper.py',
-                source_dir=temp_source_dir,  # Use optimized temporary directory
-                role=args.role_arn,
-                framework_version='2.0.0', 
-                py_version='py310',
-                instance_count=1,
-                instance_type=args.instance_type,
-                hyperparameters=hyperparameters,
-                use_spot_instances=args.spot_training,
-                max_wait=43200 if args.spot_training else None,  # 12 hours (must be >= max_run)
-                max_run=36000,  # 10 hours
-                checkpoint_s3_uri=f"{args.s3_bucket}/checkpoints/{args.job_name}",
-                output_path=f"{args.s3_bucket}/output/{args.job_name}",
-                volume_size=args.volume_size,
-                tags=[
-                    {'Key': 'Project', 'Value': 'ImageNet-7Step'},
-                    {'Key': 'QuickMode', 'Value': str(args.quick_mode)},
-                    {'Key': 'LRFinder', 'Value': str(not args.skip_lr_finder)},
-                    {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)}
-                ]
-            )
-            logger.info("✅ SageMaker estimator created successfully")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to create SageMaker estimator: {e}")
-            raise
+    except Exception as e:
+        logger.error(f"❌ Failed to create SageMaker estimator: {e}")
+        raise
         
         # Launch training job with increased timeout
         try:

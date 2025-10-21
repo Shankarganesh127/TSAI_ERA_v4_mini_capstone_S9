@@ -13,10 +13,6 @@ import threading
 import time
 from pathlib import Path
 
-# Add parent directory for imports
-parent_dir = Path(__file__).parent.parent
-sys.path.append(str(parent_dir))
-
 from model_saver import EpochModelSaver
 from sagemaker_logging import setup_sagemaker_logger
 

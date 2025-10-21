@@ -18,23 +18,22 @@ import argparse
 import shutil
 from pathlib import Path
 
-# Add parent directory to path for imports
-parent_dir = Path(__file__).parent.parent
-sys.path.append(str(parent_dir))
+# All files are now in the same directory - no parent directory needed
+current_dir = Path(__file__).parent
+sys.path.append(str(current_dir))
 
 # Debug: Print current working directory and file locations
 print(f"🔍 Current working directory: {os.getcwd()}")
 print(f"🔍 Wrapper script location: {__file__}")
-print(f"🔍 Parent directory: {parent_dir}")
-print(f"🔍 Parent directory exists: {parent_dir.exists()}")
+print(f"🔍 SageMaker training directory: {current_dir}")
 
 # Ensure we're in the right directory for SageMaker
 if Path("/opt/ml/code").exists():
     os.chdir("/opt/ml/code")
     print(f"🔄 Changed to SageMaker code directory: {os.getcwd()}")
 
-# Check if imagenet_training_pipeline.py exists
-pipeline_script = parent_dir / "imagenet_training_pipeline.py"
+# Check if imagenet_training_pipeline.py exists (in same directory now)
+pipeline_script = current_dir / "imagenet_training_pipeline.py"
 print(f"🔍 Pipeline script path: {pipeline_script}")
 print(f"🔍 Pipeline script exists: {pipeline_script.exists()}")
 
@@ -44,18 +43,10 @@ for f in sorted(Path.cwd().iterdir()):
     if f.is_file() and f.suffix == '.py':
         print(f"    {f.name}")
 
-# List files in parent directory
-if parent_dir.exists():
-    print(f"🔍 Files in parent directory:")
-    for f in sorted(parent_dir.iterdir()):
-        if f.is_file() and f.suffix == '.py':
-            print(f"    {f.name}")
-
-# Try to import from parent directory first, fallback to local
+# Import logger - all files are in same directory now
 try:
     from logger_setup import setup_logger
 except ImportError:
-    # Fallback to local SageMaker logging
     from sagemaker_logging import setup_sagemaker_logger as setup_logger
 
 class ImageNetSageMakerTrainer:

@@ -1,0 +1,13 @@
+# Exclude cache and temp files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Exclude log files and outputs (will be generated during training)
+logs/
+outputs/
+
+# Keep only the essential files - everything else is excluded by default
+# The sagemaker_training directory contains all necessary files
