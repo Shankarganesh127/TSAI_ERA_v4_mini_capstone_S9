@@ -1,13 +1,35 @@
-# Exclude cache and temp files
+# SageMaker Upload Optimization
+# Exclude cache, logs, and optional files for faster uploads
+
+# Python cache and compiled files
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.Python
+*.egg-info/
 
-# Exclude log files and outputs (will be generated during training)
+# Runtime generated files
 logs/
 outputs/
+*.log
 
-# Keep only the essential files - everything else is excluded by default
-# The sagemaker_training directory contains all necessary files
+# Version control
+.git/
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# Optional components (large files - exclude unless needed)
+s3_dataset_converter.py     # 33KB - dataset conversion only
+sagemaker_orchestrator.py   # 36KB - full pipeline orchestration only
+monitor_training.py         # 24KB - advanced monitoring only
+
+# Config examples
+configs/config_examples.json
+
+# System files
+.DS_Store
+Thumbs.db
+*.tmp
