@@ -42,7 +42,14 @@ def main():
     # Setup logging
     logger = setup_logger("sagemaker_launcher")
     
-    parser = argparse.ArgumentParser(description='Launch SageMaker 7-step ImageNet training')
+    # Default S3 paths configuration - modify these for your datasets
+    DEFAULT_CONFIG = {
+        'train_data_path': None,  # Set to "Datasets/imagenet1k/ILSVRC/Data/CLS-LOC/train/" for your setup
+        'val_data_path': None,    # Set to "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/val/" for your setup
+        'bucket': None            # Set to your S3 bucket name
+    }
+    
+    parser = argparse.ArgumentParser(description='Launch SageMaker ImageNet Training')
     
     # Required arguments
     parser.add_argument('--job-name', required=True, help='SageMaker training job name')
