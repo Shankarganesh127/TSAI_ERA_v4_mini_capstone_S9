@@ -244,89 +244,94 @@ def main():
         )
         logger.info("✅ SageMaker estimator created successfully")
         
-    except Exception as e:
-        logger.error(f"❌ Failed to create SageMaker estimator: {e}")
-        raise
-        
         # Launch training job with increased timeout
-        try:
-            logger.info("🚀 Launching SageMaker training job...")
-            logger.info(f"📊 Data inputs: {data_inputs}")
-            logger.info("⏳ Submitting job to AWS SageMaker API...")
-            logger.info("💡 Source code upload may take 5-15 minutes for large projects")
-            
-            import signal
-            import time
-            
-            def timeout_handler(signum, frame):
-                raise TimeoutError("SageMaker job submission timed out")
-            
-            # Increase timeout to 15 minutes for source code upload
-            timeout_seconds = 900  # 15 minutes
-            if hasattr(signal, 'SIGALRM'):  # Unix systems
-                signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(timeout_seconds)
-            
-            start_time = time.time()
-            try:
-                logger.info("📡 Uploading source code and calling SageMaker API...")
-                estimator.fit(
-                    inputs=data_inputs,
-                    job_name=args.job_name,
-                    wait=False  # Don't wait for job completion, just submission
-                )
-                
-                if hasattr(signal, 'SIGALRM'):
-                    signal.alarm(0)  # Cancel timeout
-                    
-                elapsed = time.time() - start_time
-                logger.info(f"✅ Training job submitted successfully in {elapsed:.1f} seconds!")
-                
-            except TimeoutError:
-                logger.error(f"⏰ SageMaker job submission timed out after {timeout_seconds//60} minutes")
-                logger.error("💡 The job may still be submitting in the background")
-                logger.error("🔍 Check AWS Console for job status")
-                raise
+        logger.info("🚀 Launching SageMaker training job...")
+        logger.info(f"📊 Data inputs: {data_inputs}")
+        logger.info("⏳ Submitting job to AWS SageMaker API...")
+        logger.info("💡 Source code upload may take 5-15 minutes for large projects")
         
+        import signal
+        import time
+        
+        def timeout_handler(signum, frame):
+            raise TimeoutError("SageMaker job submission timed out")
+        
+        # Increase timeout to 15 minutes for source code upload
+        timeout_seconds = 900  # 15 minutes
+        if hasattr(signal, 'SIGALRM'):  # Unix systems
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(timeout_seconds)
+        
+        start_time = time.time()
+        try:
+            logger.info("📡 Uploading source code and calling SageMaker API...")
+            estimator.fit(
+                inputs=data_inputs,
+                job_name=args.job_name,
+                wait=False  # Don't wait for job completion, just submission
+            )
             
-            logger.info(f"🎯 Job Name: {args.job_name}")
-            logger.info(f"📊 Instance: {args.instance_type}")
-            logger.info(f"💰 Spot Training: {'Yes' if args.spot_training else 'No'}")
-            logger.info("🔗 Monitor at: https://console.aws.amazon.com/sagemaker/home#/jobs")
-            
-            # Try to get job status
-            try:
-                import boto3
-                logger.info("🔍 Checking job status...")
-                sagemaker_client = boto3.client('sagemaker')
-                response = sagemaker_client.describe_training_job(TrainingJobName=args.job_name)
-                status = response['TrainingJobStatus']
-                logger.info(f"📊 Current job status: {status}")
+            if hasattr(signal, 'SIGALRM'):
+                signal.alarm(0)  # Cancel timeout
                 
-                if status == 'InProgress':
-                    logger.info("🚀 Job is running! Check AWS Console for progress")
-                elif status == 'Starting':
-                    logger.info("⏳ Job is starting up...")
-                elif status == 'Failed':
-                    logger.error("❌ Job failed to start")
-                    failure_reason = response.get('FailureReason', 'Unknown')
-                    logger.error(f"💥 Failure reason: {failure_reason}")
-                
-            except Exception as status_error:
-                logger.warning(f"⚠️ Could not check job status: {status_error}")
-                logger.info("💡 Job may still be starting - check AWS Console")
+            elapsed = time.time() - start_time
+            logger.info(f"✅ Training job submitted successfully in {elapsed:.1f} seconds!")
             
-            logger.info("🎉 SageMaker training job launched successfully!")
-            
-        except Exception as e:
-            logger.error(f"❌ SageMaker job launch failed: {e}")
-            logger.error("Please check your AWS credentials, role permissions, and S3 bucket access")
-            logger.error("💡 Common issues:")
-            logger.error("   - Invalid role ARN or insufficient permissions")
-            logger.error("   - S3 bucket doesn't exist or no access")
-            logger.error("   - Instance type not available in region")
-            logger.error("   - AWS API throttling or service issues")
+        except Exception as fit_error:
+            if hasattr(signal, 'SIGALRM'):
+                signal.alarm(0)  # Cancel timeout
+            logger.error(f"❌ SageMaker fit() call failed: {fit_error}")
+            logger.error(f"❌ Error type: {type(fit_error).__name__}")
+            import traceback
+            logger.error(f"❌ Full error: {traceback.format_exc()}")
             raise
+        except TimeoutError:
+            logger.error(f"⏰ SageMaker job submission timed out after {timeout_seconds//60} minutes")
+            logger.error("💡 The job may still be submitting in the background")
+            logger.error("🔍 Check AWS Console for job status")
+            raise
+        
+        logger.info(f"🎯 Job Name: {args.job_name}")
+        logger.info(f"📊 Instance: {args.instance_type}")
+        logger.info(f"💰 Spot Training: {'Yes' if args.spot_training else 'No'}")
+        logger.info("🔗 Monitor at: https://console.aws.amazon.com/sagemaker/home#/jobs")
+        
+        # Try to get job status
+        try:
+            import boto3
+            logger.info("🔍 Checking job status...")
+            sagemaker_client = boto3.client('sagemaker')
+            response = sagemaker_client.describe_training_job(TrainingJobName=args.job_name)
+            status = response['TrainingJobStatus']
+            logger.info(f"📊 Current job status: {status}")
+            
+            if status == 'InProgress':
+                logger.info("🚀 Job is running! Check AWS Console for progress")
+            elif status == 'Starting':
+                logger.info("⏳ Job is starting up...")
+            elif status == 'Failed':
+                logger.error("❌ Job failed to start")
+                failure_reason = response.get('FailureReason', 'Unknown')
+                logger.error(f"💥 Failure reason: {failure_reason}")
+            
+        except Exception as status_error:
+            logger.warning(f"⚠️ Could not check job status: {status_error}")
+            logger.info("💡 Job may still be starting - check AWS Console")
+        
+        logger.info("🎉 SageMaker training job launched successfully!")
+        
+    except Exception as e:
+        logger.error(f"❌ SageMaker job launch failed: {e}")
+        logger.error(f"❌ Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"❌ Full traceback: {traceback.format_exc()}")
+        logger.error("Please check your AWS credentials, role permissions, and S3 bucket access")
+        logger.error("💡 Common issues:")
+        logger.error("   - Invalid role ARN or insufficient permissions")
+        logger.error("   - S3 bucket doesn't exist or no access")
+        logger.error("   - Instance type not available in region")
+        logger.error("   - AWS API throttling or service issues")
+        raise
 
 if __name__ == "__main__":
     main()
