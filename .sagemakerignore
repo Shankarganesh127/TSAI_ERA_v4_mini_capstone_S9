@@ -1,0 +1,37 @@
+# Exclude large directories and files that aren't needed for training
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+
+# Exclude notebooks and exploration directories
+imagenet_data_exploration/
+dataset_analysis/
+lr_optimization/
+imagenet_dataset_tools/
+
+# Exclude docs and logs
+docs/
+logs/
+*.log
+*.png
+*.jpg
+*.jpeg
+
+# Exclude large files
+uv.lock
+*.ipynb
+
+# Exclude temporary and cache files
+.git/
+.gitignore
+.python-version
+imagenet_pipeline_results/
+tiny_imagenet_training/
+image_process_lib/
+setup/
