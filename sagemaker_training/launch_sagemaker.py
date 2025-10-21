@@ -235,6 +235,7 @@ def main():
             checkpoint_s3_uri=f"{args.s3_bucket}/checkpoints/{args.job_name}",
             output_path=f"{args.s3_bucket}/output/{args.job_name}",
             volume_size=args.volume_size,
+            enable_sagemaker_metrics=True,
             tags=[
                 {'Key': 'Project', 'Value': 'ImageNet-7Step'},
                 {'Key': 'QuickMode', 'Value': str(args.quick_mode)},
