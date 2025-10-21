@@ -315,17 +315,20 @@ class SageMakerPipelineOrchestrator:
                 cmd_args.extend(["--batch-size", str(training_args.get("batch_size"))])
                 
             try:
+                # Calculate dynamic timeout based on instance type and configuration
+                timeout = self._calculate_submission_timeout(training_args.get("instance_type"), training_args.get("use_spot"))
+                
                 # Launch training job in non-blocking mode with better feedback
-                self.logger.info("🚀 Launching SageMaker training job (this may take 5-10 minutes to start)...")
+                self.logger.info(f"🚀 Launching SageMaker training job (timeout: {timeout//60} minutes)...")
                 self.logger.info("💡 You can monitor progress in the AWS SageMaker console")
                 self.logger.info(f"📊 Job name: {job_name}")
-                self.logger.info("⏳ Submitting job to SageMaker (should complete in 30-60 seconds)...")
+                self.logger.info("⏳ Submitting job to SageMaker...")
                 
                 # Debug: Show the command being executed
                 self.logger.info(f"🔧 Command: {' '.join(cmd_args)}")
                 
-                # Launch with extended timeout - job submission should be quick, but spot instances may take longer
-                result = subprocess.run(cmd_args, capture_output=True, text=True, cwd=Path(__file__).parent, timeout=600)  # 10 minute timeout for launch
+                # Launch with calculated timeout
+                result = subprocess.run(cmd_args, capture_output=True, text=True, cwd=Path(__file__).parent, timeout=timeout)
                 success = result.returncode == 0
                 
                 if success:
@@ -340,11 +343,21 @@ class SageMakerPipelineOrchestrator:
                     self.logger.error(f"   STDERR: {result.stderr}")
                     
             except subprocess.TimeoutExpired:
-                self.logger.error("❌ Training job submission timed out after 10 minutes")
+                current_instance = training_args.get('instance_type')
+                alternatives = self._suggest_alternative_instances(current_instance)
+                
+                self.logger.error(f"❌ Training job submission timed out after {timeout//60} minutes")
                 self.logger.error("   This may indicate:")
                 self.logger.error("   - Network connectivity issues")
                 self.logger.error("   - AWS API throttling")
                 self.logger.error("   - Large instance type provisioning delays")
+                self.logger.error("   💡 Suggestions:")
+                self.logger.error(f"   - Try a smaller instance type (current: {current_instance})")
+                for i, alt in enumerate(alternatives[:2], 1):
+                    self.logger.error(f"   - Alternative {i}: {alt}")
+                if training_args.get('use_spot'):
+                    self.logger.error("   - Disable spot instances: remove --spot-training flag")
+                self.logger.error("   - Check AWS service health dashboard")
                 success = False
             except Exception as e:
                 self.logger.error(f"❌ Failed to launch training: {e}")
@@ -402,6 +415,52 @@ class SageMakerPipelineOrchestrator:
         self.logger.info(f"   🚀 Job name: {job_name}")
         
         return training_args
+    
+    def _calculate_submission_timeout(self, instance_type, use_spot):
+        """Calculate dynamic timeout based on instance type and spot usage"""
+        
+        # Get timeout configuration
+        timeout_config = self.config.get("timeouts", {})
+        base_timeout = timeout_config.get("job_submission_timeout_base", 600)  # 10 minutes default
+        large_multiplier = timeout_config.get("large_instance_timeout_multiplier", 2.5)
+        spot_multiplier = timeout_config.get("spot_instance_timeout_multiplier", 1.5)
+        max_timeout = timeout_config.get("max_timeout", 1800)  # 30 minutes max
+        large_instance_types = timeout_config.get("large_instance_types", [])
+        
+        # Start with base timeout
+        timeout = base_timeout
+        
+        # Apply multiplier for large instances
+        if instance_type in large_instance_types:
+            timeout = int(timeout * large_multiplier)
+            self.logger.info(f"🔧 Using extended timeout for large instance type: {instance_type}")
+        
+        # Apply multiplier for spot instances
+        if use_spot:
+            timeout = int(timeout * spot_multiplier)
+            self.logger.info("💰 Using extended timeout for spot instance provisioning")
+        
+        # Cap at maximum timeout
+        timeout = min(timeout, max_timeout)
+        
+        self.logger.info(f"⏱️ Job submission timeout: {timeout//60} minutes ({timeout} seconds)")
+        
+        return timeout
+    
+    def _suggest_alternative_instances(self, current_instance):
+        """Suggest faster-provisioning alternative instance types"""
+        
+        # Instance alternatives mapping (faster provisioning alternatives)
+        alternatives = {
+            "ml.g5.12xlarge": ["ml.g5.4xlarge", "ml.g5.2xlarge", "ml.g4dn.4xlarge"],
+            "ml.g5.24xlarge": ["ml.g5.12xlarge", "ml.g5.4xlarge", "ml.g4dn.8xlarge"], 
+            "ml.g5.48xlarge": ["ml.g5.24xlarge", "ml.g5.12xlarge", "ml.g4dn.12xlarge"],
+            "ml.p4d.24xlarge": ["ml.g5.12xlarge", "ml.g5.4xlarge", "ml.g4dn.8xlarge"],
+            "ml.p4de.24xlarge": ["ml.p4d.24xlarge", "ml.g5.12xlarge", "ml.g4dn.8xlarge"],
+            "ml.trn1.32xlarge": ["ml.g5.12xlarge", "ml.g5.4xlarge", "ml.g4dn.8xlarge"]
+        }
+        
+        return alternatives.get(current_instance, ["ml.g5.2xlarge", "ml.g5.4xlarge"])
     
     def _monitor_training_pipeline(self, job_name):
         """Step 4: Monitor training with detailed metrics and logging"""

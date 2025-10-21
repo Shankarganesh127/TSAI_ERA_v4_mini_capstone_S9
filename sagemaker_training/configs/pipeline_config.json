@@ -92,5 +92,19 @@
     "enable_early_stopping": true,
     "early_stopping_patience": 10,
     "managed_warm_pools": false
+  },
+  "timeouts": {
+    "job_submission_timeout_base": 600,
+    "large_instance_timeout_multiplier": 2.5,
+    "spot_instance_timeout_multiplier": 1.5,
+    "max_timeout": 1800,
+    "large_instance_types": [
+      "ml.g5.12xlarge",
+      "ml.g5.24xlarge", 
+      "ml.g5.48xlarge",
+      "ml.p4d.24xlarge",
+      "ml.p4de.24xlarge",
+      "ml.trn1.32xlarge"
+    ]
   }
 }
