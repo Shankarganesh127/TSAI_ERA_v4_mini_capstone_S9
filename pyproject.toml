@@ -1,4 +1,4 @@
-[project]
+ls[project]
 name = "tsai-erav4-mini-capstone-s9"
 version = "0.1.0"
 description = "ImageNet-1K training with ResNet50 and TSAI ERAv4 mini capstone"

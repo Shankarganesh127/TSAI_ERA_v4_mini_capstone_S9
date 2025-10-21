@@ -1,0 +1,28 @@
+2025-10-21 01:28:11 | __main__ | INFO | [INIT] Logger '__main__' initialized
+2025-10-21 01:28:11 | __main__ | INFO | [FILE] Detailed logs: /home/sagemaker-user/TSAI_ERA_v4_mini_capstone_S9/sagemaker_training/logs/sagemaker___main___20251021_012811.log
+2025-10-21 01:28:11 | __main__ | INFO | 🔄 Starting S3 ILSVRC to SageMaker dataset conversion
+2025-10-21 01:28:11 | __main__ | INFO | 🪣 S3 bucket: tsai-era-v4-mini-capstone
+2025-10-21 01:28:11 | __main__ | INFO | 📂 Source prefix: Datasets/imagenet1k/ILSVRC
+2025-10-21 01:28:11 | __main__ | INFO | 🎯 Target prefix: Datasets/imagenet1k/ILSVRC/imagenet-sagemaker
+2025-10-21 01:28:11 | __main__ | INFO | 🔄 Converting S3 ILSVRC dataset to SageMaker format
+2025-10-21 01:28:11 | __main__ | INFO | 📂 Source: s3://tsai-era-v4-mini-capstone/Datasets/imagenet1k/ILSVRC/
+2025-10-21 01:28:11 | __main__ | INFO | 🎯 Target: s3://tsai-era-v4-mini-capstone/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/
+2025-10-21 01:28:11 | __main__ | INFO | 📁 Step 1: Skipping training data copy (already in proper class structure)
+2025-10-21 01:28:11 | __main__ | INFO |    Training data will be used directly from source location
+2025-10-21 01:28:11 | __main__ | INFO | 📁 Step 2: Checking if validation data already exists...
+2025-10-21 01:28:11 | __main__ | INFO | ✅ Validation folder already exists with sufficient data - skipping reorganization
+2025-10-21 01:28:11 | __main__ | INFO |    Found existing validation data at: s3://tsai-era-v4-mini-capstone/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/val/
+2025-10-21 01:28:11 | __main__ | INFO | 📁 Step 3: Skipping test data processing (not needed for validation-only conversion)
+2025-10-21 01:28:11 | __main__ | INFO | 📁 Step 3: Creating SageMaker metadata...
+2025-10-21 01:28:12 | __main__ | INFO | 📋 Metadata created: s3://tsai-era-v4-mini-capstone/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/metadata/dataset_metadata.json
+2025-10-21 01:28:12 | __main__ | INFO | 📋 Manifest created: s3://tsai-era-v4-mini-capstone/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/manifest.json
+2025-10-21 01:28:12 | __main__ | INFO | 🎉 S3 ILSVRC to SageMaker conversion completed!
+2025-10-21 01:28:12 | __main__ | INFO | 🚀 Ready for SageMaker training at: s3://tsai-era-v4-mini-capstone/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/
+2025-10-21 01:28:12 | __main__ | INFO | 📋 Training data will be used from original location (already organized)
+2025-10-21 01:28:12 | __main__ | INFO | ✅ Validation data is organized by class for proper evaluation
+2025-10-21 01:28:12 | __main__ | INFO | ✅ Conversion completed successfully!
+2025-10-21 01:28:12 | __main__ | INFO | 🎯 Your SageMaker training data is ready at:
+2025-10-21 01:28:12 | __main__ | INFO |    s3://tsai-era-v4-mini-capstone/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/
+2025-10-21 01:28:12 | __main__ | INFO | 
+🚀 Next steps:
+2025-10-21 01:28:12 | __main__ | INFO |    python launch_sagemaker.py --train-data-s3 s3://tsai-era-v4-mini-capstone/Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/

@@ -96,7 +96,7 @@ class S3DatasetConverter:
             test_success = True  # Mark as successful since we're intentionally skipping
             
             # Step 4: Create metadata and manifest (pointing to original training data)
-            self.logger.info("📁 Step 4: Creating SageMaker metadata...")
+            self.logger.info("📁 Step 3: Creating SageMaker metadata...")
             metadata_success = self._create_sagemaker_metadata(source_prefix, target_prefix)
             
             if metadata_success:
