@@ -61,6 +61,8 @@ class ImageNetSageMakerTrainer:
         # Core training parameters - use SageMaker environment variables as defaults
         parser.add_argument('--data_dir', type=str, 
                            default=os.environ.get('SM_CHANNEL_IMAGENET', '/opt/ml/input/data/imagenet'))
+        parser.add_argument('--val_dir', type=str, 
+                           default=os.environ.get('SM_CHANNEL_VALIDATION', None))
         parser.add_argument('--output_dir', type=str, 
                            default=os.environ.get('SM_MODEL_DIR', '/opt/ml/model'))
         parser.add_argument('--epochs', type=int, default=30)
@@ -91,6 +93,10 @@ class ImageNetSageMakerTrainer:
         
         # Log the resolved paths for debugging
         self.logger.info(f"📁 Data directory: {args.data_dir}")
+        if args.val_dir:
+            self.logger.info(f"📁 Validation directory: {args.val_dir}")
+        else:
+            self.logger.info(f"📁 Validation: Using subdirectory of data_dir")
         self.logger.info(f"📁 Output directory: {args.output_dir}")
         
         return args
@@ -106,19 +112,42 @@ class ImageNetSageMakerTrainer:
         # 1) SageMaker code directory (where source code is extracted)
         if sagemaker_code_path.exists():
             pipeline_script = sagemaker_code_path
-        # 2) Project parent directory (for local development)
+            self.logger.info(f"📍 Using SageMaker code path: {pipeline_script}")
+        # 2) Try parent directory calculated from wrapper location  
         elif (parent_dir / "imagenet_training_pipeline.py").exists():
             pipeline_script = parent_dir / "imagenet_training_pipeline.py"
-        # 3) Current working directory
+            self.logger.info(f"📍 Using parent directory path: {pipeline_script}")
+        # 3) Try relative to current working directory
         elif Path("imagenet_training_pipeline.py").exists():
-            pipeline_script = Path("imagenet_training_pipeline.py")
-        else:
+            pipeline_script = Path("imagenet_training_pipeline.py").resolve()
+            self.logger.info(f"📍 Using current directory path: {pipeline_script}")
+        # 4) Try looking in /opt/ml/code explicitly (fallback)
+        elif Path("/opt/ml/code").exists():
+            code_dir_script = Path("/opt/ml/code/imagenet_training_pipeline.py")
+            if code_dir_script.exists():
+                pipeline_script = code_dir_script
+                self.logger.info(f"📍 Using explicit /opt/ml/code path: {pipeline_script}")
+        
+        if pipeline_script is None:
+            # Debug info for troubleshooting
+            self.logger.error("❌ Pipeline script not found. Debug info:")
+            self.logger.error(f"   Current working directory: {Path.cwd()}")
+            self.logger.error(f"   Wrapper location: {__file__}")
+            self.logger.error(f"   Calculated parent_dir: {parent_dir}")
+            
+            if Path("/opt/ml/code").exists():
+                self.logger.error("   Files in /opt/ml/code/:")
+                for f in Path("/opt/ml/code").iterdir():
+                    if f.is_file() and f.suffix == '.py':
+                        self.logger.error(f"     {f.name}")
+            
             raise FileNotFoundError(f"❌ Could not find imagenet_training_pipeline.py. Tried:\n"
                                   f"   - {sagemaker_code_path}\n"
                                   f"   - {parent_dir / 'imagenet_training_pipeline.py'}\n"
-                                  f"   - {Path('imagenet_training_pipeline.py')}")
+                                  f"   - {Path('imagenet_training_pipeline.py')}\n"
+                                  f"   - {Path('/opt/ml/code/imagenet_training_pipeline.py')}")
 
-        print(f"✅ Using pipeline script: {pipeline_script}")
+        self.logger.info(f"✅ Pipeline script resolved: {pipeline_script}")
 
         # Save the pipeline script path so run_training can set cwd correctly
         self.pipeline_script_path = pipeline_script
@@ -130,6 +159,11 @@ class ImageNetSageMakerTrainer:
             "--output", str(args.output_dir), 
             "--epochs", str(args.epochs)
         ]
+        
+        # Add validation directory if separate channel is provided
+        if args.val_dir:
+            cmd.extend(["--val-data", str(args.val_dir)])
+            self.logger.info(f"📁 Using separate validation channel: {args.val_dir}")
         
         # Model saving configuration - integrate with model_saver.py
         cmd.extend(["--save-model-every-epoch", "true"])

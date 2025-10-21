@@ -51,6 +51,7 @@ def main():
     
     # Data configuration
     parser.add_argument('--train-data-s3', type=str, help='S3 path to training data (overrides default)')
+    parser.add_argument('--val-data-s3', type=str, help='S3 path to validation data (separate channel)')
     parser.add_argument('--data-prefix', type=str, default='imagenet-data', 
                        help='Data prefix in S3 bucket (default: imagenet-data)')
     parser.add_argument('--distribution-mode', choices=['FastFile', 'File', 'Pipe'], default='FastFile',
@@ -112,12 +113,40 @@ def main():
         compression=None                 # No compression for images
     )
     
-    data_inputs = {'imagenet': train_input}
-    logger.info(f"✅ S3 data inputs configured:")
-    logger.info(f"   - Source: {data_s3_path}")
-    logger.info(f"   - Distribution: FullyReplicated") 
-    logger.info(f"   - Input Mode: {args.distribution_mode}")
-    logger.info(f"   - Data Type: S3Prefix")
+    # Configure data inputs - support both single and multi-channel setups
+    data_inputs = {'imagenet': train_input}  # Default: single channel with train/val subdirectories
+    
+    # Add separate validation channel if specified
+    if args.val_data_s3:
+        # Ensure proper S3 URL format for validation data
+        val_s3_path = args.val_data_s3
+        if not val_s3_path.startswith('s3://'):
+            if val_s3_path.startswith('/'):
+                val_s3_path = val_s3_path[1:]  # Remove leading slash
+            val_s3_path = f"s3://{args.s3_bucket.replace('s3://', '')}/{val_s3_path}"
+        
+        val_input = TrainingInput(
+            s3_data=val_s3_path,
+            distribution='FullyReplicated',
+            s3_data_type='S3Prefix',
+            input_mode=args.distribution_mode,
+            compression=None
+        )
+        data_inputs['validation'] = val_input
+        
+        logger.info(f"✅ S3 data inputs configured:")
+        logger.info(f"   - imagenet (train): {data_s3_path}")
+        logger.info(f"   - validation: {val_s3_path}")
+        logger.info(f"   - Distribution: FullyReplicated") 
+        logger.info(f"   - Input Mode: {args.distribution_mode}")
+        logger.info(f"   - Data Type: S3Prefix")
+    else:
+        logger.info(f"✅ S3 data inputs configured:")
+        logger.info(f"   - imagenet: {data_s3_path}")
+        logger.info(f"   - Distribution: FullyReplicated") 
+        logger.info(f"   - Input Mode: {args.distribution_mode}")
+        logger.info(f"   - Data Type: S3Prefix")
+        logger.info(f"   - Note: Using single channel (train/val as subdirectories)")
     
     # Prepare hyperparameters for 7-step training
     hyperparameters = {
