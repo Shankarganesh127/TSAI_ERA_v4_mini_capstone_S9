@@ -1,3 +1,0 @@
-2025-10-20 15:46:41 | test_integration | INFO |    job_name: test-logging-job
-2025-10-20 15:46:41 | test_integration | INFO |    instance_type: ml.p3.2xlarge
-2025-10-20 15:46:41 | test_integration | INFO |    epochs: 30

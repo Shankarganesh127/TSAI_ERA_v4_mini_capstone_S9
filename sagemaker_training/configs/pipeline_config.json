@@ -5,20 +5,23 @@
     "default_role_arn": "arn:aws:iam::872109682518:role/service-role/AmazonSageMaker-ExecutionRole-20251009T010774"
   },
   "dataset": {
-    "source_bucket": null,
-    "source_prefix": "ILSVRC",
+    "source_bucket": "s3://tsai-era-v4-mini-capstone/",
+    "source_prefix": "Datasets/imagenet1k/ILSVRC",
     "target_prefix": "imagenet-sagemaker",
     "validation_required": true,
     "convert_test_data": true
   },
   "training": {
     "instance_type": "ml.g5.12xlarge",
+<<<<<<< Updated upstream
     "instance_count": 1, 
+=======
+>>>>>>> Stashed changes
     "use_spot": true,
     "max_runtime": 86400,
     "checkpoint_interval": 300,
     "enable_7_stage_pipeline": true,
-    "default_epochs": 90,
+    "default_epochs": 2,
     "save_model_every_epoch": true
   },
   "7_stage_pipeline": {
@@ -44,7 +47,7 @@
       "enabled": true,
       "auto_detect": true,
       "manual_batch_size": null,
-      "test_batch_sizes": [32, 64, 128, 256]
+      "test_batch_sizes": [32, 64, 128, 256, 512, 1024]
     },
     "stage_5_weight_decay": {
       "enabled": true,
