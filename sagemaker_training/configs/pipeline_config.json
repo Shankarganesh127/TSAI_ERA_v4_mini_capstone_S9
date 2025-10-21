@@ -13,10 +13,7 @@
   },
   "training": {
     "instance_type": "ml.g5.12xlarge",
-<<<<<<< Updated upstream
     "instance_count": 1, 
-=======
->>>>>>> Stashed changes
     "use_spot": true,
     "max_runtime": 86400,
     "checkpoint_interval": 300,
