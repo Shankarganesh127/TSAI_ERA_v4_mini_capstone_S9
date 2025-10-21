@@ -106,6 +106,10 @@ class ImageNetSageMakerTrainer:
         # SageMaker extracts source code to /opt/ml/code/
         sagemaker_code_path = Path("/opt/ml/code/imagenet_training_pipeline.py")
         
+        # Calculate parent directory from wrapper location
+        wrapper_path = Path(__file__).resolve()
+        parent_dir = wrapper_path.parent.parent  # Go up from sagemaker_training/ to project root
+        
         # Find the pipeline script with SageMaker-aware path resolution
         pipeline_script = None
 
