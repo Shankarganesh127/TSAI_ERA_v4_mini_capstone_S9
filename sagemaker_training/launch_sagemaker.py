@@ -164,8 +164,8 @@ def main():
     logger.info("🔧 Creating SageMaker PyTorch estimator...")
     try:
         estimator = PyTorch(
-            entry_point='sagemaker_wrapper.py',
-            source_dir='.',
+            entry_point='sagemaker_training/sagemaker_wrapper.py',
+            source_dir='..',
             role=args.role_arn,
             framework_version='2.0.0', 
             py_version='py310',

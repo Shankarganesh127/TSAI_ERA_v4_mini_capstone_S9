@@ -647,6 +647,10 @@ class SageMakerPipelineOrchestrator:
             
             # Start monitoring - adjust method call based on actual SageMakerMonitor class
             self.logger.info(f"📊 Starting monitoring for job: {job_name}")
+            
+            # Set the current job for the monitor
+            monitor.set_current_job(job_name)
+            
             success = True  # Placeholder - actual implementation would call monitor methods
             # success = monitor.monitor_job(job_name, monitor_config)  # Uncomment when method is ready
             
@@ -676,25 +680,44 @@ class SageMakerPipelineOrchestrator:
             reports_dir.mkdir(parents=True, exist_ok=True)
             
             # Generate training summary
-            summary = monitor.generate_training_summary()
-            
-            with open(reports_dir / "training_summary.json", 'w') as f:
-                json.dump(summary, f, indent=2, default=str)
+            try:
+                self.logger.info("📊 Generating training summary...")
+                summary = monitor.generate_training_summary()
+                
+                with open(reports_dir / "training_summary.json", 'w') as f:
+                    json.dump(summary, f, indent=2, default=str)
+                self.logger.info("✅ Training summary saved")
+                
+            except Exception as e:
+                self.logger.warning(f"⚠️  Could not generate training summary: {e}")
             
             # Generate cost analysis
-            cost_analysis = monitor.generate_cost_analysis()
-            
-            with open(reports_dir / "cost_analysis.json", 'w') as f:
-                json.dump(cost_analysis, f, indent=2, default=str)
+            try:
+                self.logger.info("💰 Generating cost analysis...")
+                cost_analysis = monitor.generate_cost_analysis()
+                
+                with open(reports_dir / "cost_analysis.json", 'w') as f:
+                    json.dump(cost_analysis, f, indent=2, default=str)
+                self.logger.info("✅ Cost analysis saved")
+                
+            except Exception as e:
+                self.logger.warning(f"⚠️  Could not generate cost analysis: {e}")
             
             # Generate performance graphs
             if self.config["monitoring"]["create_graphs"]:
-                monitor.generate_performance_graphs(reports_dir)
+                try:
+                    self.logger.info("📊 Generating performance graphs...")
+                    monitor.generate_performance_graphs(reports_dir)
+                    self.logger.info("✅ Performance graphs saved")
+                    
+                except Exception as e:
+                    self.logger.warning(f"⚠️  Could not generate performance graphs: {e}")
             
             self.logger.info(f"✅ Reports generated in: {reports_dir}")
             
         except Exception as e:
-            self.logger.warning(f"Failed to generate final reports: {e}")
+            self.logger.error(f"❌ Final report generation failed: {e}")
+            # Don't raise the exception - this is non-critical
 
 
 def main():

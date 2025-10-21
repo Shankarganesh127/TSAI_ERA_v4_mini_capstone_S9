@@ -22,6 +22,24 @@ from pathlib import Path
 parent_dir = Path(__file__).parent.parent
 sys.path.append(str(parent_dir))
 
+# Debug: Print current working directory and file locations
+print(f"🔍 Current working directory: {os.getcwd()}")
+print(f"🔍 Wrapper script location: {__file__}")
+print(f"🔍 Parent directory: {parent_dir}")
+print(f"🔍 Parent directory exists: {parent_dir.exists()}")
+
+# Check if imagenet_training_pipeline.py exists
+pipeline_script = parent_dir / "imagenet_training_pipeline.py"
+print(f"🔍 Pipeline script path: {pipeline_script}")
+print(f"🔍 Pipeline script exists: {pipeline_script.exists()}")
+
+# List files in parent directory
+if parent_dir.exists():
+    print(f"🔍 Files in parent directory:")
+    for f in sorted(parent_dir.iterdir()):
+        if f.is_file() and f.suffix == '.py':
+            print(f"    {f.name}")
+
 # Try to import from parent directory first, fallback to local
 try:
     from logger_setup import setup_logger
@@ -40,9 +58,11 @@ class ImageNetSageMakerTrainer:
         """Parse SageMaker hyperparameters"""
         parser = argparse.ArgumentParser()
         
-        # Core training parameters
-        parser.add_argument('--data_dir', type=str, default='/opt/ml/input/data/imagenet')
-        parser.add_argument('--output_dir', type=str, default='/opt/ml/model')
+        # Core training parameters - use SageMaker environment variables as defaults
+        parser.add_argument('--data_dir', type=str, 
+                           default=os.environ.get('SM_CHANNEL_IMAGENET', '/opt/ml/input/data/imagenet'))
+        parser.add_argument('--output_dir', type=str, 
+                           default=os.environ.get('SM_MODEL_DIR', '/opt/ml/model'))
         parser.add_argument('--epochs', type=int, default=30)
         parser.add_argument('--batch_size', type=int, help='Override auto-detected batch size')
         
@@ -69,13 +89,43 @@ class ImageNetSageMakerTrainer:
         args.quick_mode = args.quick_mode.lower() == 'true'
         args.mixed_precision = args.mixed_precision.lower() == 'true'
         
+        # Log the resolved paths for debugging
+        self.logger.info(f"📁 Data directory: {args.data_dir}")
+        self.logger.info(f"📁 Output directory: {args.output_dir}")
+        
         return args
     
     def build_pipeline_command(self, args):
         """Build command for 7-step pipeline execution with model saving"""
+        # SageMaker extracts source code to /opt/ml/code/
+        sagemaker_code_path = Path("/opt/ml/code/imagenet_training_pipeline.py")
+        
+        # Find the pipeline script with SageMaker-aware path resolution
+        pipeline_script = None
+
+        # 1) SageMaker code directory (where source code is extracted)
+        if sagemaker_code_path.exists():
+            pipeline_script = sagemaker_code_path
+        # 2) Project parent directory (for local development)
+        elif (parent_dir / "imagenet_training_pipeline.py").exists():
+            pipeline_script = parent_dir / "imagenet_training_pipeline.py"
+        # 3) Current working directory
+        elif Path("imagenet_training_pipeline.py").exists():
+            pipeline_script = Path("imagenet_training_pipeline.py")
+        else:
+            raise FileNotFoundError(f"❌ Could not find imagenet_training_pipeline.py. Tried:\n"
+                                  f"   - {sagemaker_code_path}\n"
+                                  f"   - {parent_dir / 'imagenet_training_pipeline.py'}\n"
+                                  f"   - {Path('imagenet_training_pipeline.py')}")
+
+        print(f"✅ Using pipeline script: {pipeline_script}")
+
+        # Save the pipeline script path so run_training can set cwd correctly
+        self.pipeline_script_path = pipeline_script
+
         cmd = [
             sys.executable,
-            os.path.join(parent_dir, "imagenet_training_pipeline.py"),
+            str(pipeline_script),
             "--data", str(args.data_dir),
             "--output", str(args.output_dir), 
             "--epochs", str(args.epochs)
@@ -224,12 +274,22 @@ class ImageNetSageMakerTrainer:
         self.logger.info(f"🎯 Executing: {' '.join(cmd)}")
         
         try:
+            # Run in pipeline script directory (handles SageMaker code layout)
+            run_cwd = getattr(self, 'pipeline_script_path', None)
+            if run_cwd:
+                run_cwd = run_cwd.parent
+            else:
+                # Default to /opt/ml/code if on SageMaker, otherwise parent_dir
+                run_cwd = Path("/opt/ml/code") if Path("/opt/ml/code").exists() else parent_dir
+
+            self.logger.info(f"🏃 Running from directory: {run_cwd}")
+
             result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=True, 
+                cmd,
+                capture_output=True,
+                text=True,
                 check=True,
-                cwd=parent_dir,
+                cwd=str(run_cwd),
                 timeout=36000  # 10 hours
             )
             
