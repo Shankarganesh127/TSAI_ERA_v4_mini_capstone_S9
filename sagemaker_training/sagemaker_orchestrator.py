@@ -357,36 +357,16 @@ class SageMakerPipelineOrchestrator:
                 start_time = time.time()
                 
                 # Check if real-time output is enabled
-                use_realtime = self.config.get("debug", {}).get("enable_realtime_output", False)
+                # Always use real-time output for SageMaker job submission to provide better debugging
+                # This is especially important for long-running operations like spot instance provisioning
+                use_realtime = True  # Force real-time output for training submissions
                 
                 try:
-                    if use_realtime:
-                        self.logger.info("🔄 Using real-time output mode for debugging")
-                        result = self._run_subprocess_with_realtime_output(cmd_args, timeout)
-                    else:
-                        result = subprocess.run(cmd_args, capture_output=True, text=True, cwd=Path(__file__).parent, timeout=timeout)
+                    self.logger.info("🔄 Using real-time output mode for SageMaker job submission")
+                    result = self._run_subprocess_with_realtime_output(cmd_args, timeout)
                     
                     elapsed_time = time.time() - start_time
                     success = result.returncode == 0
-                    
-                    # Always log the execution details (unless already logged in real-time mode)
-                    if not use_realtime:
-                        self.logger.info(f"⏱️ Subprocess completed in {elapsed_time:.1f} seconds")
-                        self.logger.info(f"🔄 Return code: {result.returncode}")
-                        
-                        if result.stdout:
-                            self.logger.info("📝 STDOUT:")
-                            for line in result.stdout.strip().split('\n'):
-                                if line.strip():  # Skip empty lines
-                                    self.logger.info(f"   {line}")
-                        
-                        if result.stderr:
-                            self.logger.warning("⚠️ STDERR:")
-                            for line in result.stderr.strip().split('\n'):
-                                if line.strip():  # Skip empty lines
-                                    self.logger.warning(f"   {line}")
-                    else:
-                        self.logger.info(f"⏱️ Process completed in {elapsed_time:.1f} seconds")
                     
                     if success:
                         self.logger.info("✅ Training job submitted successfully to SageMaker!")
@@ -402,17 +382,28 @@ class SageMakerPipelineOrchestrator:
                     self.logger.error(f"⏰ Subprocess timed out after {elapsed_time:.1f} seconds (limit: {timeout})")
                     
                     # Try to get partial output if available
-                    if hasattr(timeout_error, 'stdout') and timeout_error.stdout:
-                        self.logger.info("📝 Partial STDOUT before timeout:")
-                        for line in timeout_error.stdout.strip().split('\n'):
-                            if line.strip():
-                                self.logger.info(f"   {line}")
-                    
-                    if hasattr(timeout_error, 'stderr') and timeout_error.stderr:
-                        self.logger.warning("⚠️ Partial STDERR before timeout:")
-                        for line in timeout_error.stderr.strip().split('\n'):
-                            if line.strip():
-                                self.logger.warning(f"   {line}")
+                    try:
+                        if hasattr(timeout_error, 'stdout') and timeout_error.stdout:
+                            self.logger.info("📝 Partial STDOUT before timeout:")
+                            # Handle both bytes and string output
+                            stdout_text = timeout_error.stdout
+                            if isinstance(stdout_text, bytes):
+                                stdout_text = stdout_text.decode('utf-8', errors='replace')
+                            for line in stdout_text.strip().split('\n'):
+                                if line.strip():
+                                    self.logger.info(f"   {line}")
+                        
+                        if hasattr(timeout_error, 'stderr') and timeout_error.stderr:
+                            self.logger.warning("⚠️ Partial STDERR before timeout:")
+                            # Handle both bytes and string output
+                            stderr_text = timeout_error.stderr
+                            if isinstance(stderr_text, bytes):
+                                stderr_text = stderr_text.decode('utf-8', errors='replace')
+                            for line in stderr_text.strip().split('\n'):
+                                if line.strip():
+                                    self.logger.warning(f"   {line}")
+                    except Exception as parse_error:
+                        self.logger.warning(f"⚠️ Could not parse timeout error output: {parse_error}")
                     
                     raise  # Re-raise to be caught by the outer except block
                     
@@ -493,13 +484,15 @@ class SageMakerPipelineOrchestrator:
     def _calculate_submission_timeout(self, instance_type, use_spot):
         """Calculate dynamic timeout based on instance type and spot usage"""
         
-        # Get timeout configuration
+        # Get timeout configuration  
         timeout_config = self.config.get("timeouts", {})
-        base_timeout = timeout_config.get("job_submission_timeout_base", 600)  # 10 minutes default
+        base_timeout = timeout_config.get("job_submission_timeout_base", 900)  # 15 minutes default (increased from 10)
         large_multiplier = timeout_config.get("large_instance_timeout_multiplier", 2.5)
-        spot_multiplier = timeout_config.get("spot_instance_timeout_multiplier", 1.5)
-        max_timeout = timeout_config.get("max_timeout", 1800)  # 30 minutes max
-        large_instance_types = timeout_config.get("large_instance_types", [])
+        spot_multiplier = timeout_config.get("spot_instance_timeout_multiplier", 2.0)  # Increased for better spot provisioning
+        max_timeout = timeout_config.get("max_timeout", 3600)  # 60 minutes max (increased from 30)
+        large_instance_types = timeout_config.get("large_instance_types", [
+            "ml.p3.8xlarge", "ml.p3.16xlarge", "ml.p4d.24xlarge", "ml.g5.12xlarge", "ml.g5.24xlarge"
+        ])
         
         # Start with base timeout
         timeout = base_timeout
@@ -548,6 +541,8 @@ class SageMakerPipelineOrchestrator:
         self.logger.info(f"🔧 Executing: {' '.join(cmd_args)}")
         self.logger.info(f"📂 Working directory: {cwd}")
         self.logger.info(f"⏰ Timeout: {timeout} seconds ({timeout//60} minutes)")
+        self.logger.info("🚀 Starting SageMaker job submission process...")
+        self.logger.info("💡 This may take several minutes for spot instance provisioning")
         
         start_time = time.time()
         
