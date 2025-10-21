@@ -28,10 +28,21 @@ print(f"🔍 Wrapper script location: {__file__}")
 print(f"🔍 Parent directory: {parent_dir}")
 print(f"🔍 Parent directory exists: {parent_dir.exists()}")
 
+# Ensure we're in the right directory for SageMaker
+if Path("/opt/ml/code").exists():
+    os.chdir("/opt/ml/code")
+    print(f"🔄 Changed to SageMaker code directory: {os.getcwd()}")
+
 # Check if imagenet_training_pipeline.py exists
 pipeline_script = parent_dir / "imagenet_training_pipeline.py"
 print(f"🔍 Pipeline script path: {pipeline_script}")
 print(f"🔍 Pipeline script exists: {pipeline_script.exists()}")
+
+# List files in current directory
+print(f"🔍 Files in current directory:")
+for f in sorted(Path.cwd().iterdir()):
+    if f.is_file() and f.suffix == '.py':
+        print(f"    {f.name}")
 
 # List files in parent directory
 if parent_dir.exists():
@@ -51,8 +62,20 @@ class ImageNetSageMakerTrainer:
     """Unified SageMaker wrapper for 7-step ImageNet training pipeline"""
     
     def __init__(self):
+        # Ensure we're in the correct directory for SageMaker immediately
+        if Path("/opt/ml/code").exists():
+            os.chdir("/opt/ml/code")
+            print(f"🔄 INIT: Changed to SageMaker code directory: {os.getcwd()}")
+        
         self.logger = setup_logger("sagemaker_imagenet_trainer")
         self.config = {}
+        
+        # Double-check our working directory
+        self.logger.info(f"🏠 SageMaker Wrapper initialized from: {os.getcwd()}")
+        if Path("imagenet_training_pipeline.py").exists():
+            self.logger.info("✅ Found imagenet_training_pipeline.py in current directory")
+        else:
+            self.logger.error("❌ imagenet_training_pipeline.py NOT found in current directory!")
         
     def parse_hyperparameters(self):
         """Parse SageMaker hyperparameters"""
@@ -103,53 +126,40 @@ class ImageNetSageMakerTrainer:
     
     def build_pipeline_command(self, args):
         """Build command for 7-step pipeline execution with model saving"""
-        # In SageMaker, we are running FROM /opt/ml/code/ directory
-        # So the script is in the current working directory
-        pipeline_script = None
+        # In SageMaker, all source code is uploaded to /opt/ml/code/
+        # We always use relative path since we ensure we run from /opt/ml/code/
         
-        # Check current working directory first (most likely location in SageMaker)
+        self.logger.info("🔍 Building pipeline command...")
+        self.logger.info(f"   Current working directory: {Path.cwd()}")
+        self.logger.info(f"   Looking for imagenet_training_pipeline.py")
+        
+        # Verify the script exists (for debugging)
         if Path("imagenet_training_pipeline.py").exists():
-            pipeline_script = Path("imagenet_training_pipeline.py").resolve()
-            self.logger.info(f"📍 Found pipeline script in current directory: {pipeline_script}")
-        # Fallback: explicit SageMaker code path
+            self.logger.info("   ✅ Found imagenet_training_pipeline.py in current directory")
         elif Path("/opt/ml/code/imagenet_training_pipeline.py").exists():
-            pipeline_script = Path("/opt/ml/code/imagenet_training_pipeline.py")
-            self.logger.info(f"📍 Found pipeline script in SageMaker code directory: {pipeline_script}")
-        # Local development fallback
+            self.logger.info("   ✅ Found imagenet_training_pipeline.py in /opt/ml/code/")
         else:
-            # Calculate parent directory from wrapper location
-            wrapper_path = Path(__file__).resolve()
-            parent_dir = wrapper_path.parent.parent  # Go up from sagemaker_training/ to project root
-            
-            if (parent_dir / "imagenet_training_pipeline.py").exists():
-                pipeline_script = parent_dir / "imagenet_training_pipeline.py"
-                self.logger.info(f"📍 Found pipeline script in parent directory: {pipeline_script}")
-            else:
-                self.logger.info(f"📍 Using relative path for pipeline script")
-        
-        if pipeline_script is None:
-            # Debug info for troubleshooting
-            self.logger.error("❌ Pipeline script not found. Debug info:")
-            self.logger.error(f"   Current working directory: {Path.cwd()}")
-            self.logger.error(f"   Wrapper location: {__file__}")
-            
+            self.logger.error("   ❌ imagenet_training_pipeline.py not found!")
+            # Debug: list all Python files
             if Path("/opt/ml/code").exists():
                 self.logger.error("   Files in /opt/ml/code/:")
                 for f in Path("/opt/ml/code").iterdir():
                     if f.is_file() and f.suffix == '.py':
                         self.logger.error(f"     {f.name}")
             
-            raise FileNotFoundError(f"❌ Could not find imagenet_training_pipeline.py. Tried current directory and /opt/ml/code/")
+            raise FileNotFoundError("❌ Could not find imagenet_training_pipeline.py")
 
-        self.logger.info(f"✅ Pipeline script resolved: {pipeline_script}")
-
+        # Build command with relative path (works from /opt/ml/code/)
         cmd = [
             sys.executable,
-            "imagenet_training_pipeline.py",  # Always use relative path in SageMaker
+            "imagenet_training_pipeline.py",  # MUST be relative - no absolute paths!
             "--data", str(args.data_dir),
             "--output", str(args.output_dir), 
             "--epochs", str(args.epochs)
         ]
+        
+        self.logger.info(f"✅ Command built: {' '.join(cmd)}")
+        self.logger.info(f"   Note: Using relative path 'imagenet_training_pipeline.py'")
         
         # Add validation directory if separate channel is provided
         if args.val_dir:
@@ -297,11 +307,32 @@ class ImageNetSageMakerTrainer:
         # Build and execute pipeline command
         cmd = self.build_pipeline_command(args)
         self.logger.info(f"🎯 Executing: {' '.join(cmd)}")
+        self.logger.info(f"🔍 CRITICAL CHECK - Command path: {cmd[1]}")
+        if cmd[1].startswith('/opt/ml/'):
+            self.logger.error(f"❌ WRONG! Command still uses absolute path: {cmd[1]}")
+            raise ValueError("Command construction error - absolute path detected")
+        else:
+            self.logger.info(f"✅ CORRECT! Command uses relative path: {cmd[1]}")
         
         try:
-            # Always run from /opt/ml/code in SageMaker environment
-            run_cwd = Path("/opt/ml/code") if Path("/opt/ml/code").exists() else Path.cwd()
-            self.logger.info(f"🏃 Running from directory: {run_cwd}")
+            # FORCE working directory to /opt/ml/code/ - this is CRITICAL
+            sagemaker_code_dir = Path("/opt/ml/code")
+            if sagemaker_code_dir.exists():
+                os.chdir(str(sagemaker_code_dir))
+                run_cwd = sagemaker_code_dir
+                self.logger.info(f"🔄 FORCED change to: {os.getcwd()}")
+            else:
+                run_cwd = Path.cwd()
+                self.logger.info(f"🏃 Using current directory: {run_cwd}")
+            
+            self.logger.info(f"🏃 Final working directory: {run_cwd}")
+            
+            # Debug: Show what files are in the working directory
+            if run_cwd.exists():
+                self.logger.info(f"📁 Files in {run_cwd}:")
+                for f in run_cwd.iterdir():
+                    if f.is_file() and f.suffix == '.py':
+                        self.logger.info(f"   📄 {f.name}")
 
             result = subprocess.run(
                 cmd,
@@ -453,6 +484,10 @@ class ImageNetSageMakerTrainer:
 
 def main():
     """Main SageMaker training entry point"""
+    print("🚀 SageMaker Wrapper v2.1 - Fixed Path Resolution")
+    print(f"🔍 Script location: {__file__}")
+    print(f"🔍 Current working directory: {os.getcwd()}")
+    
     try:
         trainer = ImageNetSageMakerTrainer()
         trainer.run_training()
