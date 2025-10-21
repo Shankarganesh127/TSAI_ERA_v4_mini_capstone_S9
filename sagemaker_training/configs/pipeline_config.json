@@ -1,8 +1,8 @@
 {
   "aws": {
-    "region": "us-east-1",
+    "region": "eu-west-2",
     "profile": null,
-    "default_role_arn": null
+    "default_role_arn": "arn:aws:iam::872109682518:role/service-role/AmazonSageMaker-ExecutionRole-20251009T010774"
   },
   "dataset": {
     "source_bucket": null,
@@ -12,7 +12,8 @@
     "convert_test_data": true
   },
   "training": {
-    "instance_type": "ml.p3.8xlarge",
+    "instance_type": "ml.g5.12xlarge",
+    "instance_count": 1, 
     "use_spot": true,
     "max_runtime": 86400,
     "checkpoint_interval": 300,

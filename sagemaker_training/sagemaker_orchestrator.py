@@ -296,17 +296,20 @@ class SageMakerPipelineOrchestrator:
             self.logger.info(f"🚀 Launching training job: {job_name}")
             
             # Build command line arguments for launch_sagemaker.py
+            source_bucket = training_args.get("source_bucket", "")
+            s3_bucket_uri = f"s3://{source_bucket}" if source_bucket and not source_bucket.startswith("s3://") else source_bucket
+            
             cmd_args = [
                 "python", "launch_sagemaker.py",
                 "--job-name", job_name,
-                "--role-arn", training_args.get("role_arn", ""),
-                "--s3-bucket", training_args.get("s3_bucket", ""),
-                "--instance-type", training_args.get("instance_type", "ml.g5.12xlarge"), #"ml.p3.2xlarge"),
-                "--epochs", str(training_args.get("epochs", 100))
+                "--role-arn", training_args.get("role_arn"),  # Fixed: no hardcoded default
+                "--s3-bucket", s3_bucket_uri,  # Fixed: use proper S3 URI format
+                "--instance-type", training_args.get("instance_type", "ml.g5.12xlarge"),
+                "--epochs", str(training_args.get("epochs"))  # Fixed: no hardcoded default
             ]
             
             # Add optional arguments
-            if training_args.get("spot_training"):
+            if training_args.get("use_spot"):  # Fixed: use_spot instead of spot_training
                 cmd_args.append("--spot-training")
             if training_args.get("batch_size"):
                 cmd_args.extend(["--batch-size", str(training_args.get("batch_size"))])
@@ -316,17 +319,33 @@ class SageMakerPipelineOrchestrator:
                 self.logger.info("🚀 Launching SageMaker training job (this may take 5-10 minutes to start)...")
                 self.logger.info("💡 You can monitor progress in the AWS SageMaker console")
                 self.logger.info(f"📊 Job name: {job_name}")
+                self.logger.info("⏳ Submitting job to SageMaker (should complete in 30-60 seconds)...")
                 
-                # Option 1: Non-blocking launch (recommended for long training)
-                result = subprocess.run(cmd_args, capture_output=True, text=True, cwd=Path(__file__).parent, timeout=300)  # 5 minute timeout for launch only
+                # Debug: Show the command being executed
+                self.logger.info(f"🔧 Command: {' '.join(cmd_args)}")
+                
+                # Launch with extended timeout - job submission should be quick, but spot instances may take longer
+                result = subprocess.run(cmd_args, capture_output=True, text=True, cwd=Path(__file__).parent, timeout=600)  # 10 minute timeout for launch
                 success = result.returncode == 0
                 
                 if success:
-                    self.logger.info("✅ Training job launch initiated successfully")
+                    self.logger.info("✅ Training job submitted successfully to SageMaker!")
+                    self.logger.info("🚀 Job is now in queue - instance provisioning may take 5-15 minutes")
+                    self.logger.info("💰 Using spot instances - may take longer due to capacity availability")
                     self.logger.info("🔗 Monitor training at: https://console.aws.amazon.com/sagemaker/home#/jobs")
+                    self.logger.info(f"🎯 Search for job: {job_name}")
                 else:
-                    self.logger.error(f"❌ Training launch failed: {result.stderr}")
+                    self.logger.error(f"❌ Training submission failed:")
+                    self.logger.error(f"   STDOUT: {result.stdout}")
+                    self.logger.error(f"   STDERR: {result.stderr}")
                     
+            except subprocess.TimeoutExpired:
+                self.logger.error("❌ Training job submission timed out after 10 minutes")
+                self.logger.error("   This may indicate:")
+                self.logger.error("   - Network connectivity issues")
+                self.logger.error("   - AWS API throttling")
+                self.logger.error("   - Large instance type provisioning delays")
+                success = False
             except Exception as e:
                 self.logger.error(f"❌ Failed to launch training: {e}")
                 success = False
@@ -349,20 +368,38 @@ class SageMakerPipelineOrchestrator:
         source_bucket = args.source_bucket or self.config["dataset"]["source_bucket"]
         target_prefix = args.target_prefix or self.config["dataset"]["target_prefix"]
         
+        # Priority: command line args > config defaults
+        role_arn = getattr(args, 'role_arn', None) or self.config.get("aws", {}).get("default_role_arn")
+        epochs = getattr(args, 'epochs', None) or self.config.get("training", {}).get("default_epochs", 90)
+        instance_type = args.instance_type or self.config["training"]["instance_type"]
+        use_spot = args.use_spot if hasattr(args, 'use_spot') else self.config["training"]["use_spot"]
+        
+        # Validate required parameters
+        if not role_arn:
+            raise ValueError("role_arn is required either via --role-arn command line argument or aws.default_role_arn in config")
+        
         training_args = {
             'job_name': job_name,
-            'role_arn': args.role_arn,
+            'role_arn': role_arn,
             'source_bucket': source_bucket,
             'target_prefix': target_prefix,
-            'instance_type': args.instance_type or self.config["training"]["instance_type"],
-            'use_spot': args.use_spot if hasattr(args, 'use_spot') else self.config["training"]["use_spot"],
+            'instance_type': instance_type,
+            'use_spot': use_spot,
             'max_runtime': self.config["training"]["max_runtime"],
             'enable_7_stage': self.config["training"]["enable_7_stage_pipeline"],
-            'epochs': getattr(args, 'epochs', 90),
+            'epochs': epochs,
             'enable_monitoring': self.config["monitoring"]["enable_detailed_logging"],
             'save_metrics': self.config["monitoring"]["save_metrics"],
             'track_costs': self.config["monitoring"]["track_costs"]
         }
+        
+        # Log the training configuration
+        self.logger.info(f"📊 Training Configuration:")
+        self.logger.info(f"   � Role ARN: {role_arn[:50]}... ({'from command line' if hasattr(args, 'role_arn') and args.role_arn else 'from config default'})")
+        self.logger.info(f"   �📅 Epochs: {epochs} ({'from command line' if hasattr(args, 'epochs') and args.epochs else 'from config default'})")
+        self.logger.info(f"   💻 Instance: {instance_type}")
+        self.logger.info(f"   💰 Spot training: {use_spot}")
+        self.logger.info(f"   🚀 Job name: {job_name}")
         
         return training_args
     
@@ -442,12 +479,12 @@ def main():
     parser = argparse.ArgumentParser(description='SageMaker Complete Training Pipeline')
     
     # Required arguments
-    parser.add_argument('--role-arn', required=True, type=str,
-                       help='SageMaker execution role ARN')
     parser.add_argument('--source-bucket', required=True, type=str,
                        help='S3 bucket containing ILSVRC dataset')
     
-    # Optional arguments
+    # Optional arguments (can be provided via command line or config)
+    parser.add_argument('--role-arn', type=str,
+                       help='SageMaker execution role ARN (required - can be set in config)')
     parser.add_argument('--source-prefix', type=str, default='Datasets/imagenet1k/ILSVRC',
                        help='S3 prefix of ILSVRC dataset (default: Datasets/imagenet1k/ILSVRC)')
     parser.add_argument('--target-prefix', type=str, default='Datasets/imagenet1k/ILSVRC/imagenet-sagemaker',
