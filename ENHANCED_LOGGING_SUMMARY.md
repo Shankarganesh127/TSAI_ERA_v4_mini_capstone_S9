@@ -28,7 +28,13 @@ Enhanced the SageMaker orchestrator with comprehensive subprocess logging and de
 - **Smart mapping**: Instance family-aware suggestions
 - **Timeout guidance**: Includes spot instance disable recommendations
 
-### 5. Configuration Enhancements
+### 5. Automated Pipeline Execution
+- **Auto-confirm flag**: `--auto-confirm` skips user confirmation prompts
+- **Orchestrator integration**: Automatically passes the flag for seamless automation
+- **Interactive mode**: Manual confirmation still available when run directly
+- **Timeout prevention**: Eliminates hanging on user input during automated runs
+
+### 6. Configuration Enhancements
 Added new configuration sections:
 
 ```json
@@ -51,7 +57,7 @@ Added new configuration sections:
 
 ## Usage Examples
 
-### Basic Usage (Enhanced Logging)
+### Basic Usage (Enhanced Logging + Auto-confirm)
 ```bash
 python sagemaker_orchestrator.py \
   --source-bucket s3://your-bucket \
@@ -59,6 +65,29 @@ python sagemaker_orchestrator.py \
   --instance-type ml.g5.12xlarge \
   --epochs 2 \
   --role-arn arn:aws:iam::123456789012:role/SageMakerRole
+```
+*Note: Auto-confirm is enabled by default in orchestrator mode*
+
+### Manual Mode (Interactive Confirmation)
+```bash
+python launch_sagemaker.py \
+  --job-name my-job \
+  --role-arn arn:aws:iam::123456789012:role/SageMakerRole \
+  --s3-bucket s3://your-bucket \
+  --instance-type ml.g5.12xlarge \
+  --epochs 2
+```
+*Note: Will prompt for user confirmation*
+
+### Manual Mode (Auto-confirm)
+```bash
+python launch_sagemaker.py \
+  --job-name my-job \
+  --role-arn arn:aws:iam::123456789012:role/SageMakerRole \
+  --s3-bucket s3://your-bucket \
+  --instance-type ml.g5.12xlarge \
+  --epochs 2 \
+  --auto-confirm
 ```
 
 ### Debug Mode (Real-time Output)
@@ -116,6 +145,22 @@ python sagemaker_orchestrator.py \
 - Disable spot instances: remove --spot-training flag
 ```
 
+### Auto-confirm Mode
+```
+✅ Auto-confirm enabled - proceeding with job launch...
+🔧 Creating SageMaker PyTorch estimator...
+📝 Submitting training job to SageMaker...
+✅ Training job submitted successfully to SageMaker!
+```
+
+### Interactive Mode (Manual Confirmation)
+```
+⚠️  Awaiting user confirmation to launch SageMaker job...
+
+🚀 Launch SageMaker job? (y/N): y
+🔧 Creating SageMaker PyTorch estimator...
+```
+
 ## Files Modified
 
 1. **sagemaker_orchestrator.py**
@@ -125,14 +170,20 @@ python sagemaker_orchestrator.py \
    - Added instance suggestion method `_suggest_alternative_instances()`
    - Added debug mode support
 
-2. **configs/pipeline_config.json**
+2. **launch_sagemaker.py**
+   - Added `--auto-confirm` argument for skipping user confirmation
+   - Modified confirmation logic to respect auto-confirm flag
+   - Enables fully automated pipeline execution
+
+3. **configs/pipeline_config.json**
    - Added `timeouts` section with dynamic timeout configuration
    - Added `debug` section with logging controls
 
-3. **Test Files Created**
+4. **Test Files Created**
    - `test_parameter_priority.py`: Parameter handling validation
    - `test_parameter_parsing.py`: Argument parser testing
    - `test_enhanced_logging.py`: Logging system validation
+   - `test_auto_confirm.py`: Auto-confirm functionality testing
 
 ## Troubleshooting Guide
 

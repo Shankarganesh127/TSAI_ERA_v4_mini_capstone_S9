@@ -70,6 +70,7 @@ def main():
     parser.add_argument('--skip-lr-finder', action='store_true', help='Skip LR range test (Step 1)')
     parser.add_argument('--skip-wd-search', action='store_true', help='Skip weight decay search (Step 5)')
     parser.add_argument('--quick-mode', action='store_true', help='Quick mode for development')
+    parser.add_argument('--auto-confirm', action='store_true', help='Skip user confirmation prompt and launch immediately')
     
     # Manual hyperparameter overrides
     parser.add_argument('--lr-min', type=float, help='Manual minimum LR')
@@ -179,12 +180,15 @@ def main():
     
     logger.info("=" * 60)
     
-    # Confirm launch
-    logger.info("⚠️  Awaiting user confirmation to launch SageMaker job...")
-    response = input("\n🚀 Launch SageMaker job? (y/N): ")
-    if response.lower() != 'y':
-        logger.info("❌ Job launch cancelled by user")
-        return
+    # Confirm launch (skip if auto-confirm is enabled)
+    if args.auto_confirm:
+        logger.info("✅ Auto-confirm enabled - proceeding with job launch...")
+    else:
+        logger.info("⚠️  Awaiting user confirmation to launch SageMaker job...")
+        response = input("\n🚀 Launch SageMaker job? (y/N): ")
+        if response.lower() != 'y':
+            logger.info("❌ Job launch cancelled by user")
+            return
     
     # Create estimator
     logger.info("🔧 Creating SageMaker PyTorch estimator...")

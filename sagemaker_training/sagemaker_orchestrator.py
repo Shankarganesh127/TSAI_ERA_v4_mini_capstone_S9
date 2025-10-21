@@ -314,7 +314,8 @@ class SageMakerPipelineOrchestrator:
                 "--role-arn", training_args.get("role_arn"),  # Fixed: no hardcoded default
                 "--s3-bucket", s3_bucket_uri,  # Fixed: use proper S3 URI format
                 "--instance-type", training_args.get("instance_type", "ml.g5.12xlarge"),
-                "--epochs", str(training_args.get("epochs"))  # Fixed: no hardcoded default
+                "--epochs", str(training_args.get("epochs")),  # Fixed: no hardcoded default
+                "--auto-confirm"  # Skip user confirmation for automated pipeline
             ]
             
             # Add optional arguments
