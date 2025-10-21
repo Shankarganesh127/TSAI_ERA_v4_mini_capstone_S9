@@ -308,11 +308,19 @@ class SageMakerPipelineOrchestrator:
             source_bucket = training_args.get("source_bucket", "")
             s3_bucket_uri = f"s3://{source_bucket}" if source_bucket and not source_bucket.startswith("s3://") else source_bucket
             
+            # Use the target prefix (converted dataset path) for training
+            target_prefix = training_args.get("target_prefix", "imagenet-sagemaker")
+            training_data_s3_path = f"{s3_bucket_uri}/{target_prefix}/"
+            
+            self.logger.info(f"📂 Training data S3 path: {training_data_s3_path}")
+            self.logger.info(f"🔧 Using converted dataset at: {target_prefix}")
+            
             cmd_args = [
                 "python", "launch_sagemaker.py",
                 "--job-name", job_name,
                 "--role-arn", training_args.get("role_arn"),  # Fixed: no hardcoded default
                 "--s3-bucket", s3_bucket_uri,  # Fixed: use proper S3 URI format
+                "--train-data-s3", training_data_s3_path,  # Use converted dataset path
                 "--instance-type", training_args.get("instance_type", "ml.g5.12xlarge"),
                 "--epochs", str(training_args.get("epochs")),  # Fixed: no hardcoded default
                 "--auto-confirm"  # Skip user confirmation for automated pipeline
