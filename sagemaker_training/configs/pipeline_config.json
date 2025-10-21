@@ -106,5 +106,11 @@
       "ml.p4de.24xlarge",
       "ml.trn1.32xlarge"
     ]
+  },
+  "debug": {
+    "enable_realtime_output": false,
+    "log_subprocess_details": true,
+    "verbose_error_reporting": true,
+    "save_command_history": true
   }
 }

@@ -83,6 +83,15 @@ class SageMakerPipelineOrchestrator:
     def run_complete_pipeline(self, args):
         """Execute the complete SageMaker training pipeline"""
         
+        # Enable debug mode if requested
+        if hasattr(args, 'debug') and args.debug:
+            self.logger.info("🐛 Debug mode enabled - activating real-time output")
+            if "debug" not in self.config:
+                self.config["debug"] = {}
+            self.config["debug"]["enable_realtime_output"] = True
+            self.config["debug"]["log_subprocess_details"] = True
+            self.config["debug"]["verbose_error_reporting"] = True
+        
         self.logger.info("🚀 Starting Complete SageMaker Training Pipeline")
         self.logger.info("=" * 80)
         
@@ -326,21 +335,71 @@ class SageMakerPipelineOrchestrator:
                 
                 # Debug: Show the command being executed
                 self.logger.info(f"🔧 Command: {' '.join(cmd_args)}")
+                self.logger.info(f"📂 Working directory: {Path(__file__).parent}")
+                self.logger.info(f"⏰ Timeout: {timeout} seconds ({timeout//60} minutes)")
                 
-                # Launch with calculated timeout
-                result = subprocess.run(cmd_args, capture_output=True, text=True, cwd=Path(__file__).parent, timeout=timeout)
-                success = result.returncode == 0
+                # Launch with calculated timeout and enhanced logging
+                start_time = time.time()
                 
-                if success:
-                    self.logger.info("✅ Training job submitted successfully to SageMaker!")
-                    self.logger.info("🚀 Job is now in queue - instance provisioning may take 5-15 minutes")
-                    self.logger.info("💰 Using spot instances - may take longer due to capacity availability")
-                    self.logger.info("🔗 Monitor training at: https://console.aws.amazon.com/sagemaker/home#/jobs")
-                    self.logger.info(f"🎯 Search for job: {job_name}")
-                else:
-                    self.logger.error(f"❌ Training submission failed:")
-                    self.logger.error(f"   STDOUT: {result.stdout}")
-                    self.logger.error(f"   STDERR: {result.stderr}")
+                # Check if real-time output is enabled
+                use_realtime = self.config.get("debug", {}).get("enable_realtime_output", False)
+                
+                try:
+                    if use_realtime:
+                        self.logger.info("🔄 Using real-time output mode for debugging")
+                        result = self._run_subprocess_with_realtime_output(cmd_args, timeout)
+                    else:
+                        result = subprocess.run(cmd_args, capture_output=True, text=True, cwd=Path(__file__).parent, timeout=timeout)
+                    
+                    elapsed_time = time.time() - start_time
+                    success = result.returncode == 0
+                    
+                    # Always log the execution details (unless already logged in real-time mode)
+                    if not use_realtime:
+                        self.logger.info(f"⏱️ Subprocess completed in {elapsed_time:.1f} seconds")
+                        self.logger.info(f"🔄 Return code: {result.returncode}")
+                        
+                        if result.stdout:
+                            self.logger.info("📝 STDOUT:")
+                            for line in result.stdout.strip().split('\n'):
+                                if line.strip():  # Skip empty lines
+                                    self.logger.info(f"   {line}")
+                        
+                        if result.stderr:
+                            self.logger.warning("⚠️ STDERR:")
+                            for line in result.stderr.strip().split('\n'):
+                                if line.strip():  # Skip empty lines
+                                    self.logger.warning(f"   {line}")
+                    else:
+                        self.logger.info(f"⏱️ Process completed in {elapsed_time:.1f} seconds")
+                    
+                    if success:
+                        self.logger.info("✅ Training job submitted successfully to SageMaker!")
+                        self.logger.info("🚀 Job is now in queue - instance provisioning may take 5-15 minutes")
+                        self.logger.info("💰 Using spot instances - may take longer due to capacity availability")
+                        self.logger.info("🔗 Monitor training at: https://console.aws.amazon.com/sagemaker/home#/jobs")
+                        self.logger.info(f"🎯 Search for job: {job_name}")
+                    else:
+                        self.logger.error(f"❌ Training submission failed with return code {result.returncode}")
+                        
+                except subprocess.TimeoutExpired as timeout_error:
+                    elapsed_time = time.time() - start_time
+                    self.logger.error(f"⏰ Subprocess timed out after {elapsed_time:.1f} seconds (limit: {timeout})")
+                    
+                    # Try to get partial output if available
+                    if hasattr(timeout_error, 'stdout') and timeout_error.stdout:
+                        self.logger.info("📝 Partial STDOUT before timeout:")
+                        for line in timeout_error.stdout.strip().split('\n'):
+                            if line.strip():
+                                self.logger.info(f"   {line}")
+                    
+                    if hasattr(timeout_error, 'stderr') and timeout_error.stderr:
+                        self.logger.warning("⚠️ Partial STDERR before timeout:")
+                        for line in timeout_error.stderr.strip().split('\n'):
+                            if line.strip():
+                                self.logger.warning(f"   {line}")
+                    
+                    raise  # Re-raise to be caught by the outer except block
                     
             except subprocess.TimeoutExpired:
                 current_instance = training_args.get('instance_type')
@@ -462,6 +521,101 @@ class SageMakerPipelineOrchestrator:
         
         return alternatives.get(current_instance, ["ml.g5.2xlarge", "ml.g5.4xlarge"])
     
+    def _run_subprocess_with_realtime_output(self, cmd_args, timeout, cwd=None):
+        """Run subprocess with real-time output logging for better debugging"""
+        import subprocess
+        import select
+        import threading
+        
+        if cwd is None:
+            cwd = Path(__file__).parent
+            
+        self.logger.info(f"🔧 Executing: {' '.join(cmd_args)}")
+        self.logger.info(f"📂 Working directory: {cwd}")
+        self.logger.info(f"⏰ Timeout: {timeout} seconds ({timeout//60} minutes)")
+        
+        start_time = time.time()
+        
+        try:
+            # Start process
+            process = subprocess.Popen(
+                cmd_args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=cwd,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            stdout_lines = []
+            stderr_lines = []
+            
+            def read_stdout():
+                for line in iter(process.stdout.readline, ''):
+                    line = line.rstrip()
+                    stdout_lines.append(line)
+                    self.logger.info(f"📝 {line}")
+                process.stdout.close()
+            
+            def read_stderr():
+                for line in iter(process.stderr.readline, ''):
+                    line = line.rstrip()
+                    stderr_lines.append(line)
+                    self.logger.warning(f"⚠️ {line}")
+                process.stderr.close()
+            
+            # Start threads to read output
+            stdout_thread = threading.Thread(target=read_stdout)
+            stderr_thread = threading.Thread(target=read_stderr)
+            
+            stdout_thread.start()
+            stderr_thread.start()
+            
+            # Wait for process with timeout
+            try:
+                returncode = process.wait(timeout=timeout)
+                elapsed_time = time.time() - start_time
+                
+                # Wait for output threads to finish
+                stdout_thread.join(timeout=5)
+                stderr_thread.join(timeout=5)
+                
+                self.logger.info(f"⏱️ Process completed in {elapsed_time:.1f} seconds")
+                self.logger.info(f"🔄 Return code: {returncode}")
+                
+                # Create result object similar to subprocess.run
+                class Result:
+                    def __init__(self, returncode, stdout_lines, stderr_lines):
+                        self.returncode = returncode
+                        self.stdout = '\n'.join(stdout_lines)
+                        self.stderr = '\n'.join(stderr_lines)
+                
+                return Result(returncode, stdout_lines, stderr_lines)
+                
+            except subprocess.TimeoutExpired:
+                elapsed_time = time.time() - start_time
+                self.logger.error(f"⏰ Process timed out after {elapsed_time:.1f} seconds")
+                
+                # Terminate process
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                
+                # Wait for output threads
+                stdout_thread.join(timeout=2)
+                stderr_thread.join(timeout=2)
+                
+                raise subprocess.TimeoutExpired(cmd_args, timeout, output='\n'.join(stdout_lines), stderr='\n'.join(stderr_lines))
+                
+        except Exception as e:
+            elapsed_time = time.time() - start_time
+            self.logger.error(f"❌ Process failed after {elapsed_time:.1f} seconds: {e}")
+            raise
+    
     def _monitor_training_pipeline(self, job_name):
         """Step 4: Monitor training with detailed metrics and logging"""
         
@@ -556,6 +710,8 @@ def main():
                        help='Number of training epochs (default: 90)')
     parser.add_argument('--config-file', type=str,
                        help='Configuration file path (optional)')
+    parser.add_argument('--debug', action='store_true',
+                       help='Enable debug mode with real-time output and verbose logging')
     
     args = parser.parse_args()
     
