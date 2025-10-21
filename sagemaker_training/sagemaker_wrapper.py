@@ -76,7 +76,7 @@ class ImageNetSageMakerTrainer:
         parser.add_argument('--data_dir', type=str, 
                            default=os.environ.get('SM_CHANNEL_IMAGENET', '/opt/ml/input/data/imagenet'))
         parser.add_argument('--val_dir', type=str, 
-                           default=os.environ.get('SM_CHANNEL_VALIDATION', None))
+                           default=os.environ.get('SM_CHANNEL_VALIDATION', '/opt/ml/input/data/validation'))
         parser.add_argument('--output_dir', type=str, 
                            default=os.environ.get('SM_MODEL_DIR', '/opt/ml/model'))
         parser.add_argument('--epochs', type=int, default=30)
@@ -147,7 +147,8 @@ class ImageNetSageMakerTrainer:
         cmd = [
             sys.executable,
             pipeline_script_path,  # Use absolute path
-            "--data", str(args.data_dir),
+            "--train", str(args.train_dir),
+            "--val", str(args.val_dir),
             "--output", str(args.output_dir), 
             "--epochs", str(args.epochs)
         ]
@@ -157,16 +158,16 @@ class ImageNetSageMakerTrainer:
         self.logger.info(f"   Python executable: {sys.executable}")
         
         # Add validation directory if separate channel is provided
-        if args.val_dir:
-            cmd.extend(["--val-data", str(args.val_dir)])
-            self.logger.info(f"📁 Using separate validation channel: {args.val_dir}")
+        #if args.val_dir:
+        #    cmd.extend(["--val-data", str(args.val_dir)])
+        #    self.logger.info(f"📁 Using separate validation channel: {args.val_dir}")
         
         # Model saving configuration - integrate with model_saver.py
-        cmd.extend(["--save-model-every-epoch", "true"])
-        cmd.extend(["--model-save-path", str(Path(args.output_dir) / "models")])
-        cmd.extend(["--replace-model", "true"])  # Replace previous epoch model
-        cmd.extend(["--use-enhanced-saver", "true"])  # Use our model saver
-        cmd.extend(["--model-saver-config", str(Path(args.output_dir) / "model_save_config.json")])
+        #cmd.extend(["--save-model-every-epoch", "true"])
+        #cmd.extend(["--model-save-path", str(Path(args.output_dir) / "models")])
+        #cmd.extend(["--replace-model", "true"])  # Replace previous epoch model
+        #cmd.extend(["--use-enhanced-saver", "true"])  # Use our model saver
+        #cmd.extend(["--model-saver-config", str(Path(args.output_dir) / "model_save_config.json")])
         
         # Batch size control (Step 4)
         if args.batch_size:

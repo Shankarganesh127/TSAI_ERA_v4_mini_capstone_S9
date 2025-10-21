@@ -554,7 +554,8 @@ def detect_dataset_format(data_path):
 def main():
     """Main training pipeline"""
     parser = argparse.ArgumentParser(description='ImageNet Training Pipeline')
-    parser.add_argument('--data', type=str, required=True, help='ImageNet dataset path')
+    parser.add_argument('--train', type=str, required=True, help='ImageNet training dataset path')
+    parser.add_argument('--val', type=str, required=True, help='ImageNet validation dataset path')
     parser.add_argument('--output', type=str, default='./imagenet_pipeline_results', help='Output directory')
     parser.add_argument('--batch-size', type=int, default=None, help='Batch size (auto-detect if not specified)')
     parser.add_argument('--epochs', type=int, default=90, help='Number of epochs for full training')
@@ -574,8 +575,8 @@ def main():
     os.makedirs(args.output, exist_ok=True)
     
     # Detect dataset format
-    dataset_format = detect_dataset_format(args.data)
-    logger.info(f"📂 Detected dataset format: {dataset_format.upper()}")
+    #dataset_format = detect_dataset_format(args.data)
+    #logger.info(f"📂 Detected dataset format: {dataset_format.upper()}")
     
     # Model factory
     def create_model():
@@ -619,14 +620,14 @@ def main():
     # Load data
     logger.info("📂 Loading ImageNet dataset...")
     
-    if dataset_format == 'ilsvrc':
-        logger.info("Using ILSVRC dataset loader (handles flat validation directory)")
-        train_loader, val_loader = get_ilsvrc_dataloaders(
-            args.data, batch_size=initial_batch_size, num_workers=4)
-    else:
-        logger.info("Using standard ImageNet dataset loader")
-        train_loader, val_loader = get_imagenet_dataloaders(
-            args.data, batch_size=initial_batch_size, num_workers=4)
+    #if dataset_format == 'ilsvrc':
+    #    logger.info("Using ILSVRC dataset loader (handles flat validation directory)")
+    #    train_loader, val_loader = get_ilsvrc_dataloaders(
+    #        args.data, batch_size=initial_batch_size, num_workers=4)
+    #else:
+    logger.info("Using standard ImageNet dataset loader")
+    train_loader, val_loader = get_imagenet_dataloaders(
+    train = args.train, val = args.val, batch_size=initial_batch_size, num_workers=4)
     
     logger.info(f"📊 Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
     

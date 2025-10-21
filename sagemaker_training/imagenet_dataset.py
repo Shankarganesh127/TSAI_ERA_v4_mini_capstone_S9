@@ -42,7 +42,7 @@ def get_imagenet_transforms(input_size=224):
     return train_transform, val_transform
 
 
-def get_imagenet_dataloaders(data_dir, batch_size=32, num_workers=4, pin_memory=True):
+def get_imagenet_dataloaders( train, val, batch_size=32, num_workers=4, pin_memory=True):
     """
     Create ImageNet-1K data loaders
     
@@ -62,8 +62,8 @@ def get_imagenet_dataloaders(data_dir, batch_size=32, num_workers=4, pin_memory=
     if not os.path.exists(data_dir):
         raise FileNotFoundError(f"ImageNet data directory not found: {data_dir}")
     
-    train_dir = os.path.join(data_dir, 'train')
-    val_dir = os.path.join(data_dir, 'val')
+    train_dir = train #os.path.join(data_dir, 'train')
+    val_dir = val #os.path.join(data_dir, 'val')
     
     if not os.path.exists(train_dir):
         raise FileNotFoundError(f"Training data directory not found: {train_dir}")
