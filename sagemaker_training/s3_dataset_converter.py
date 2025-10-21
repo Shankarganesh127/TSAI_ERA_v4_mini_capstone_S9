@@ -28,6 +28,39 @@ class S3DatasetConverter:
         session = boto3.Session(profile_name=aws_profile) if aws_profile else boto3.Session()
         self.s3_client = session.client('s3')
         
+    def _check_folder_exists(self, s3_prefix, min_objects=10):
+        """Check if an S3 folder exists and has sufficient content
+        
+        Args:
+            s3_prefix: S3 prefix to check
+            min_objects: Minimum number of objects to consider folder as "existing"
+        
+        Returns:
+            bool: True if folder exists with sufficient content
+        """
+        try:
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            page_iterator = paginator.paginate(
+                Bucket=self.bucket_name, 
+                Prefix=s3_prefix,
+                PaginationConfig={'MaxItems': min_objects + 1}
+            )
+            
+            object_count = 0
+            for page in page_iterator:
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        if not obj['Key'].endswith('/'):  # Skip folder markers
+                            object_count += 1
+                            if object_count >= min_objects:
+                                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.warning(f"Error checking folder existence {s3_prefix}: {e}")
+            return False
+        
         self.logger.info(f"🔧 Initialized S3 converter for bucket: {bucket_name}")
 
     def convert_ilsvrc_to_sagemaker(self, source_prefix, target_prefix):
@@ -42,21 +75,25 @@ class S3DatasetConverter:
             self.logger.info("📁 Step 1: Skipping training data copy (already in proper class structure)")
             self.logger.info("   Training data will be used directly from source location")
             
-            # Step 2: Reorganize validation data by class
-            self.logger.info("📁 Step 2: Reorganizing validation data by class...")
-            val_success = self._reorganize_validation_data(source_prefix, target_prefix)
+            # Step 2: Check if validation data already exists
+            val_target_prefix = f"{target_prefix}/val/"
+            self.logger.info("📁 Step 2: Checking if validation data already exists...")
             
-            if not val_success:
-                self.logger.error("❌ Failed to reorganize validation data")
-                return False
+            if self._check_folder_exists(val_target_prefix, min_objects=100):
+                self.logger.info("✅ Validation folder already exists with sufficient data - skipping reorganization")
+                self.logger.info(f"   Found existing validation data at: s3://{self.bucket_name}/{val_target_prefix}")
+                val_success = True
+            else:
+                self.logger.info("📁 Reorganizing validation data by class...")
+                val_success = self._reorganize_validation_data(source_prefix, target_prefix)
+                
+                if not val_success:
+                    self.logger.error("❌ Failed to reorganize validation data")
+                    return False
             
-            # Step 3: Reorganize test data by class (if exists)
-            self.logger.info("📁 Step 3: Reorganizing test data by class...")
-            test_success = self._reorganize_test_data(source_prefix, target_prefix)
-            
-            if not test_success:
-                self.logger.warning("⚠️ Test data processing failed or no test data found")
-                # Don't fail the entire conversion if test data is missing
+            # Step 3: Skip test data processing (as requested)
+            self.logger.info("📁 Step 3: Skipping test data processing (not needed for validation-only conversion)")
+            test_success = True  # Mark as successful since we're intentionally skipping
             
             # Step 4: Create metadata and manifest (pointing to original training data)
             self.logger.info("📁 Step 4: Creating SageMaker metadata...")
@@ -66,8 +103,11 @@ class S3DatasetConverter:
                 self.logger.info("🎉 S3 ILSVRC to SageMaker conversion completed!")
                 self.logger.info(f"🚀 Ready for SageMaker training at: s3://{self.bucket_name}/{target_prefix}/")
                 self.logger.info("📋 Training data will be used from original location (already organized)")
+                self.logger.info("✅ Validation data is organized by class for proper evaluation")
                 return True
             else:
+                self.logger.error("❌ Failed to create metadata")
+                return False
                 self.logger.error("❌ Failed to create metadata")
                 return False
                 
@@ -187,7 +227,10 @@ class S3DatasetConverter:
             return False
 
     def _reorganize_test_data(self, source_prefix, target_prefix):
-        """Reorganize flat test structure into class folders"""
+        """Reorganize flat test structure into class folders (DISABLED - validation-only processing)"""
+        # This function is disabled as per user request to focus only on validation data
+        self.logger.info("🚫 Test data processing is disabled - validation-only conversion")
+        return True
         try:
             # Check if test data exists
             test_prefix = f"{source_prefix}/Data/CLS-LOC/test/"

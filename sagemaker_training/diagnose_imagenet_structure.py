@@ -9,6 +9,49 @@ Usage:
 import boto3
 from sagemaker_logging import setup_sagemaker_logger
 
+def check_validation_folder_exists(bucket_name, target_prefix, min_objects=100):
+    """Check if validation folder already exists and has sufficient content"""
+    try:
+        s3_client = boto3.client('s3')
+        val_prefix = f"{target_prefix}/val/"
+        
+        paginator = s3_client.get_paginator('list_objects_v2')
+        page_iterator = paginator.paginate(
+            Bucket=bucket_name, 
+            Prefix=val_prefix,
+            PaginationConfig={'MaxItems': min_objects + 1}
+        )
+        
+        object_count = 0
+        class_folders = set()
+        
+        for page in page_iterator:
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    key = obj['Key']
+                    if not key.endswith('/'):  # Skip folder markers
+                        object_count += 1
+                        # Extract class folder name from path like: target/val/n01440764/image.jpg
+                        path_parts = key.replace(val_prefix, '').split('/')
+                        if len(path_parts) >= 2:
+                            class_folders.add(path_parts[0])
+        
+        return {
+            'exists': object_count >= min_objects,
+            'object_count': object_count,
+            'class_count': len(class_folders),
+            'sample_classes': list(class_folders)[:5] if class_folders else []
+        }
+        
+    except Exception as e:
+        return {
+            'exists': False,
+            'error': str(e),
+            'object_count': 0,
+            'class_count': 0,
+            'sample_classes': []
+        }
+
 def diagnose_structure():
     """Analyze the ImageNet dataset structure"""
     
@@ -108,10 +151,28 @@ def diagnose_structure():
         
         logger.info(f"✅ Found {val_image_count} validation images")
         
+        # 4. Check if converted validation folder already exists
+        logger.info("\n📁 Checking converted validation folder...")
+        target_prefix = "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker"  # Default target
+        val_check = check_validation_folder_exists(bucket_name, target_prefix)
+        
+        if val_check['exists']:
+            logger.info(f"✅ Converted validation folder EXISTS")
+            logger.info(f"   📊 Objects: {val_check['object_count']}")
+            logger.info(f"   📁 Classes: {val_check['class_count']}")
+            logger.info(f"   📝 Sample classes: {val_check['sample_classes']}")
+            logger.info(f"   📍 Location: s3://{bucket_name}/{target_prefix}/val/")
+        else:
+            logger.info(f"❌ Converted validation folder DOES NOT EXIST")
+            logger.info(f"   📍 Expected location: s3://{bucket_name}/{target_prefix}/val/")
+            if 'error' in val_check:
+                logger.warning(f"   ⚠️ Error: {val_check['error']}")
+        
         # Summary
         logger.info(f"\n📊 SUMMARY:")
         logger.info(f"   Training classes: {len(train_classes)}")
         logger.info(f"   Validation images: {val_image_count}")
+        logger.info(f"   Converted validation: {'✅ EXISTS' if val_check['exists'] else '❌ NOT FOUND'}")
         logger.info(f"   Expected validation structure: ~50 images per class")
         
         return True
