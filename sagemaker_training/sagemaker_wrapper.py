@@ -147,7 +147,7 @@ class ImageNetSageMakerTrainer:
         cmd = [
             sys.executable,
             pipeline_script_path,  # Use absolute path
-            "--train", str(args.train_dir),
+            "--train", str(args.data_dir),
             "--val", str(args.val_dir),
             "--output", str(args.output_dir), 
             "--epochs", str(args.epochs)
