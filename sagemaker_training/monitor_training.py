@@ -48,13 +48,14 @@ def simple_table(data, headers):
 
 
 class SageMakerMonitor:
-    def __init__(self, region='eu-west-2'):
+    def __init__(self, region='eu-west-2', quiet=False):
         """Initialize SageMaker monitor"""
         self.logger = setup_logger("sagemaker_monitor")
         self.sagemaker = boto3.client('sagemaker', region_name=region)
         self.logs = boto3.client('logs', region_name=region)
         self.current_job_name = None
-        self.logger.info(f"🔧 SageMaker Monitor initialized for region: {region}")
+        if not quiet:
+            self.logger.info(f"🔧 SageMaker Monitor initialized for region: {region}")
     
     def set_current_job(self, job_name):
         """Set the current job being monitored"""
@@ -561,23 +562,12 @@ def main():
     
     args = parser.parse_args()
     
-    # Debug: Print parsed arguments
-    print(f"🔍 Debug - Parsed arguments: {args}")
-    
-    # Initialize monitor
-    monitor = SageMakerMonitor(args.region)
+    # Initialize monitor (quiet mode for logs/epochs to reduce noise)
+    quiet_mode = bool(args.logs or args.epochs)
+    monitor = SageMakerMonitor(args.region, quiet=quiet_mode)
     
     try:
-        print(f"🔍 Debug - Checking conditions...")
-        print(f"   args.list: {args.list}")
-        print(f"   args.details: {args.details}")
-        print(f"   args.logs: {args.logs}")
-        print(f"   args.epochs: {args.epochs}")
-        print(f"   args.stop: {args.stop}")
-        print(f"   args.metrics: {args.metrics}")
-        
         if args.list or (not any([args.details, args.logs, args.epochs, args.stop, args.metrics])):
-            print("🔍 Debug - Entering list jobs section")
             # List training jobs
             print("📊 SageMaker Training Jobs")
             print("=" * 50)
