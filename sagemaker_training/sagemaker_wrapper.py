@@ -443,16 +443,21 @@ class ImageNetSageMakerTrainer:
                     if not clean_line:
                         continue
                     
+                    # Suppress tqdm/progress bar output from subprocess
+                    if '|' in clean_line and ('%' in clean_line or 'it/s' in clean_line or 'step' in clean_line or 'Loss:' in clean_line or 'Acc:' in clean_line):
+                        continue  # Skip bar/progress lines
+
                     # Log all output to debug file
                     self.subprocess_logger.debug(f"SUBPROCESS_OUTPUT[{line_counter:06d}]: {clean_line}")
-                    
-                    # Print all lines (progress bars are now managed in the pipeline)
+
+                    # Print all lines except progress bars
                     print(clean_line)
                     sys.stdout.flush()
-                    
-                    # Log important lines to main log
-                    if any(keyword in clean_line.lower() for keyword in ['error', 'warning', 'step', 'epoch', 'starting', 'completed', 'failed', 'success', 'progress']):
-                        self.logger.info(f"SUBPROCESS: {clean_line}")
+
+                    # Log important lines to main log, but avoid duplicate log lines
+                    if not clean_line.startswith("INFO - [") and not clean_line.startswith("WARNING - [") and not clean_line.startswith("ERROR - ["):
+                        if any(keyword in clean_line.lower() for keyword in ['error', 'warning', 'step', 'epoch', 'starting', 'completed', 'failed', 'success', 'progress']):
+                            self.logger.info(f"SUBPROCESS: {clean_line}")
                     
                     last_progress_line = clean_line
             
