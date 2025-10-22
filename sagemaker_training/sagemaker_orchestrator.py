@@ -329,7 +329,7 @@ class SageMakerPipelineOrchestrator:
                 "--train-data-s3", train_data_path,  # Original training data
                 "--val-data-s3", val_data_path,     # Converted validation data
                 "--instance-type", training_args.get("instance_type", "ml.g5.12xlarge"),
-                "--instance-count", training_args.get("instance_count", 1),
+                "--instance-count", str(training_args.get("instance_count", 1)),
                 "--epochs", str(training_args.get("epochs")),  # Fixed: no hardcoded default
                 "--auto-confirm"  # Skip user confirmation for automated pipeline
             ]
