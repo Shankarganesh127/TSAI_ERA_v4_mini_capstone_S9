@@ -7,10 +7,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from logger_setup import get_logger
-import smdistributed.dataparallel.torch.torch_smddp
-import torch.distributed as dist
 import os
-import torch
+
+# Only import distributed modules if we're in a distributed environment
+try:
+    if 'SM_NUM_GPUS' in os.environ and int(os.environ.get('SM_NUM_GPUS', 1)) > 1:
+        import smdistributed.dataparallel.torch.torch_smddp
+        import torch.distributed as dist
+        DISTRIBUTED_AVAILABLE = True
+    else:
+        DISTRIBUTED_AVAILABLE = False
+except ImportError:
+    DISTRIBUTED_AVAILABLE = False
 
 class BasicBlock(nn.Module):
     """Basic residual block for ResNet-18/34"""
@@ -157,45 +165,65 @@ class ResNetImageNet(nn.Module):
 
 def model_device_setup_for_ddp(model):
     """
-    Setup device and device_ids for DistributedDataParallel (DDP)
-    based on LOCAL_RANK environment variable.
+    Setup device and optionally configure for DistributedDataParallel (DDP)
+    based on environment variables and distributed availability.
     
     Returns:
-        current_device: torch.device for the current process
-        device_ids: List of device IDs for DDP constructor
+        model: The model, optionally wrapped in DDP
     """
-
-    # --- 1. Get the local rank from the environment ---
-    # The 'LOCAL_RANK' environment variable is typically set by the launcher
-    # (e.g., torchrun, sagemaker's distributed setup) for each process.
-    try:
-        # Use the rank assigned to this specific process on the current node.
-        local_rank = int(os.environ['LOCAL_RANK'])
-    except KeyError:
-        # Fallback for non-distributed or single-GPU testing
-        local_rank = 0
-
-    print(f"Process is running on local GPU rank: {local_rank}")
-
-    # --- 2. Set the device for the current process ---
-    # This ensures PyTorch operations and the model are correctly placed.
-    if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
-        current_device = torch.device('cuda', local_rank)
+    
+    # Check if we should use distributed training
+    num_gpus = int(os.environ.get('SM_NUM_GPUS', 1))
+    is_distributed = (DISTRIBUTED_AVAILABLE and 
+                     num_gpus > 1 and 
+                     'LOCAL_RANK' in os.environ)
+    
+    if is_distributed:
+        print("🔧 Setting up model for distributed training")
+        
+        # Get the local rank from the environment
+        try:
+            local_rank = int(os.environ['LOCAL_RANK'])
+        except KeyError:
+            local_rank = 0
+        
+        print(f"Process is running on local GPU rank: {local_rank}")
+        
+        # Set the device for the current process
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+            current_device = torch.device('cuda', local_rank)
+            device_ids = [local_rank]
+        else:
+            current_device = torch.device('cpu')
+            device_ids = None
+        
+        print(f"DDP device_ids parameter: {device_ids}")
+        
+        # Initialize distributed process group
+        import torch.distributed as dist
+        dist.init_process_group(backend='smddp')
+        
+        # Wrap model in DDP
+        model = torch.nn.parallel.DistributedDataParallel(
+            model.to(current_device), 
+            device_ids=device_ids
+        )
+        print("✅ Model configured for distributed training")
     else:
-        current_device = torch.device('cpu')
-
-    # --- 3. Determine device_ids for DDP constructor ---
-    # For DistributedDataParallel, device_ids is a list containing the local rank.
-    if current_device.type == 'cuda':
-        device_ids = [local_rank]
-    else:
-        # device_ids is often ignored or set to None for CPU-only DDP (which is rare)
-        device_ids = None
-
-    print(f"DDP device_ids parameter: {device_ids}")
-    dist.init_process_group(backend='smddp')
-    model = torch.nn.parallel.DistributedDataParallel(model.to(current_device), device_ids=device_ids)
+        print("🔧 Setting up model for single-instance training")
+        
+        # Single instance setup - just move to available device
+        if torch.cuda.is_available():
+            device = torch.device('cuda')
+            model = model.to(device)
+            print(f"✅ Model moved to GPU: {device}")
+        else:
+            device = torch.device('cpu')
+            model = model.to(device)
+            print(f"✅ Model moved to CPU: {device}")
+    
+    return model
 
 def resnet50_imagenet(num_classes=1000, pretrained=False):
     """
@@ -207,6 +235,7 @@ def resnet50_imagenet(num_classes=1000, pretrained=False):
     """
     model = ResNetImageNet(Bottleneck, [3, 4, 6, 3], num_classes)
     
+    # Setup device and optionally configure distributed training
     model = model_device_setup_for_ddp(model)
     
     if pretrained:
