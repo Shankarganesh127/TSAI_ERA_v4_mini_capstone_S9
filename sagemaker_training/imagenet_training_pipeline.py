@@ -554,6 +554,20 @@ def detect_dataset_format(data_path):
 def main():
     """Main training pipeline"""
     import sys
+    
+    # =============================================================================
+    # SAGEMAKER TRAINING STARTED - SIMPLE STATUS LOG
+    # =============================================================================
+    print("=" * 80)
+    print("🚀 SAGEMAKER IMAGENET TRAINING PIPELINE STARTED")
+    print("=" * 80)
+    print(f"⏰ Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🐍 Python: {sys.version}")
+    print(f"🔥 PyTorch: {torch.__version__}")
+    print(f"💻 Working Directory: {os.getcwd()}")
+    print("=" * 80)
+    sys.stdout.flush()
+    
     print("🚨 DEBUG: Entered main() function")
     sys.stdout.flush()
     
@@ -714,6 +728,23 @@ def main():
     logger.info(f"📊 Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
     print(f"🚨 DEBUG: Dataset sizes - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
     
+    # =============================================================================
+    # STARTING 7-STEP IMAGENET TRAINING PIPELINE
+    # =============================================================================
+    print("\n" + "=" * 80)
+    print("🎯 STARTING 7-STEP IMAGENET TRAINING PIPELINE")
+    print("=" * 80)
+    print("📋 Pipeline Steps:")
+    print("   1️⃣  LR Range Test")
+    print("   2️⃣  Weight Decay Search") 
+    print("   3️⃣  Full Training with OneCycle LR")
+    print(f"📦 Batch Size: {initial_batch_size}")
+    print(f"🔄 Total Epochs: {args.epochs}")
+    print("=" * 80)
+    print("🚀 Starting Step 1: LR Range Test...")
+    print("=" * 80)
+    sys.stdout.flush()
+    
     # STEP 1: LR Range Test
     lr_config = None
     if not args.skip_lr_test:
@@ -763,6 +794,10 @@ def main():
     # STEP 5: Weight Decay Search
     best_weight_decay = 1e-4  # Default
     if not args.skip_wd_search:
+        print("\n" + "🚀 Starting Step 2: Weight Decay Search...")
+        print("=" * 50)
+        sys.stdout.flush()
+        
         logger.info("="*60)
         logger.info("⚖️  STEP 5: Weight Decay Search")
         logger.info("="*60)
@@ -784,6 +819,16 @@ def main():
         logger.info("⏭️  Skipping weight decay search, using default 1e-4")
     
     # STEP 6: Full Training
+    training_epochs = 20 if args.quick_mode else args.epochs
+    
+    print(f"\n🚀 Starting Step 3: Full Training ({training_epochs} epochs)...")
+    print("=" * 50)
+    print(f"📈 LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
+    print(f"⚖️  Weight Decay: {best_weight_decay:.2e}")
+    print(f"📦 Batch Size: {optimal_batch_size}")
+    print("=" * 50)
+    sys.stdout.flush()
+    
     logger.info("="*60)
     logger.info("🚀 STEP 6: Full OneCycle Training")
     logger.info("="*60)
@@ -791,7 +836,6 @@ def main():
     model = create_model().to(device)
     trainer = FullTrainer(model, train_loader, val_loader, device, args.output)
     
-    training_epochs = 20 if args.quick_mode else args.epochs
     history = trainer.train(
         lr_config=lr_config,
         epochs=training_epochs,
@@ -861,6 +905,19 @@ def main():
     with open(os.path.join(args.output, 'final_results.json'), 'w') as f:
         json.dump(final_results, f, indent=2)
     
+    # =============================================================================
+    # TRAINING PIPELINE COMPLETED!
+    # =============================================================================
+    print("\n" + "=" * 80)
+    print("🎉 IMAGENET TRAINING PIPELINE COMPLETED!")
+    print("=" * 80)
+    print(f"✅ Best Validation Accuracy: {final_results['best_val_acc']:.2f}%")
+    print(f"📈 Final Training Accuracy: {final_results['final_train_acc']:.2f}%")
+    print(f"📊 Total Epochs Trained: {final_results['total_epochs']}")
+    print(f"⏰ Completion Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 80)
+    sys.stdout.flush()
+
     logger.info("🎉 Pipeline Complete!")
     logger.info("📊 Final Results:")
     logger.info(f"   Best Validation Accuracy: {final_results['best_val_acc']:.2f}%")
@@ -874,6 +931,44 @@ def main():
 
 if __name__ == '__main__':
     import sys
+    import os
+    import inspect
+    
+    # =============================================================================
+    # SCRIPT EXECUTION CONTEXT LOGGING
+    # =============================================================================
+    print("=" * 80)
+    print("📄 IMAGENET_TRAINING_PIPELINE.PY SCRIPT CALLED")
+    print("=" * 80)
+    print(f"🗂️  Script Path: {__file__}")
+    print(f"💻 Working Directory: {os.getcwd()}")
+    print(f"🐍 Python Executable: {sys.executable}")
+    print(f"📋 Command Line Args: {sys.argv}")
+    print(f"🔢 Number of Args: {len(sys.argv)}")
+    
+    # Show calling context
+    frame = inspect.currentframe()
+    if frame and frame.f_back:
+        caller_frame = frame.f_back
+        print(f"📞 Called From: {caller_frame.f_code.co_filename}:{caller_frame.f_lineno}")
+        print(f"🎯 Caller Function: {caller_frame.f_code.co_name}")
+    else:
+        print("📞 Called From: Direct execution (no caller frame)")
+    
+    # Environment context
+    print(f"🌐 Environment Variables (SageMaker related):")
+    sm_vars = {k: v for k, v in os.environ.items() if 'SM_' in k or 'SAGEMAKER' in k}
+    if sm_vars:
+        for key, value in list(sm_vars.items())[:10]:  # Show first 10
+            print(f"   {key}: {value}")
+        if len(sm_vars) > 10:
+            print(f"   ... and {len(sm_vars) - 10} more SM_ variables")
+    else:
+        print("   No SageMaker environment variables found")
+    
+    print("=" * 80)
+    sys.stdout.flush()
+    
     print("🚨 DEBUG: Starting imagenet_training_pipeline.py")
     sys.stdout.flush()
     try:

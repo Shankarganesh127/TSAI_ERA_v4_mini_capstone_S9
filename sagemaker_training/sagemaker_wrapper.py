@@ -348,25 +348,83 @@ class ImageNetSageMakerTrainer:
                     if f.is_file() and f.suffix == '.py':
                         self.logger.info(f"   📄 {f.name}")
 
-            result = subprocess.run(
+            # =============================================================================
+            # SUBPROCESS CALL TO IMAGENET_TRAINING_PIPELINE.PY
+            # =============================================================================
+            import datetime
+            print("=" * 80)
+            print("🚀 SAGEMAKER WRAPPER CALLING IMAGENET_TRAINING_PIPELINE.PY")
+            print("=" * 80)
+            print(f"📞 Caller: {__file__}")
+            print(f"🎯 Target Script: {cmd[1]}")
+            print(f"🐍 Python Executable: {cmd[0]}")
+            print(f"📋 Full Command: {' '.join(cmd)}")
+            print(f"💻 Working Directory: {run_cwd}")
+            print(f"⏰ Execution Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print("=" * 80)
+            print("🎬 SUBPROCESS OUTPUT STREAMING BELOW:")
+            print("=" * 80)
+            sys.stdout.flush()
+            self.logger.info("🔥 CALLING imagenet_training_pipeline.py via subprocess...")
+            self.logger.info(f"🎯 Full command: {' '.join(cmd)}")
+            self.logger.info(f"💻 Working directory: {run_cwd}")
+
+            # Stream subprocess output in real-time instead of capturing
+            process = subprocess.Popen(
                 cmd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # Merge stderr with stdout
                 text=True,
-                check=True,
                 cwd=str(run_cwd),
-                timeout=36000  # 10 hours
+                bufsize=1,  # Line buffered
+                universal_newlines=True
             )
             
-            self.logger.info("✅ 7-Step Pipeline completed successfully!")
-            self._process_results(result, args)
+            # Stream output line by line
+            while True:
+                output = process.stdout.readline()
+                if output == '' and process.poll() is not None:
+                    break
+                if output:
+                    print(output.strip())
+                    sys.stdout.flush()
             
-        except subprocess.TimeoutExpired:
-            self.logger.error("⏰ Pipeline timed out")
-            raise
+            # Wait for process to complete and get return code
+            return_code = process.wait()
+            
+            # =============================================================================
+            # SUBPROCESS COMPLETED
+            # =============================================================================
+            print("=" * 80)
+            print("✅ IMAGENET_TRAINING_PIPELINE.PY SUBPROCESS COMPLETED")
+            print("=" * 80)
+            print(f"📊 Return Code: {return_code}")
+            print(f"⏰ Completion Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print("=" * 80)
+            sys.stdout.flush()
+            
+            # Check if subprocess failed
+            if return_code != 0:
+                self.logger.error(f"❌ Pipeline failed with return code: {return_code}")
+                raise subprocess.CalledProcessError(return_code, cmd)
+            
+            self.logger.info("✅ 7-Step Pipeline completed successfully!")
+            
+            # Create a mock result object for compatibility with _process_results
+            class MockResult:
+                def __init__(self, returncode):
+                    self.returncode = returncode
+                    self.stdout = ""  # Output was already streamed
+                    self.stderr = ""
+            
+            self._process_results(MockResult(return_code), args)
+            
         except subprocess.CalledProcessError as e:
             self.logger.error(f"❌ Pipeline failed: {e}")
-            self.logger.error(f"stdout: {e.stdout}")
-            self.logger.error(f"stderr: {e.stderr}")
+            self.logger.error(f"Return code: {e.returncode}")
+            raise
+        except Exception as e:
+            self.logger.error(f"❌ Unexpected error during pipeline execution: {e}")
             raise
         finally:
             # Clean up model monitoring
