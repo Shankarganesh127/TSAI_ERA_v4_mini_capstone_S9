@@ -25,6 +25,64 @@ from imagenet_dataset import get_imagenet_dataloaders
 from ilsvrc_dataset import get_ilsvrc_dataloaders
 from logger_setup import setup_logger, log_system_info, log_training_config, get_logger, get_unified_logger
 
+# Global progress bar manager to avoid subprocess complexity
+class LiveProgressManager:
+    """Manages live updating progress bars to avoid subprocess issues"""
+    
+    def __init__(self):
+        self.current_bar = None
+        self.logger = get_logger()
+        
+    def create_progress_bar(self, desc, total, disable_tqdm=False):
+        """Create a new progress bar for the current step"""
+        if self.current_bar:
+            self.current_bar.close()
+            
+        # Check if we should disable tqdm (e.g., in SageMaker wrapper mode)
+        if os.environ.get('TQDM_DISABLE', '0') == '1' or disable_tqdm:
+            self.current_bar = None
+            self.logger.info(f"🔄 Starting {desc} (progress via logs)")
+            return None
+        else:
+            self.current_bar = tqdm(
+                total=total,
+                desc=f"🔄 {desc}",
+                unit="it",
+                ncols=120,
+                leave=False,  # Clean display
+                bar_format='{desc}: {percentage:3.0f}%|{bar}| {n}/{total} [{elapsed}<{remaining}]'
+            )
+            return self.current_bar
+    
+    def update_progress(self, step, metrics=None):
+        """Update progress bar with metrics"""
+        if self.current_bar:
+            self.current_bar.n = step
+            if metrics:
+                desc = self.current_bar.desc.split('|')[0].strip()  # Keep base description
+                if 'loss' in metrics:
+                    desc += f" | Loss: {metrics['loss']:.4f}"
+                if 'accuracy' in metrics:
+                    desc += f" | Acc: {metrics['accuracy']:.2f}%"
+                if 'lr' in metrics:
+                    desc += f" | LR: {metrics['lr']:.6f}"
+                self.current_bar.set_description(desc)
+            self.current_bar.refresh()
+        
+        # Log milestone progress regardless of tqdm state
+        if step > 0 and self.current_bar and step % max(1, self.current_bar.total // 10) == 0:
+            percentage = (step / self.current_bar.total) * 100
+            self.logger.info(f"📊 Progress: {percentage:.0f}% completed")
+    
+    def close_progress_bar(self):
+        """Close current progress bar"""
+        if self.current_bar:
+            self.current_bar.close()
+            self.current_bar = None
+
+# Global progress manager instance
+progress_manager = LiveProgressManager()
+
 
 class LRFinder:
     """Learning Rate Range Test Implementation"""
@@ -53,9 +111,8 @@ class LRFinder:
         lrs = []
         best_loss = float('inf')
         
-        pbar = tqdm(total=num_iter, desc="LR Range Test", 
-                   mininterval=2.0,  # Update every 2 seconds minimum
-                   maxinterval=10.0)  # Force update every 10 seconds
+        # Use progress manager for clean progress tracking
+        progress_manager.create_progress_bar("LR Range Test", num_iter)
         data_iter = iter(dataloader)
         
         for i in range(num_iter):
@@ -100,13 +157,13 @@ class LRFinder:
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] *= lr_lambda
                 
-            pbar.set_postfix({
-                'LR': f'{current_lr:.2e}',
-                'Loss': f'{smoothed_loss:.3f}'
+            # Update progress with metrics
+            progress_manager.update_progress(i + 1, {
+                'lr': current_lr,
+                'loss': smoothed_loss
             })
-            pbar.update()
             
-        pbar.close()
+        progress_manager.close_progress_bar()
         
         self.history['lr'] = lrs
         self.history['loss'] = losses
@@ -280,13 +337,14 @@ class HyperparameterOptimizer:
             train_loss = 0.0
             train_batches = 0
             
-            pbar = tqdm(self.train_loader, 
-                       desc=f'Epoch {epoch+1}/{epochs}', 
-                       leave=False,
-                       mininterval=5.0,  # Update every 5 seconds minimum
-                       maxinterval=30.0)
+            # Use progress manager for clean progress tracking
+            total_batches = min(100, len(self.train_loader))  # Limit for speed
+            progress_manager.create_progress_bar(f"Epoch {epoch+1}/{epochs}", total_batches)
             
-            for inputs, targets in pbar:
+            for batch_idx, (inputs, targets) in enumerate(self.train_loader):
+                if batch_idx >= total_batches:  # Limit training batches for speed
+                    break
+                    
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 
                 optimizer.zero_grad()
@@ -299,15 +357,13 @@ class HyperparameterOptimizer:
                 train_loss += loss.item()
                 train_batches += 1
                 
-                # Update progress bar with current metrics
-                pbar.set_postfix({
-                    'Loss': f'{train_loss/train_batches:.3f}',
-                    'LR': f'{scheduler.get_last_lr()[0]:.2e}'
+                # Update progress with metrics
+                progress_manager.update_progress(batch_idx + 1, {
+                    'loss': train_loss/train_batches,
+                    'lr': scheduler.get_last_lr()[0]
                 })
-                
-                # Limit training batches for speed
-                if train_batches >= 100:
-                    break
+            
+            progress_manager.close_progress_bar()
             
             # Validation
             model.eval()
@@ -435,10 +491,10 @@ class FullTrainer:
         correct = 0
         total = 0
         
-        pbar = tqdm(self.train_loader, desc='Training',
-                   mininterval=5.0,  # Update every 5 seconds minimum 
-                   maxinterval=30.0)  # Force update every 30 seconds
-        for inputs, targets in pbar:
+        # Use progress manager for clean progress tracking
+        progress_manager.create_progress_bar("Training", len(self.train_loader))
+        
+        for batch_idx, (inputs, targets) in enumerate(self.train_loader):
             inputs, targets = inputs.to(self.device), targets.to(self.device)
             
             optimizer.zero_grad()
@@ -457,12 +513,14 @@ class FullTrainer:
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
             
-            pbar.set_postfix({
-                'Loss': f'{running_loss/(pbar.n+1):.3f}',
-                'Acc': f'{100.*correct/total:.2f}%',
-                'LR': f'{optimizer.param_groups[0]["lr"]:.2e}'
+            # Update progress with metrics
+            progress_manager.update_progress(batch_idx + 1, {
+                'loss': running_loss/(batch_idx + 1),
+                'accuracy': 100.*correct/total,
+                'lr': optimizer.param_groups[0]["lr"]
             })
         
+        progress_manager.close_progress_bar()
         return running_loss / len(self.train_loader), 100. * correct / total
     
     def _validate_epoch(self, criterion):
@@ -473,10 +531,10 @@ class FullTrainer:
         total = 0
         
         with torch.no_grad():
-            pbar = tqdm(self.val_loader, desc='Validation',
-                       mininterval=5.0,  # Update every 5 seconds minimum
-                       maxinterval=30.0)  # Force update every 30 seconds
-            for inputs, targets in pbar:
+            # Use progress manager for clean progress tracking
+            progress_manager.create_progress_bar("Validation", len(self.val_loader))
+            
+            for batch_idx, (inputs, targets) in enumerate(self.val_loader):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
                 loss = criterion(outputs, targets)
@@ -486,10 +544,13 @@ class FullTrainer:
                 total += targets.size(0)
                 correct += predicted.eq(targets).sum().item()
                 
-                pbar.set_postfix({
-                    'Loss': f'{running_loss/(pbar.n+1):.3f}',
-                    'Acc': f'{100.*correct/total:.2f}%'
+                # Update progress with metrics
+                progress_manager.update_progress(batch_idx + 1, {
+                    'loss': running_loss/(batch_idx + 1),
+                    'accuracy': 100.*correct/total
                 })
+            
+            progress_manager.close_progress_bar()
         
         return running_loss / len(self.val_loader), 100. * correct / total
     

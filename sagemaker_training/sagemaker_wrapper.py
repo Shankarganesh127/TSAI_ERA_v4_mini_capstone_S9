@@ -18,13 +18,6 @@ import argparse
 import shutil
 from pathlib import Path
 
-# Try to import tqdm for live progress bars
-try:
-    from tqdm import tqdm
-    TQDM_AVAILABLE = True
-except ImportError:
-    TQDM_AVAILABLE = False
-
 # All files are now in the same directory - no parent directory needed
 current_dir = Path(__file__).parent
 sys.path.append(str(current_dir))
@@ -411,6 +404,11 @@ class ImageNetSageMakerTrainer:
             self.logger.info("🔥 Starting subprocess execution...")
 
             # Stream subprocess output in real-time instead of capturing
+            # Set environment to disable tqdm in subprocess to prevent progress bar spam
+            subprocess_env = os.environ.copy()
+            subprocess_env['TQDM_DISABLE'] = '1'  # Disable tqdm in subprocess
+            subprocess_env['PYTHONUNBUFFERED'] = '1'  # Ensure immediate output
+            
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -418,6 +416,7 @@ class ImageNetSageMakerTrainer:
                 text=True,
                 cwd=str(run_cwd),
                 bufsize=1,  # Line buffered
+                env=subprocess_env,  # Use modified environment
                 universal_newlines=True
             )
             
@@ -426,77 +425,36 @@ class ImageNetSageMakerTrainer:
             self.subprocess_logger.info(f"📝 Process created successfully")
             self.logger.info(f"🚀 Subprocess started with PID: {process.pid}")
             
-            # Stream output line by line with single updating progress bar using tqdm
+            # Stream output line by line - simplified without progress bar parsing
             last_progress_line = ""
-            progress_counter = 0
             line_counter = 0
-            last_progress_percentage = -1
-            current_step = "Unknown"
-            
-            # Initialize tqdm progress bar for live updates
-            progress_bar = None
-            current_progress_data = {"percentage": 0, "current": 0, "total": 100, "metrics": ""}
             
             while True:
                 output = process.stdout.readline()
                 if output == '' and process.poll() is not None:
                     break
+                    
                 if output:
                     line = output.strip()
                     line_counter += 1
                     
-                    # Clean up control characters (like \r) that cause formatting issues
+                    # Clean up control characters
                     clean_line = line.replace('\r', '').replace('\x15', '').strip()
                     if not clean_line:
                         continue
                     
-                    # Log all output to file for complete record (use clean line)
+                    # Log all output to debug file
                     self.subprocess_logger.debug(f"SUBPROCESS_OUTPUT[{line_counter:06d}]: {clean_line}")
                     
-                    # Detect step changes for progress tracking
-                    if any(step_indicator in clean_line for step_indicator in ["Starting Step", "STEP", "LR Range Test", "Weight Decay", "Training", "Validation"]):
-                        if "LR Range Test" in clean_line:
-                            current_step = "LR Range Test"
-                            # Close previous progress bar if exists
-                            if progress_bar:
-                                progress_bar.close()
-                            # Create new progress bar for LR Range Test
-                            progress_bar = self._create_live_progress_bar(current_step, 200)  # Typical LR test iterations
-                        elif "Weight Decay" in clean_line:
-                            current_step = "Weight Decay Search"
-                            if progress_bar:
-                                progress_bar.close()
-                            progress_bar = self._create_live_progress_bar(current_step, 5)  # Typical WD values to test
-                        elif "Full Training" in clean_line or "Training" in clean_line:
-                            current_step = "Training"
-                            if progress_bar:
-                                progress_bar.close()
-                            progress_bar = self._create_live_progress_bar(current_step, 100)  # Epochs
-                        elif "Validation" in clean_line:
-                            current_step = "Validation"
+                    # Print all lines (progress bars are now managed in the pipeline)
+                    print(clean_line)
+                    sys.stdout.flush()
                     
-                    # Handle progress bar updates with live tqdm
-                    if self._is_progress_bar_line(clean_line):
-                        # Parse progress information
-                        progress_info = self._parse_progress_info(clean_line)
-                        if progress_info and progress_bar:
-                            # Update the live progress bar
-                            self._update_live_progress_bar(progress_bar, progress_info, current_step)
-                        
-                        # Only log major milestones to prevent spam
-                        current_percentage = self._extract_percentage(clean_line)
-                        if current_percentage and self._is_progress_milestone(clean_line):
-                            self.logger.info(f"📊 Progress milestone: {current_step} - {current_percentage}%")
-                        
-                        last_progress_line = clean_line
-                    else:
-                        # Regular log lines - always show and log
-                        print(clean_line)
-                        sys.stdout.flush()
-                        # Log important non-progress lines
-                        if any(keyword in clean_line.lower() for keyword in ['error', 'warning', 'step', 'epoch', 'starting', 'completed', 'failed', 'success']):
-                            self.logger.info(f"SUBPROCESS: {clean_line}")
-                        last_progress_line = clean_line
+                    # Log important lines to main log
+                    if any(keyword in clean_line.lower() for keyword in ['error', 'warning', 'step', 'epoch', 'starting', 'completed', 'failed', 'success', 'progress']):
+                        self.logger.info(f"SUBPROCESS: {clean_line}")
+                    
+                    last_progress_line = clean_line
             
             # Wait for process to complete and get return code
             return_code = process.wait()
@@ -526,7 +484,6 @@ class ImageNetSageMakerTrainer:
             self.subprocess_logger.info(f"⏰ End time: {end_time}")
             self.subprocess_logger.info(f"⌛ Total duration: {duration}")
             self.subprocess_logger.info(f"📝 Total output lines captured: {line_counter}")
-            self.subprocess_logger.info(f"📊 Progress updates shown: {progress_counter}")
             
             if return_code == 0:
                 self.logger.info("✅ Subprocess completed successfully")
@@ -559,10 +516,7 @@ class ImageNetSageMakerTrainer:
             self.logger.error(f"❌ Unexpected error during pipeline execution: {e}")
             raise
         finally:
-            # Clean up progress bar if still active
-            if progress_bar:
-                progress_bar.close()
-            # Clean up model monitoring
+            # Clean up model monitoring (progress bars now handled in pipeline)
             self._cleanup_model_monitoring()
     
     def _process_results(self, result, args):
@@ -611,170 +565,6 @@ class ImageNetSageMakerTrainer:
             
         except Exception as e:
             self.logger.warning(f"⚠️ Could not save results summary: {e}")
-    
-    def _is_progress_bar_line(self, line):
-        """Check if a line contains a progress bar (tqdm output)"""
-        # Look for common progress bar indicators
-        progress_indicators = ['|', '%', 'it/s', 's/it', '[', ']', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█']
-        
-        # Also check for common progress bar patterns
-        has_percentage = any(c.isdigit() for c in line) and '%' in line
-        has_progress_chars = any(char in line for char in progress_indicators)
-        has_rate = 'it/s' in line or 's/it' in line
-        
-        # Common progress bar prefixes in your training
-        progress_prefixes = ['LR Range Test:', 'Training:', 'Validation:', 'Epoch', 'Testing:']
-        has_progress_prefix = any(prefix in line for prefix in progress_prefixes)
-        
-        return (has_percentage and has_progress_chars) or (has_rate and has_progress_prefix)
-    
-    def _is_progress_milestone(self, line):
-        """Check if this is an important progress milestone to always show"""
-        # Show progress at certain percentages
-        milestones = ['0%', '10%', '25%', '50%', '75%', '90%', '100%']
-        return any(milestone in line for milestone in milestones)
-    
-    def _extract_percentage(self, line):
-        """Extract percentage from progress bar line"""
-        import re
-        # Look for patterns like "42%" or "42.5%"
-        percentage_match = re.search(r'(\d+(?:\.\d+)?)%', line)
-        if percentage_match:
-            try:
-                return int(float(percentage_match.group(1)))
-            except ValueError:
-                return None
-        return None
-    
-    def _parse_progress_info(self, line):
-        """Parse detailed progress information from tqdm progress bar"""
-        import re
-        
-        info = {}
-        
-        # Extract percentage
-        percentage_match = re.search(r'(\d+(?:\.\d+)?)%', line)
-        if percentage_match:
-            info['percentage'] = int(float(percentage_match.group(1)))
-        
-        # Extract current/total (e.g., "50/200")
-        progress_match = re.search(r'(\d+)/(\d+)', line)
-        if progress_match:
-            info['current'] = int(progress_match.group(1))
-            info['total'] = int(progress_match.group(2))
-        
-        # Extract rate (e.g., "1.41s/it" or "6.02it/s")
-        rate_match = re.search(r'(\d+\.\d+(?:s/it|it/s))', line)
-        if rate_match:
-            info['rate'] = rate_match.group(1)
-        
-        # Extract ETA (e.g., "04:35")
-        eta_match = re.search(r'<(\d+:\d+)', line)
-        if eta_match:
-            info['eta'] = eta_match.group(1)
-        
-        # Extract metrics (LR, Loss, Acc, etc.)
-        metrics = []
-        lr_match = re.search(r'LR=([^,\]]+)', line)
-        if lr_match:
-            metrics.append(f"LR={lr_match.group(1)}")
-        
-        loss_match = re.search(r'Loss=([^,\]]+)', line)
-        if loss_match:
-            metrics.append(f"Loss={loss_match.group(1)}")
-        
-        acc_match = re.search(r'Acc=([^,\]]+)', line)
-        if acc_match:
-            metrics.append(f"Acc={acc_match.group(1)}")
-        
-        if metrics:
-            info['metrics'] = ", ".join(metrics)
-        
-        return info if info else None
-    
-    def _create_live_progress_bar(self, step_name, total_steps):
-        """Create a new tqdm progress bar for live updates"""
-        if not TQDM_AVAILABLE:
-            self.logger.warning("tqdm not available, falling back to simple progress display")
-            return None
-            
-        try:
-            return tqdm(
-                total=total_steps,
-                desc=f"🔄 {step_name}",
-                unit="it",
-                ncols=100,
-                position=0,
-                leave=False,  # Don't leave the progress bar after completion - this prevents multiple bars
-                bar_format='{desc}: {percentage:3.0f}%|{bar}| {n}/{total} [{elapsed}<{remaining}]'
-            )
-        except Exception as e:
-            self.logger.warning(f"Failed to create tqdm progress bar: {e}")
-            return None
-    
-    def _update_live_progress_bar(self, progress_bar, progress_info, current_step):
-        """Update the live progress bar with new information"""
-        if not progress_bar:
-            return
-        
-        try:
-            # Extract current progress value
-            current_value = 0
-            if 'percentage' in progress_info:
-                current_value = int(progress_info['percentage'] * progress_bar.total / 100)
-            elif 'current' in progress_info and 'total' in progress_info:
-                current_value = progress_info['current']
-            
-            # Update progress bar
-            progress_bar.n = current_value
-            
-            # Add additional info to description if available
-            desc = f"🔄 {current_step}"
-            if 'loss' in progress_info:
-                desc += f" | Loss: {progress_info['loss']:.4f}"
-            if 'accuracy' in progress_info:
-                desc += f" | Acc: {progress_info['accuracy']:.2f}%"
-            if 'lr' in progress_info:
-                desc += f" | LR: {progress_info['lr']:.6f}"
-            
-            progress_bar.set_description(desc)
-            progress_bar.refresh()
-            
-        except Exception as e:
-            self.logger.debug(f"Progress bar update error: {e}")
-    
-    def _display_single_progress_bar(self, progress_info):
-        """Display a single, consolidated progress bar (fallback if tqdm not available)"""
-        step = progress_info.get('step', 'Training')
-        percentage = progress_info.get('percentage', 0)
-        current = progress_info.get('current', 0)
-        total = progress_info.get('total', 100)
-        rate = progress_info.get('rate', '')
-        eta = progress_info.get('eta', '')
-        metrics = progress_info.get('metrics', '')
-        
-        # Create progress bar visual
-        bar_width = 20
-        filled = int((percentage / 100) * bar_width)
-        bar = '█' * filled + '░' * (bar_width - filled)
-        
-        # Format the single progress line
-        progress_line = f"🔄 {step}: {percentage:3d}% |{bar}| {current}/{total}"
-        
-        if rate:
-            progress_line += f" [{rate}]"
-        if eta:
-            progress_line += f" ETA: {eta}"
-        if metrics:
-            progress_line += f" | {metrics}"
-        
-        print(f"\r{progress_line:<120}", end='')
-        sys.stdout.flush()
-        
-        # Add newline for milestones to preserve in logs
-        if percentage % 25 == 0 or percentage in [10, 50, 75, 90, 100]:
-            print()  # Add newline for milestone
-            sys.stdout.flush()
 
     def _verify_model_saving(self, output_dir):
         """Verify that model saving worked correctly"""
