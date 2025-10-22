@@ -38,7 +38,7 @@ except ImportError:
     PyTorch = None
     TrainingInput = None
 
-def create_sagemaker_estimator(args):
+def create_sagemaker_estimator(args, hyperparameters):
     """Create SageMaker PyTorch estimator with given args"""
     if args.instance_count > 1:
         distribution = {
@@ -204,8 +204,8 @@ def main():
     
     # Prepare hyperparameters for 7-step training
     hyperparameters = {
-        'epochs': args.epochs,
-        'num_workers': args.num_workers,
+        'epochs': str(args.epochs),
+        'num_workers': str(args.num_workers),
         'run_lr_finder': str(not args.skip_lr_finder).lower(),
         'run_wd_search': str(not args.skip_wd_search).lower(),
         'quick_mode': str(args.quick_mode).lower(),
@@ -213,13 +213,13 @@ def main():
     
     # Add optional hyperparameters
     if args.batch_size:
-        hyperparameters['batch_size'] = args.batch_size
+        hyperparameters['batch_size'] = str(args.batch_size)
     if args.lr_min:
-        hyperparameters['lr_min'] = args.lr_min
+        hyperparameters['lr_min'] = str(args.lr_min)
     if args.lr_max:
-        hyperparameters['lr_max'] = args.lr_max
+        hyperparameters['lr_max'] = str(args.lr_max)
     if args.weight_decay:
-        hyperparameters['weight_decay'] = args.weight_decay
+        hyperparameters['weight_decay'] = str(args.weight_decay)
     
     logger.info("🔧 7-Step Training Configuration:")
     logger.info(f"   - LR Finder: {'Enabled' if not args.skip_lr_finder else 'Disabled'}")
@@ -268,7 +268,7 @@ def main():
     logger.info(f"✅ Source package ready with {len(essential_files)} Python files")
 
     try:
-        estimator = create_sagemaker_estimator(args)
+        estimator = create_sagemaker_estimator(args, hyperparameters)
         logger.info("✅ SageMaker estimator created successfully")
         
         # Launch training job with increased timeout
