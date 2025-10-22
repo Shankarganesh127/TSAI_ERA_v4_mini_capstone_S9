@@ -272,7 +272,7 @@ def log_debug(logger, message):
 # Example usage
 if __name__ == "__main__":
     # Test the logger setup
-    logger = setup_logger("test_logger")
+    logger = setup_unified_logger()
     
     logger.info("This is an info message")
     logger.warning("This is a warning message")

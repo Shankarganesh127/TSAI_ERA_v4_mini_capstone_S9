@@ -1074,12 +1074,16 @@ if __name__ == '__main__':
         print("🚨 DEBUG: main() completed successfully")
         sys.stdout.flush()
     except Exception as e:
-        # Setup basic logger for error reporting if main logger fails
+        # Setup unified logger for error reporting if main logger fails
         print(f"🚨 DEBUG: Exception caught in __main__: {e}")
         sys.stdout.flush()
-        import logging
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-        logger = logging.getLogger(__name__)
+        try:
+            from logger_setup import setup_unified_logger
+            logger = setup_unified_logger()
+        except ImportError:
+            import logging
+            logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+            logger = logging.getLogger(__name__)
         logger.error(f"❌ CRITICAL ERROR: Pipeline failed with exception: {e}")
         logger.error(f"❌ Exception type: {type(e).__name__}")
         import traceback

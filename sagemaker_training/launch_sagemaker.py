@@ -29,7 +29,7 @@ sys.path.append(str(current_dir))
 try:
     from logger_setup import setup_unified_logger, get_unified_logger
 except ImportError:
-    from logger_setup import setup_logger
+    from logger_setup import setup_unified_logger, get_unified_logger
 
 try:
     from sagemaker.pytorch import PyTorch

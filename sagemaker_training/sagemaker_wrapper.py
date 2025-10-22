@@ -45,8 +45,7 @@ else:
 try:
     from logger_setup import setup_unified_logger, get_unified_logger
 except ImportError:
-    from logger_setup import setup_logger as setup_unified_logger
-    from logger_setup import setup_logger as setup_unified_logger, get_logger as get_unified_logger
+    from logger_setup import setup_unified_logger, get_unified_logger
 
 class ImageNetSageMakerTrainer:
     """Unified SageMaker wrapper for 7-step ImageNet training pipeline"""

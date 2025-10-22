@@ -26,7 +26,7 @@ parent_dir = Path(__file__).parent.parent
 sys.path.append(str(parent_dir))
 
 # Local imports
-from logger_setup import setup_logger
+from logger_setup import setup_unified_logger
 from s3_dataset_converter import S3DatasetConverter
 from monitor_training import SageMakerMonitor
 
@@ -35,7 +35,7 @@ class SageMakerPipelineOrchestrator:
     """Complete SageMaker training pipeline orchestrator"""
     
     def __init__(self, config_file=None):
-        self.logger = setup_logger(__name__)
+        self.logger = setup_unified_logger()
         self.config = self._load_config(config_file)
         self.aws_session = None
         self.s3_client = None
@@ -369,29 +369,15 @@ class SageMakerPipelineOrchestrator:
                         self.logger.info("🔄 Using real-time output mode for debugging")
                         result = self._run_subprocess_with_realtime_output(cmd_args, timeout)
                     else:
-                        result = subprocess.run(cmd_args, capture_output=True, text=True, cwd=Path(__file__).parent, timeout=timeout)
+                        # Don't capture output since subprocess logs directly to file
+                        result = subprocess.run(cmd_args, cwd=Path(__file__).parent, timeout=timeout)
                     
                     elapsed_time = time.time() - start_time
                     success = result.returncode == 0
                     
-                    # Always log the execution details (unless already logged in real-time mode)
-                    if not use_realtime:
-                        self.logger.info(f"⏱️ Subprocess completed in {elapsed_time:.1f} seconds")
-                        self.logger.info(f"🔄 Return code: {result.returncode}")
-                        
-                        if result.stdout:
-                            self.logger.info("� STDOUT:")
-                            for line in result.stdout.strip().split('\n'):
-                                if line.strip():  # Skip empty lines
-                                    self.logger.info(f"   {line}")
-                        
-                        if result.stderr:
-                            self.logger.warning("⚠️ STDERR:")
-                            for line in result.stderr.strip().split('\n'):
-                                if line.strip():  # Skip empty lines
-                                    self.logger.warning(f"   {line}")
-                    else:
-                        self.logger.info(f"⏱️ Process completed in {elapsed_time:.1f} seconds")
+                    # Log execution details (subprocess already logs to file)
+                    self.logger.info(f"⏱️ Subprocess completed in {elapsed_time:.1f} seconds")
+                    self.logger.info(f"🔄 Return code: {result.returncode}")
                     
                     if success:
                         self.logger.info("✅ Training job submitted successfully to SageMaker!")
@@ -406,29 +392,8 @@ class SageMakerPipelineOrchestrator:
                     elapsed_time = time.time() - start_time
                     self.logger.error(f"⏰ Subprocess timed out after {elapsed_time:.1f} seconds (limit: {timeout})")
                     
-                    # Try to get partial output if available
-                    try:
-                        if hasattr(timeout_error, 'stdout') and timeout_error.stdout:
-                            self.logger.info("📝 Partial STDOUT before timeout:")
-                            # Handle both bytes and string output
-                            stdout_text = timeout_error.stdout
-                            if isinstance(stdout_text, bytes):
-                                stdout_text = stdout_text.decode('utf-8', errors='replace')
-                            for line in stdout_text.strip().split('\n'):
-                                if line.strip():
-                                    self.logger.info(f"   {line}")
-                        
-                        if hasattr(timeout_error, 'stderr') and timeout_error.stderr:
-                            self.logger.warning("⚠️ Partial STDERR before timeout:")
-                            # Handle both bytes and string output
-                            stderr_text = timeout_error.stderr
-                            if isinstance(stderr_text, bytes):
-                                stderr_text = stderr_text.decode('utf-8', errors='replace')
-                            for line in stderr_text.strip().split('\n'):
-                                if line.strip():
-                                    self.logger.warning(f"   {line}")
-                    except Exception as parse_error:
-                        self.logger.warning(f"⚠️ Could not parse timeout error output: {parse_error}")
+                    # Note: Partial output not available since subprocess logs directly to file
+                    self.logger.warning("⚠️ Check the log file for any partial output before timeout")
                     
                     raise  # Re-raise to be caught by the outer except block
                     
@@ -590,14 +555,14 @@ class SageMakerPipelineOrchestrator:
                 for line in iter(process.stdout.readline, ''):
                     line = line.rstrip()
                     stdout_lines.append(line)
-                    self.logger.info(f"📝 {line}")
+                    # Don't log here - subprocess already logs to file
                 process.stdout.close()
             
             def read_stderr():
                 for line in iter(process.stderr.readline, ''):
                     line = line.rstrip()
                     stderr_lines.append(line)
-                    self.logger.warning(f"⚠️ {line}")
+                    # Don't log here - subprocess already logs to file
                 process.stderr.close()
             
             # Start threads to read output

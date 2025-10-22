@@ -14,14 +14,7 @@ import torch
 from pathlib import Path
 from datetime import datetime
 
-try:
-    from logger_setup import setup_unified_logger
-except ImportError:
-    # Fallback logging
-    import logging
-    def setup_sagemaker_logger(name):
-        logging.basicConfig(level=logging.INFO)
-        return logging.getLogger(name)
+from logger_setup import setup_unified_logger
 
 
 class EpochModelSaver:
@@ -300,8 +293,8 @@ def monkey_patch_training_save(training_module):
                 saver.save_epoch_model(model, optimizer, epoch, accuracy, loss, lr)
         
         except Exception as e:
-            saver = setup_sagemaker_logger("model_saver_patch")
-            saver.error(f"Enhanced model saving failed: {e}")
+            logger = setup_unified_logger()
+            logger.error(f"Enhanced model saving failed: {e}")
         
         return result
     
