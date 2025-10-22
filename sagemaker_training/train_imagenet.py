@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from imagenet_models import resnet50_imagenet
 from imagenet_dataset import get_imagenet_dataloaders
-from logger_setup import setup_logger, log_system_info, log_training_config, log_model_info, log_dataset_info
+from logger_setup import setup_logger, log_system_info, log_training_config, log_model_info, log_dataset_info, get_unified_logger
 
 
 def train_epoch(model, train_loader, criterion, optimizer, device, epoch, total_epochs):
@@ -74,7 +74,7 @@ def validate(model, val_loader, criterion, device):
 
 def main():
     # Initialize logger
-    logger = setup_logger("train_imagenet")
+    logger = get_unified_logger("train_imagenet")
     
     parser = argparse.ArgumentParser(description='Train ResNet50 on ImageNet-1K')
     parser.add_argument('--data-dir', type=str, required=True,

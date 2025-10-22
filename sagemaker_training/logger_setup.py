@@ -11,6 +11,63 @@ from datetime import datetime
 from pathlib import Path
 
 
+def setup_unified_logger(log_level=logging.INFO, unified_log_name="imagenet_training_unified.log"):
+    """
+    Set up a unified logger that all components write to the same log file.
+    
+    Args:
+        log_level: Logging level (default: INFO)
+        unified_log_name: Name of the unified log file
+    
+    Returns:
+        logger: Configured logger instance
+    """
+    
+    # Create logs directory
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    # Create timestamp for log filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = log_dir / f"{timestamp}_{unified_log_name}"
+    
+    # Create root logger that will be shared across all modules
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+    
+    # Clear existing handlers to avoid duplicates
+    root_logger.handlers.clear()
+    
+    # Create formatters
+    detailed_formatter = logging.Formatter(
+        fmt='%(asctime)s - [%(name)s] - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    console_formatter = logging.Formatter(
+        fmt='%(levelname)s - [%(name)s] - %(message)s'
+    )
+    
+    # Create and configure file handler for unified logging
+    file_handler = logging.FileHandler(log_filename, mode='w', encoding='utf-8')
+    file_handler.setLevel(log_level)
+    file_handler.setFormatter(detailed_formatter)
+    
+    # Create and configure console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(console_formatter)
+    
+    # Add handlers to root logger
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    # Store the unified log path for reference
+    root_logger.unified_log_path = str(log_filename)
+    
+    return root_logger
+
+
 def setup_logger(script_name=None, log_level=logging.INFO):
     """
     Set up a comprehensive logger that logs to both file and console.
@@ -73,6 +130,29 @@ def setup_logger(script_name=None, log_level=logging.INFO):
     logger.info(f"Working directory: {os.getcwd()}")
     
     return logger
+
+
+def get_unified_logger(name=None):
+    """
+    Get a logger that writes to the unified log file.
+    
+    Args:
+        name: Logger name (auto-detected if None)
+    
+    Returns:
+        logger: Logger instance that writes to unified log
+    """
+    if name is None:
+        name = Path(sys.argv[0]).stem
+    
+    # Check if unified logging is already set up
+    root_logger = logging.getLogger()
+    if not root_logger.handlers or not hasattr(root_logger, 'unified_log_path'):
+        # Set up unified logging if not already done
+        root_logger = setup_unified_logger()
+    
+    # Return a named logger that will inherit the unified handlers
+    return logging.getLogger(name)
 
 
 def get_logger(name=None):

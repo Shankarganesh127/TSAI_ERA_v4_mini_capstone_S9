@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Import logger from same directory
-from logger_setup import setup_logger
+from logger_setup import get_unified_logger
 
 try:
     from tabulate import tabulate
@@ -50,7 +50,7 @@ def simple_table(data, headers):
 class SageMakerMonitor:
     def __init__(self, region='eu-west-2', quiet=False):
         """Initialize SageMaker monitor"""
-        self.logger = setup_logger("sagemaker_monitor")
+        self.logger = get_unified_logger("sagemaker_monitor")
         self.sagemaker = boto3.client('sagemaker', region_name=region)
         self.logs = boto3.client('logs', region_name=region)
         self.current_job_name = None

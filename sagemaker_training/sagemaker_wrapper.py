@@ -45,11 +45,12 @@ if sagemaker_code_dir.exists():
 else:
     print(f"🔍 /opt/ml/code/ directory does not exist")
 
-# Import logger - all files are in same directory now
+# Import unified logger - all files are in same directory now
 try:
-    from logger_setup import setup_logger
+    from logger_setup import setup_unified_logger, get_unified_logger
 except ImportError:
-    from sagemaker_logging import setup_sagemaker_logger as setup_logger
+    from sagemaker_logging import setup_sagemaker_logger as setup_unified_logger
+    from sagemaker_logging import setup_sagemaker_logger as get_unified_logger
 
 class ImageNetSageMakerTrainer:
     """Unified SageMaker wrapper for 7-step ImageNet training pipeline"""
@@ -58,11 +59,22 @@ class ImageNetSageMakerTrainer:
         # No need to change directories - use absolute paths
         print(f"🔄 INIT: Working from: {os.getcwd()}")
         
-        self.logger = setup_logger("sagemaker_imagenet_trainer")
+        # Set up unified logging for all components
+        self.unified_logger = setup_unified_logger()
+        self.logger = get_unified_logger("sagemaker_wrapper")
+        
+        # Create subprocess logger for detailed logging
+        self.subprocess_logger = get_unified_logger("subprocess_monitor")
+        
         self.config = {}
         
         # Double-check our working directory
+        self.logger.info("="*80)
+        self.logger.info("🚀 SAGEMAKER WRAPPER INITIALIZATION")
+        self.logger.info("="*80)
         self.logger.info(f"🏠 SageMaker Wrapper initialized from: {os.getcwd()}")
+        self.logger.info(f"📝 Unified log file: {getattr(self.unified_logger, 'unified_log_path', 'N/A')}")
+        
         if Path("imagenet_training_pipeline.py").exists():
             self.logger.info("✅ Found imagenet_training_pipeline.py in current directory")
         else:
@@ -351,7 +363,9 @@ class ImageNetSageMakerTrainer:
             # =============================================================================
             # SUBPROCESS CALL TO IMAGENET_TRAINING_PIPELINE.PY
             # =============================================================================
-            import datetime
+            from datetime import datetime
+            
+            # Console output for immediate visibility
             print("=" * 80)
             print("🚀 SAGEMAKER WRAPPER CALLING IMAGENET_TRAINING_PIPELINE.PY")
             print("=" * 80)
@@ -360,14 +374,34 @@ class ImageNetSageMakerTrainer:
             print(f"🐍 Python Executable: {cmd[0]}")
             print(f"📋 Full Command: {' '.join(cmd)}")
             print(f"💻 Working Directory: {run_cwd}")
-            print(f"⏰ Execution Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"⏰ Execution Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             print("=" * 80)
             print("🎬 SUBPROCESS OUTPUT STREAMING BELOW:")
             print("=" * 80)
             sys.stdout.flush()
-            self.logger.info("🔥 CALLING imagenet_training_pipeline.py via subprocess...")
+            
+            # Detailed logging to unified log file
+            self.logger.info("="*60)
+            self.logger.info("� SUBPROCESS: Launching imagenet_training_pipeline.py")
+            self.logger.info("="*60)
+            self.logger.info(f"📞 Caller script: {__file__}")
+            self.logger.info(f"🎯 Target script: {cmd[1]}")
+            self.logger.info(f"🐍 Python executable: {cmd[0]}")
             self.logger.info(f"🎯 Full command: {' '.join(cmd)}")
             self.logger.info(f"💻 Working directory: {run_cwd}")
+            if len(cmd) > 2:
+                self.logger.info(f"⚙️  Script arguments: {' '.join(map(str, cmd[2:]))}")
+            
+            # Log environment variables that might affect execution
+            self.subprocess_logger.info("🌍 Subprocess environment variables:")
+            for key in ['PYTHONPATH', 'PATH', 'CUDA_VISIBLE_DEVICES', 'SM_MODEL_DIR', 'SM_CHANNEL_TRAINING']:
+                value = os.environ.get(key, 'Not set')
+                self.subprocess_logger.info(f"   {key}={value}")
+            
+            # Log process startup details
+            start_time = datetime.now()
+            self.subprocess_logger.info(f"⏰ Subprocess start time: {start_time}")
+            self.logger.info("🔥 Starting subprocess execution...")
 
             # Stream subprocess output in real-time instead of capturing
             process = subprocess.Popen(
@@ -380,17 +414,56 @@ class ImageNetSageMakerTrainer:
                 universal_newlines=True
             )
             
-            # Stream output line by line
+            # Log process creation details
+            self.subprocess_logger.info(f"🆔 Process ID: {process.pid}")
+            self.subprocess_logger.info(f"📝 Process created successfully")
+            self.logger.info(f"🚀 Subprocess started with PID: {process.pid}")
+            
+            # Stream output line by line with progress bar filtering and detailed logging
+            last_progress_line = ""
+            progress_counter = 0
+            line_counter = 0
+            
             while True:
                 output = process.stdout.readline()
                 if output == '' and process.poll() is not None:
                     break
                 if output:
-                    print(output.strip())
-                    sys.stdout.flush()
+                    line = output.strip()
+                    line_counter += 1
+                    
+                    # Log all output to file for complete record
+                    self.subprocess_logger.debug(f"SUBPROCESS_OUTPUT[{line_counter:06d}]: {line}")
+                    
+                    # Filter progress bar updates to reduce spam in console/CloudWatch
+                    if self._is_progress_bar_line(line):
+                        # Only show progress bar updates every 10th update or at significant milestones
+                        progress_counter += 1
+                        if (progress_counter % 10 == 0 or 
+                            self._is_progress_milestone(line) or
+                            line != last_progress_line):
+                            # Clear previous progress line if it was a progress bar
+                            if last_progress_line and self._is_progress_bar_line(last_progress_line):
+                                print(f"\r{' ' * 80}\r", end='')  # Clear line
+                            print(f"📊 {line}")
+                            sys.stdout.flush()
+                            # Log important progress milestones
+                            if self._is_progress_milestone(line):
+                                self.logger.info(f"📊 Progress milestone: {line}")
+                            last_progress_line = line
+                    else:
+                        # Regular log lines - always show and log
+                        print(line)
+                        sys.stdout.flush()
+                        # Log important non-progress lines
+                        if any(keyword in line.lower() for keyword in ['error', 'warning', 'step', 'epoch', 'starting', 'completed']):
+                            self.logger.info(f"SUBPROCESS: {line}")
+                        last_progress_line = line
             
             # Wait for process to complete and get return code
             return_code = process.wait()
+            end_time = datetime.now()
+            duration = end_time - start_time
             
             # =============================================================================
             # SUBPROCESS COMPLETED
@@ -399,9 +472,30 @@ class ImageNetSageMakerTrainer:
             print("✅ IMAGENET_TRAINING_PIPELINE.PY SUBPROCESS COMPLETED")
             print("=" * 80)
             print(f"📊 Return Code: {return_code}")
-            print(f"⏰ Completion Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"⏰ Completion Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"⌛ Total Duration: {duration}")
+            print(f"📝 Total output lines: {line_counter}")
             print("=" * 80)
             sys.stdout.flush()
+            
+            # Comprehensive subprocess completion logging
+            self.subprocess_logger.info("="*60)
+            self.subprocess_logger.info("🏁 SUBPROCESS EXECUTION COMPLETED")
+            self.subprocess_logger.info("="*60)
+            self.subprocess_logger.info(f"🆔 Process ID: {process.pid}")
+            self.subprocess_logger.info(f"📊 Exit code: {return_code}")
+            self.subprocess_logger.info(f"⏰ Start time: {start_time}")
+            self.subprocess_logger.info(f"⏰ End time: {end_time}")
+            self.subprocess_logger.info(f"⌛ Total duration: {duration}")
+            self.subprocess_logger.info(f"📝 Total output lines captured: {line_counter}")
+            self.subprocess_logger.info(f"📊 Progress updates shown: {progress_counter}")
+            
+            if return_code == 0:
+                self.logger.info("✅ Subprocess completed successfully")
+                self.subprocess_logger.info("✅ Process exited normally")
+            else:
+                self.logger.error(f"❌ Subprocess failed with return code: {return_code}")
+                self.subprocess_logger.error(f"❌ Process failed with exit code: {return_code}")
             
             # Check if subprocess failed
             if return_code != 0:
@@ -477,6 +571,28 @@ class ImageNetSageMakerTrainer:
         except Exception as e:
             self.logger.warning(f"⚠️ Could not save results summary: {e}")
     
+    def _is_progress_bar_line(self, line):
+        """Check if a line contains a progress bar (tqdm output)"""
+        # Look for common progress bar indicators
+        progress_indicators = ['|', '%', 'it/s', 's/it', '[', ']', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█']
+        
+        # Also check for common progress bar patterns
+        has_percentage = any(c.isdigit() for c in line) and '%' in line
+        has_progress_chars = any(char in line for char in progress_indicators)
+        has_rate = 'it/s' in line or 's/it' in line
+        
+        # Common progress bar prefixes in your training
+        progress_prefixes = ['LR Range Test:', 'Training:', 'Validation:', 'Epoch', 'Testing:']
+        has_progress_prefix = any(prefix in line for prefix in progress_prefixes)
+        
+        return (has_percentage and has_progress_chars) or (has_rate and has_progress_prefix)
+    
+    def _is_progress_milestone(self, line):
+        """Check if this is an important progress milestone to always show"""
+        # Show progress at certain percentages
+        milestones = ['0%', '10%', '25%', '50%', '75%', '90%', '100%']
+        return any(milestone in line for milestone in milestones)
+
     def _verify_model_saving(self, output_dir):
         """Verify that model saving worked correctly"""
         try:

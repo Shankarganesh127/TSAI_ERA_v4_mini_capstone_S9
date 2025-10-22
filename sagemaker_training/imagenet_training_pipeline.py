@@ -23,7 +23,7 @@ import logging
 from imagenet_models import resnet50_imagenet
 from imagenet_dataset import get_imagenet_dataloaders
 from ilsvrc_dataset import get_ilsvrc_dataloaders
-from logger_setup import setup_logger, log_system_info, log_training_config, get_logger
+from logger_setup import setup_logger, log_system_info, log_training_config, get_logger, get_unified_logger
 
 
 class LRFinder:
@@ -38,7 +38,7 @@ class LRFinder:
         
     def range_test(self, dataloader, start_lr=1e-7, end_lr=1, num_iter=100, smooth_factor=0.05):
         """Perform LR range test"""
-        logger = get_logger()
+        logger = get_unified_logger("lr_range_test")
         logger.info(f"🔍 Starting LR Range Test: {start_lr:.2e} → {end_lr:.2e}")
         
         # Calculate multiplicative factor
@@ -53,7 +53,9 @@ class LRFinder:
         lrs = []
         best_loss = float('inf')
         
-        pbar = tqdm(total=num_iter, desc="LR Range Test")
+        pbar = tqdm(total=num_iter, desc="LR Range Test", 
+                   mininterval=2.0,  # Update every 2 seconds minimum
+                   maxinterval=10.0)  # Force update every 10 seconds
         data_iter = iter(dataloader)
         
         for i in range(num_iter):
@@ -173,7 +175,7 @@ class BatchSizeFinder:
     @staticmethod
     def find_max_batch_size(model, input_shape, device, max_batch_size=2048):
         """Find maximum batch size that fits in memory during training (more realistic test)"""
-        logger = get_logger()
+        logger = get_unified_logger("batch_size_finder")
         model.train()  # Use training mode for realistic memory usage
         batch_size = 1
         criterion = nn.CrossEntropyLoss()
@@ -221,7 +223,7 @@ class HyperparameterOptimizer:
         
     def weight_decay_search(self, lr_config, batch_size, wd_values=[1e-5, 5e-5, 1e-4, 5e-4, 1e-3], epochs=5):
         """Search for optimal weight decay"""
-        logger = get_logger()
+        logger = get_unified_logger()
         logger.info(f"🔍 Weight Decay Search: {wd_values}")
         
         results = []
@@ -278,9 +280,13 @@ class HyperparameterOptimizer:
             train_loss = 0.0
             train_batches = 0
             
-            for inputs, targets in tqdm(self.train_loader, 
-                                       desc=f'Epoch {epoch+1}/{epochs}', 
-                                       leave=False):
+            pbar = tqdm(self.train_loader, 
+                       desc=f'Epoch {epoch+1}/{epochs}', 
+                       leave=False,
+                       mininterval=5.0,  # Update every 5 seconds minimum
+                       maxinterval=30.0)
+            
+            for inputs, targets in pbar:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 
                 optimizer.zero_grad()
@@ -292,6 +298,12 @@ class HyperparameterOptimizer:
                 
                 train_loss += loss.item()
                 train_batches += 1
+                
+                # Update progress bar with current metrics
+                pbar.set_postfix({
+                    'Loss': f'{train_loss/train_batches:.3f}',
+                    'LR': f'{scheduler.get_last_lr()[0]:.2e}'
+                })
                 
                 # Limit training batches for speed
                 if train_batches >= 100:
@@ -346,7 +358,7 @@ class FullTrainer:
               save_checkpoints=True, early_stopping_patience=10):
         """Full training with OneCycle LR and cyclical momentum"""
         
-        logger = get_logger()
+        logger = get_unified_logger()
         logger.info("🚀 Starting Full Training:")
         logger.info(f"   📚 Epochs: {epochs}")
         logger.info(f"   📏 LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
@@ -423,7 +435,9 @@ class FullTrainer:
         correct = 0
         total = 0
         
-        pbar = tqdm(self.train_loader, desc='Training')
+        pbar = tqdm(self.train_loader, desc='Training',
+                   mininterval=5.0,  # Update every 5 seconds minimum 
+                   maxinterval=30.0)  # Force update every 30 seconds
         for inputs, targets in pbar:
             inputs, targets = inputs.to(self.device), targets.to(self.device)
             
@@ -459,7 +473,9 @@ class FullTrainer:
         total = 0
         
         with torch.no_grad():
-            pbar = tqdm(self.val_loader, desc='Validation')
+            pbar = tqdm(self.val_loader, desc='Validation',
+                       mininterval=5.0,  # Update every 5 seconds minimum
+                       maxinterval=30.0)  # Force update every 30 seconds
             for inputs, targets in pbar:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
@@ -501,7 +517,7 @@ def detect_dataset_format(data_path):
     Returns:
         'imagenet' or 'ilsvrc'
     """
-    logger = get_logger()
+    logger = get_unified_logger()
     logger.info(f"🔍 Checking dataset format for: {data_path}")
     
     # Case 1: Check if data_path points directly to ILSVRC root
@@ -555,6 +571,9 @@ def main():
     """Main training pipeline"""
     import sys
     
+    # Set up unified logging first thing
+    logger = get_unified_logger("imagenet_pipeline")
+    
     # =============================================================================
     # SAGEMAKER TRAINING STARTED - SIMPLE STATUS LOG
     # =============================================================================
@@ -568,10 +587,23 @@ def main():
     print("=" * 80)
     sys.stdout.flush()
     
+    # Log to unified log file
+    logger.info("="*80)
+    logger.info("🚀 IMAGENET TRAINING PIPELINE - MAIN EXECUTION")
+    logger.info("="*80)
+    logger.info(f"⏰ Pipeline start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"🐍 Python version: {sys.version}")
+    logger.info(f"🔥 PyTorch version: {torch.__version__}")
+    logger.info(f"💻 Working directory: {os.getcwd()}")
+    logger.info(f"📄 Script path: {sys.argv[0]}")
+    logger.info(f"📋 Command line args: {sys.argv[1:] if len(sys.argv) > 1 else 'None'}")
+    
     print("🚨 DEBUG: Entered main() function")
     sys.stdout.flush()
+    logger.debug("🚨 DEBUG: Entered main() function")
     
     print("🚨 DEBUG: Creating argument parser")
+    logger.debug("🚨 DEBUG: Creating argument parser")
     sys.stdout.flush()
     parser = argparse.ArgumentParser(description='ImageNet Training Pipeline')
     parser.add_argument('--train', type=str, required=True, help='ImageNet training dataset path')

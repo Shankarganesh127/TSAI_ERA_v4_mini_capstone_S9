@@ -6,7 +6,7 @@ import torch
 import os
 import json
 from datetime import datetime
-from logger_setup import get_logger
+from logger_setup import get_unified_logger
 
 
 def save_training_config(args, save_dir):
@@ -96,7 +96,7 @@ def get_lr_schedule_func(schedule_type='step'):
 
 def print_model_summary(model, input_size=(3, 224, 224)):
     """Print model summary using logger"""
-    logger = get_logger("utils")
+    logger = get_unified_logger("utils")
     try:
         from torchsummary import summary
         summary(model, input_size)
@@ -110,7 +110,7 @@ def print_model_summary(model, input_size=(3, 224, 224)):
 
 if __name__ == "__main__":
     # Test utilities
-    logger = get_logger("utils_test")
+    logger = get_unified_logger("utils_test")
     logger.info("ImageNet training utilities loaded successfully")
     
     # Test AverageMeter
