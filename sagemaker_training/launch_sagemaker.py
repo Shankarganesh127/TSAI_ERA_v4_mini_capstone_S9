@@ -20,6 +20,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+
 # All files are now in the same directory
 current_dir = Path(__file__).parent
 sys.path.append(str(current_dir))
@@ -37,6 +38,52 @@ except ImportError:
     PyTorch = None
     TrainingInput = None
 
+def create_sagemaker_estimator(args):
+    """Create SageMaker PyTorch estimator with given args"""
+    if args.instance_count > 1:
+        distribution = {
+            "smdistributed": {
+                "dataparallel": {
+                    "enabled": True
+                }
+            }
+        }
+        estimator = PyTorch(
+            entry_point='sagemaker_wrapper.py',
+            source_dir=str(current_dir),
+            role=args.role_arn,
+            framework_version='2.0.0',
+            py_version='py310',
+            instance_count=args.instance_count,
+            distribution=distribution
+        )
+        return estimator
+    else:
+        estimator = PyTorch(
+            entry_point='sagemaker_wrapper.py',  # Direct file in sagemaker_training directory
+            source_dir=str(current_dir),  # Use current sagemaker_training directory
+            role=args.role_arn,
+            framework_version='2.0.0', 
+            py_version='py310',
+            instance_count=1,
+            instance_type=args.instance_type,
+            hyperparameters=hyperparameters,
+            use_spot_instances=args.spot_training,
+            max_wait=43200 if args.spot_training else None,  # 12 hours (must be >= max_run)
+            max_run=36000,  # 10 hours
+            checkpoint_s3_uri=f"{args.s3_bucket}/checkpoints/{args.job_name}",
+            output_path=f"{args.s3_bucket}/output/{args.job_name}",
+            volume_size=args.volume_size,
+            enable_sagemaker_metrics=True,
+            tags=[
+                {'Key': 'Project', 'Value': 'ImageNet-7Step'},
+                {'Key': 'QuickMode', 'Value': str(args.quick_mode)},
+                {'Key': 'LRFinder', 'Value': str(not args.skip_lr_finder)},
+                {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)}
+            ]
+        )
+        return estimator
+    
 def main():
     # Setup logging
     logger = setup_logger("sagemaker_launcher")
@@ -65,6 +112,7 @@ def main():
     
     # Instance configuration
     parser.add_argument('--instance-type', default='ml.p3.2xlarge', help='Instance type')
+    parser.add_argument('--instance-count', type=int, default=1, help='Number of instances')
     parser.add_argument('--spot-training', action='store_true', help='Use spot instances')
     parser.add_argument('--volume-size', type=int, default=100, help='EBS volume size (GB)')
     
@@ -218,31 +266,9 @@ def main():
         logger.info(f"   � Will upload: {file_path.relative_to(current_dir)}")
     
     logger.info(f"✅ Source package ready with {len(essential_files)} Python files")
-    
+
     try:
-        estimator = PyTorch(
-            entry_point='sagemaker_wrapper.py',  # Direct file in sagemaker_training directory
-            source_dir=str(current_dir),  # Use current sagemaker_training directory
-            role=args.role_arn,
-            framework_version='2.0.0', 
-            py_version='py310',
-            instance_count=1,
-            instance_type=args.instance_type,
-            hyperparameters=hyperparameters,
-            use_spot_instances=args.spot_training,
-            max_wait=43200 if args.spot_training else None,  # 12 hours (must be >= max_run)
-            max_run=36000,  # 10 hours
-            checkpoint_s3_uri=f"{args.s3_bucket}/checkpoints/{args.job_name}",
-            output_path=f"{args.s3_bucket}/output/{args.job_name}",
-            volume_size=args.volume_size,
-            enable_sagemaker_metrics=True,
-            tags=[
-                {'Key': 'Project', 'Value': 'ImageNet-7Step'},
-                {'Key': 'QuickMode', 'Value': str(args.quick_mode)},
-                {'Key': 'LRFinder', 'Value': str(not args.skip_lr_finder)},
-                {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)}
-            ]
-        )
+        estimator = create_sagemaker_estimator(args)
         logger.info("✅ SageMaker estimator created successfully")
         
         # Launch training job with increased timeout

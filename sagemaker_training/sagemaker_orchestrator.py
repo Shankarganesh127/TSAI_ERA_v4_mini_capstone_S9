@@ -21,9 +21,9 @@ from datetime import datetime
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 
-# All files are in the same directory now
-current_dir = Path(__file__).parent
-sys.path.append(str(current_dir))
+# All files are in t directory to path for imports
+parent_dir = Path(__file__).parent.parent
+sys.path.append(str(parent_dir))
 
 # Local imports
 from sagemaker_logging import setup_sagemaker_logger
@@ -56,6 +56,7 @@ class SageMakerPipelineOrchestrator:
             },
             "training": {
                 "instance_type": "ml.g5.12xlarge", #ml.p3.8xlarge",
+                "instance_count": 1,
                 "use_spot": True,
                 "max_runtime": 86400,  # 24 hours
                 "checkpoint_interval": 300,  # 5 minutes
@@ -328,6 +329,7 @@ class SageMakerPipelineOrchestrator:
                 "--train-data-s3", train_data_path,  # Original training data
                 "--val-data-s3", val_data_path,     # Converted validation data
                 "--instance-type", training_args.get("instance_type", "ml.g5.12xlarge"),
+                "--instance-count", training_args.get("instance_count", 1),
                 "--epochs", str(training_args.get("epochs")),  # Fixed: no hardcoded default
                 "--auto-confirm"  # Skip user confirmation for automated pipeline
             ]
@@ -357,16 +359,36 @@ class SageMakerPipelineOrchestrator:
                 start_time = time.time()
                 
                 # Check if real-time output is enabled
-                # Always use real-time output for SageMaker job submission to provide better debugging
-                # This is especially important for long-running operations like spot instance provisioning
-                use_realtime = True  # Force real-time output for training submissions
+                use_realtime = self.config.get("debug", {}).get("enable_realtime_output", False)
                 
                 try:
-                    self.logger.info("🔄 Using real-time output mode for SageMaker job submission")
-                    result = self._run_subprocess_with_realtime_output(cmd_args, timeout)
+                    if use_realtime:
+                        self.logger.info("🔄 Using real-time output mode for debugging")
+                        result = self._run_subprocess_with_realtime_output(cmd_args, timeout)
+                    else:
+                        result = subprocess.run(cmd_args, capture_output=True, text=True, cwd=Path(__file__).parent, timeout=timeout)
                     
                     elapsed_time = time.time() - start_time
                     success = result.returncode == 0
+                    
+                    # Always log the execution details (unless already logged in real-time mode)
+                    if not use_realtime:
+                        self.logger.info(f"⏱️ Subprocess completed in {elapsed_time:.1f} seconds")
+                        self.logger.info(f"🔄 Return code: {result.returncode}")
+                        
+                        if result.stdout:
+                            self.logger.info("� STDOUT:")
+                            for line in result.stdout.strip().split('\n'):
+                                if line.strip():  # Skip empty lines
+                                    self.logger.info(f"   {line}")
+                        
+                        if result.stderr:
+                            self.logger.warning("⚠️ STDERR:")
+                            for line in result.stderr.strip().split('\n'):
+                                if line.strip():  # Skip empty lines
+                                    self.logger.warning(f"   {line}")
+                    else:
+                        self.logger.info(f"⏱️ Process completed in {elapsed_time:.1f} seconds")
                     
                     if success:
                         self.logger.info("✅ Training job submitted successfully to SageMaker!")
@@ -450,6 +472,7 @@ class SageMakerPipelineOrchestrator:
         role_arn = getattr(args, 'role_arn', None) or self.config.get("aws", {}).get("default_role_arn")
         epochs = getattr(args, 'epochs', None) or self.config.get("training", {}).get("default_epochs", 90)
         instance_type = args.instance_type or self.config["training"]["instance_type"]
+        instance_count = args.instance_count or self.config["training"]["instance_count"]
         use_spot = args.use_spot if hasattr(args, 'use_spot') else self.config["training"]["use_spot"]
         
         # Validate required parameters
@@ -462,6 +485,7 @@ class SageMakerPipelineOrchestrator:
             'source_bucket': source_bucket,
             'target_prefix': target_prefix,
             'instance_type': instance_type,
+            'instance_count': instance_count,
             'use_spot': use_spot,
             'max_runtime': self.config["training"]["max_runtime"],
             'enable_7_stage': self.config["training"]["enable_7_stage_pipeline"],
@@ -541,8 +565,6 @@ class SageMakerPipelineOrchestrator:
         self.logger.info(f"🔧 Executing: {' '.join(cmd_args)}")
         self.logger.info(f"📂 Working directory: {cwd}")
         self.logger.info(f"⏰ Timeout: {timeout} seconds ({timeout//60} minutes)")
-        self.logger.info("🚀 Starting SageMaker job submission process...")
-        self.logger.info("💡 This may take several minutes for spot instance provisioning")
         
         start_time = time.time()
         
@@ -737,6 +759,8 @@ def main():
                        help='S3 prefix for converted dataset (default: Datasets/imagenet1k/ILSVRC/imagenet-sagemaker)')
     parser.add_argument('--instance-type', type=str, default='ml.p3.8xlarge',
                        help='SageMaker instance type (default: ml.p3.8xlarge)')
+    parser.add_argument('--instance-count', type=int, default=1,
+                       help='Number of SageMaker instances (default: 1)')
     parser.add_argument('--use-spot', action='store_true',
                        help='Use spot instances for cost savings')
     parser.add_argument('--epochs', type=int, default=90,

@@ -41,7 +41,6 @@ def get_imagenet_transforms(input_size=224):
     
     return train_transform, val_transform
 
-
 def get_imagenet_dataloaders( train, val, batch_size=32, num_workers=4, pin_memory=True):
     """
     Create ImageNet-1K data loaders

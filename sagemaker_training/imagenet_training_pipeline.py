@@ -568,11 +568,54 @@ def main():
     # Setup logging
     logger = setup_logger('imagenet_pipeline')
     
-    # Setup
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"🖥️  Using device: {device}")
+    # DEBUG: Add extensive early debugging
+    logger.info("🔍 DEBUG: Arguments parsed successfully")
+    logger.info(f"🔍 DEBUG: Training data path: {args.train}")
+    logger.info(f"🔍 DEBUG: Validation data path: {args.val}")
+    logger.info(f"🔍 DEBUG: Output path: {args.output}")
+    logger.info(f"🔍 DEBUG: Epochs: {args.epochs}")
     
-    os.makedirs(args.output, exist_ok=True)
+    # Check if paths exist
+    import os
+    logger.info(f"🔍 DEBUG: Train path exists: {os.path.exists(args.train)}")
+    logger.info(f"🔍 DEBUG: Val path exists: {os.path.exists(args.val)}")
+    
+    # Check if paths have content
+    if os.path.exists(args.train):
+        try:
+            train_contents = os.listdir(args.train)
+            logger.info(f"🔍 DEBUG: Train path has {len(train_contents)} items")
+            if len(train_contents) > 0:
+                logger.info(f"🔍 DEBUG: First few train items: {train_contents[:3]}")
+        except Exception as e:
+            logger.error(f"❌ DEBUG: Error listing train directory: {e}")
+    
+    if os.path.exists(args.val):
+        try:
+            val_contents = os.listdir(args.val)
+            logger.info(f"🔍 DEBUG: Val path has {len(val_contents)} items")
+            if len(val_contents) > 0:
+                logger.info(f"🔍 DEBUG: First few val items: {val_contents[:3]}")
+        except Exception as e:
+            logger.error(f"❌ DEBUG: Error listing val directory: {e}")
+    
+    # Setup
+    try:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        logger.info(f"🖥️  Using device: {device}")
+        logger.info(f"🔍 DEBUG: CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            logger.info(f"🔍 DEBUG: CUDA device count: {torch.cuda.device_count()}")
+    except Exception as e:
+        logger.error(f"❌ DEBUG: Error setting up device: {e}")
+        raise
+    
+    try:
+        os.makedirs(args.output, exist_ok=True)
+        logger.info(f"🔍 DEBUG: Output directory created: {args.output}")
+    except Exception as e:
+        logger.error(f"❌ DEBUG: Error creating output directory: {e}")
+        raise
     
     # Detect dataset format
     #dataset_format = detect_dataset_format(args.data)
@@ -580,7 +623,14 @@ def main():
     
     # Model factory
     def create_model():
-        return resnet50_imagenet(num_classes=1000, pretrained=False)
+        logger.info("🔍 DEBUG: Creating model...")
+        try:
+            model = resnet50_imagenet(num_classes=1000, pretrained=False)
+            logger.info("🔍 DEBUG: Model created successfully")
+            return model
+        except Exception as e:
+            logger.error(f"❌ DEBUG: Error creating model: {e}")
+            raise
     
     # STEP 0: Batch Size Detection (if not specified)
     if args.batch_size is None:
@@ -588,13 +638,19 @@ def main():
         logger.info("🔧 STEP 0: Batch Size Detection")
         logger.info("="*60)
         
-        # Clear GPU cache if available
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            logger.info(f"🖥️  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
-        
-        # Create a temporary model to test batch sizes
-        temp_model = create_model().to(device)
+        try:
+            # Clear GPU cache if available
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info(f"🖥️  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
+            
+            # Create a temporary model to test batch sizes
+            logger.info("🔍 DEBUG: About to create temporary model for batch size detection")
+            temp_model = create_model().to(device)
+            logger.info("🔍 DEBUG: Temporary model created and moved to device")
+        except Exception as e:
+            logger.error(f"❌ DEBUG: Error in batch size detection setup: {e}")
+            raise
         max_batch_size = BatchSizeFinder.find_max_batch_size(temp_model, (3, 224, 224), device)
         
         # Use different safety factors based on mode
@@ -790,4 +846,18 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        # Setup basic logger for error reporting if main logger fails
+        import logging
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger(__name__)
+        logger.error(f"❌ CRITICAL ERROR: Pipeline failed with exception: {e}")
+        logger.error(f"❌ Exception type: {type(e).__name__}")
+        import traceback
+        logger.error(f"❌ Full traceback:")
+        for line in traceback.format_exc().split('\n'):
+            if line.strip():
+                logger.error(f"   {line}")
+        raise

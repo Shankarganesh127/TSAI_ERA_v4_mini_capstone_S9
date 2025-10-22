@@ -7,6 +7,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from logger_setup import get_logger
+import smdistributed.dataparallel.torch.torch_smddp
+import torch.distributed as dist
+import os
+import torch
 
 class BasicBlock(nn.Module):
     """Basic residual block for ResNet-18/34"""
@@ -151,6 +155,47 @@ class ResNetImageNet(nn.Module):
         x = self.fc(x)
         return x
 
+def model_device_setup_for_ddp(model):
+    """
+    Setup device and device_ids for DistributedDataParallel (DDP)
+    based on LOCAL_RANK environment variable.
+    
+    Returns:
+        current_device: torch.device for the current process
+        device_ids: List of device IDs for DDP constructor
+    """
+
+    # --- 1. Get the local rank from the environment ---
+    # The 'LOCAL_RANK' environment variable is typically set by the launcher
+    # (e.g., torchrun, sagemaker's distributed setup) for each process.
+    try:
+        # Use the rank assigned to this specific process on the current node.
+        local_rank = int(os.environ['LOCAL_RANK'])
+    except KeyError:
+        # Fallback for non-distributed or single-GPU testing
+        local_rank = 0
+
+    print(f"Process is running on local GPU rank: {local_rank}")
+
+    # --- 2. Set the device for the current process ---
+    # This ensures PyTorch operations and the model are correctly placed.
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        current_device = torch.device('cuda', local_rank)
+    else:
+        current_device = torch.device('cpu')
+
+    # --- 3. Determine device_ids for DDP constructor ---
+    # For DistributedDataParallel, device_ids is a list containing the local rank.
+    if current_device.type == 'cuda':
+        device_ids = [local_rank]
+    else:
+        # device_ids is often ignored or set to None for CPU-only DDP (which is rare)
+        device_ids = None
+
+    print(f"DDP device_ids parameter: {device_ids}")
+    dist.init_process_group(backend='smddp')
+    model = torch.nn.parallel.DistributedDataParallel(model.to(current_device), device_ids=device_ids)
 
 def resnet50_imagenet(num_classes=1000, pretrained=False):
     """
@@ -161,6 +206,8 @@ def resnet50_imagenet(num_classes=1000, pretrained=False):
         pretrained: Whether to load pretrained weights
     """
     model = ResNetImageNet(Bottleneck, [3, 4, 6, 3], num_classes)
+    
+    model = model_device_setup_for_ddp(model)
     
     if pretrained:
         # Load pretrained weights from torchvision
