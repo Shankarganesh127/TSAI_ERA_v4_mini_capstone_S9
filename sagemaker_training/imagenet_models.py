@@ -6,7 +6,7 @@ ResNet models optimized for ImageNet-1K training
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from logger_setup import get_logger
+from logger_setup import get_unified_logger
 import os
 
 # Only import distributed modules if we're in a multi-instance distributed job
@@ -287,7 +287,7 @@ def count_parameters(model):
 
 if __name__ == "__main__":
     # Test the model
-    logger = get_logger("imagenet_models")
+    logger = get_unified_logger("imagenet_models")
     
     model = resnet50_imagenet(num_classes=1000)
     total, trainable = count_parameters(model)

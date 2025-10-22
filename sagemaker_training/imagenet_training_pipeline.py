@@ -23,7 +23,7 @@ import logging
 from imagenet_models import resnet50_imagenet
 from imagenet_dataset import get_imagenet_dataloaders
 from ilsvrc_dataset import get_ilsvrc_dataloaders
-from logger_setup import setup_logger, log_system_info, log_training_config, get_logger, get_unified_logger
+from logger_setup import get_unified_logger
 
 # Global progress bar manager to avoid subprocess complexity
 class LiveProgressManager:
@@ -31,7 +31,7 @@ class LiveProgressManager:
     
     def __init__(self):
         self.current_bar = None
-        self.logger = get_logger()
+        self.logger = get_unified_logger("LiveProgressManager")
         
     def create_progress_bar(self, desc, total, disable_tqdm=False):
         """Create a new progress bar for the current step"""

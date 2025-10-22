@@ -9,7 +9,7 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from PIL import Image
-from logger_setup import get_logger
+from logger_setup import get_unified_logger
 
 
 def get_imagenet_transforms(input_size=224):
@@ -95,7 +95,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     
     # Log dataset information if called directly (not from other modules)
     try:
-        logger = get_logger("imagenet_dataset")
+        logger = get_unified_logger("imagenet_dataset")
         logger.info(f"Training samples: {len(train_dataset)}")
         logger.info(f"Validation samples: {len(val_dataset)}")
         logger.info(f"Number of classes: {len(train_dataset.classes)}")
@@ -177,7 +177,7 @@ def get_tiny_imagenet_dataloaders(data_dir, batch_size=32, num_workers=4):
 
 if __name__ == "__main__":
     # Test transforms
-    logger = get_logger("imagenet_dataset")
+    logger = get_unified_logger("imagenet_dataset")
     
     train_transform, val_transform = get_imagenet_transforms()
     logger.info("ImageNet transforms created successfully")
