@@ -56,57 +56,57 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         train_loader, val_loader
     """
     
-    print(f"🚨 DEBUG: get_imagenet_dataloaders called with train={train}, val={val}")
-    
+    logger = get_unified_logger("imagenet_dataset")
+    logger.info(f"get_imagenet_dataloaders called with train={train}, val={val}")
+
     train_transform, val_transform = get_imagenet_transforms()
-    print("🚨 DEBUG: Transforms created")
-    
+    logger.info("Transforms created")
+
     # Use the provided paths directly
     train_dir = train
     val_dir = val
-    
-    print(f"🚨 DEBUG: Checking paths - train_dir={train_dir}, val_dir={val_dir}")
-    
+
+    logger.info(f"Checking paths - train_dir={train_dir}, val_dir={val_dir}")
+
     if not os.path.exists(train_dir):
-        print(f"🚨 DEBUG: Training directory does not exist: {train_dir}")
+        logger.error(f"Training directory does not exist: {train_dir}")
         raise FileNotFoundError(f"Training data directory not found: {train_dir}")
     if not os.path.exists(val_dir):
-        print(f"🚨 DEBUG: Validation directory does not exist: {val_dir}")
+        logger.error(f"Validation directory does not exist: {val_dir}")
         raise FileNotFoundError(f"Validation data directory not found: {val_dir}")
-    
-    print("🚨 DEBUG: Both directories exist, creating datasets")
-    
+
+    logger.info("Both directories exist, creating datasets")
+
     # Create datasets
     try:
-        print(f"🚨 DEBUG: Creating training dataset from {train_dir}")
+        logger.info(f"Creating training dataset from {train_dir}")
         train_dataset = torchvision.datasets.ImageFolder(train_dir, transform=train_transform)
-        print(f"🚨 DEBUG: Training dataset created successfully with {len(train_dataset)} samples")
+        logger.info(f"Training dataset created successfully with {len(train_dataset)} samples")
     except Exception as e:
-        print(f"🚨 DEBUG: Error creating training dataset: {e}")
+        logger.error(f"Error creating training dataset: {e}")
         raise
-    
+
     try:
-        print(f"🚨 DEBUG: Creating validation dataset from {val_dir}")
+        logger.info(f"Creating validation dataset from {val_dir}")
         val_dataset = torchvision.datasets.ImageFolder(val_dir, transform=val_transform)
-        print(f"🚨 DEBUG: Validation dataset created successfully with {len(val_dataset)} samples")
+        logger.info(f"Validation dataset created successfully with {len(val_dataset)} samples")
     except Exception as e:
-        print(f"🚨 DEBUG: Error creating validation dataset: {e}")
+        logger.error(f"Error creating validation dataset: {e}")
         raise
-    
+
     # Log dataset information if called directly (not from other modules)
     try:
-        logger = get_unified_logger("imagenet_dataset")
         logger.info(f"Training samples: {len(train_dataset)}")
         logger.info(f"Validation samples: {len(val_dataset)}")
         logger.info(f"Number of classes: {len(train_dataset.classes)}")
     except Exception:
         # Fallback for when logger is not available
         pass
-    
+
     # Create data loaders
-    print("🚨 DEBUG: Creating data loaders")
+    logger.info("Creating data loaders")
     try:
-        print(f"🚨 DEBUG: Creating training data loader with batch_size={batch_size}")
+        logger.info(f"Creating training data loader with batch_size={batch_size}")
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
@@ -115,13 +115,13 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False
         )
-        print("🚨 DEBUG: Training data loader created successfully")
+        logger.info("Training data loader created successfully")
     except Exception as e:
-        print(f"🚨 DEBUG: Error creating training data loader: {e}")
+        logger.error(f"Error creating training data loader: {e}")
         raise
-    
+
     try:
-        print(f"🚨 DEBUG: Creating validation data loader with batch_size={batch_size}")
+        logger.info(f"Creating validation data loader with batch_size={batch_size}")
         val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size,
@@ -130,12 +130,12 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False
         )
-        print("🚨 DEBUG: Validation data loader created successfully")
+        logger.info("Validation data loader created successfully")
     except Exception as e:
-        print(f"🚨 DEBUG: Error creating validation data loader: {e}")
+        logger.error(f"Error creating validation data loader: {e}")
         raise
-    
-    print("🚨 DEBUG: Both data loaders created, returning")
+
+    logger.info("Both data loaders created, returning")
     return train_loader, val_loader
 
 

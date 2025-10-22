@@ -177,6 +177,75 @@ def log_dataset_info(logger, train_loader, val_loader=None):
 
 
 # Convenience functions for different log levels
+############################################################
+# SageMaker Pipeline Logging Functions (from sagemaker_logging.py)
+############################################################
+
+def log_sagemaker_config(logger, config_dict, title="Configuration"):
+    """Log configuration dictionary in a formatted way"""
+    logger.info(f"⚙️  {title}:")
+    for key, value in config_dict.items():
+        logger.info(f"   {key}: {value}")
+
+def log_7_step_pipeline_status(logger, step_status):
+    """Log 7-step pipeline status"""
+    logger.info("📋 7-Step Pipeline Status:")
+    steps = [
+        ("1️⃣ LR Range Test", step_status.get('lr_finder', 'enabled')),
+        ("2️⃣ Pick LR bounds", step_status.get('lr_bounds', 'auto')),
+        ("3️⃣ OneCycle LR", step_status.get('onecycle', 'enabled')),
+        ("4️⃣ Choose batch size", step_status.get('batch_size', 'auto-detect')),
+        ("5️⃣ Tune weight-decay", step_status.get('wd_search', 'enabled')),
+        ("6️⃣ Full training", step_status.get('training', 'enabled')),
+        ("7️⃣ Monitor", step_status.get('monitoring', 'enabled'))
+    ]
+    for step_name, status in steps:
+        logger.info(f"   {step_name}: {status}")
+
+def log_training_progress(logger, epoch, total_epochs, train_acc, val_acc, lr):
+    """Log training progress in consistent format"""
+    progress = (epoch / total_epochs) * 100
+    logger.info(f"📊 Epoch {epoch}/{total_epochs} ({progress:.1f}%) | "
+                f"Train: {train_acc:.2f}% | Val: {val_acc:.2f}% | LR: {lr:.2e}")
+
+def log_hyperparameters(logger, hyperparams):
+    """Log hyperparameters in organized format"""
+    logger.info("🔧 Hyperparameters:")
+    training_params = {}
+    pipeline_params = {}
+    aws_params = {}
+    for key, value in hyperparams.items():
+        if key in ['epochs', 'batch_size', 'lr_min', 'lr_max', 'weight_decay']:
+            training_params[key] = value
+        elif key in ['run_lr_finder', 'run_wd_search', 'quick_mode']:
+            pipeline_params[key] = value
+        elif key in ['data_dir', 'output_dir', 'num_workers']:
+            aws_params[key] = value
+    if training_params:
+        logger.info("   Training:")
+        for key, value in training_params.items():
+            logger.info(f"     {key}: {value}")
+    if pipeline_params:
+        logger.info("   Pipeline Control:")
+        for key, value in pipeline_params.items():
+            logger.info(f"     {key}: {value}")
+    if aws_params:
+        logger.info("   AWS/SageMaker:")
+        for key, value in aws_params.items():
+            logger.info(f"     {key}: {value}")
+
+def log_job_summary(logger, job_name, status, duration=None, results=None):
+    """Log job completion summary"""
+    logger.info("=" * 60)
+    logger.info(f"🎯 SageMaker Job Summary: {job_name}")
+    logger.info(f"   Status: {status}")
+    if duration:
+        logger.info(f"   Duration: {duration}")
+    if results:
+        logger.info("   Results:")
+        for key, value in results.items():
+            logger.info(f"     {key}: {value}")
+    logger.info("=" * 60)
 def log_error(logger, message, exception=None):
     """Log error message with optional exception details."""
     if exception:

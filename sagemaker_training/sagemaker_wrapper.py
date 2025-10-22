@@ -10,6 +10,7 @@ with SageMaker cloud deployment while preserving all advanced capabilities.
 5. Tune weight-decay → 6. Full training → 7. Monitor & iterate
 """
 
+
 import os
 import sys
 import subprocess
@@ -22,59 +23,46 @@ from pathlib import Path
 current_dir = Path(__file__).parent
 sys.path.append(str(current_dir))
 
-# Debug: Print current working directory and file locations
-print(f"🔍 Current working directory: {os.getcwd()}")
-print(f"🔍 Wrapper script location: {__file__}")
-print(f"🔍 SageMaker training directory: {current_dir}")
-
-# No need to change directories - just use absolute paths
-print(f"🔄 Working from: {os.getcwd()}")
-
-# Check if imagenet_training_pipeline.py exists at expected SageMaker location
+from logger_setup import get_unified_logger
+logger = get_unified_logger("sagemaker_wrapper_startup")
+logger.info(f"🔍 Current working directory: {os.getcwd()}")
+logger.info(f"🔍 Wrapper script location: {__file__}")
+logger.info(f"🔍 SageMaker training directory: {current_dir}")
+logger.info(f"🔄 Working from: {os.getcwd()}")
 pipeline_script = Path("/opt/ml/code/imagenet_training_pipeline.py")
-print(f"🔍 Pipeline script path: {pipeline_script}")
-print(f"🔍 Pipeline script exists: {pipeline_script.exists()}")
-
-# List files in SageMaker code directory
+logger.info(f"🔍 Pipeline script path: {pipeline_script}")
+logger.info(f"🔍 Pipeline script exists: {pipeline_script.exists()}")
 sagemaker_code_dir = Path("/opt/ml/code")
 if sagemaker_code_dir.exists():
-    print(f"🔍 Files in /opt/ml/code/:")
+    logger.info(f"🔍 Files in /opt/ml/code/:")
     for f in sorted(sagemaker_code_dir.iterdir()):
         if f.is_file() and f.suffix == '.py':
-            print(f"    {f.name}")
+            logger.info(f"    {f.name}")
 else:
-    print(f"🔍 /opt/ml/code/ directory does not exist")
+    logger.info(f"🔍 /opt/ml/code/ directory does not exist")
 
 # Import unified logger - all files are in same directory now
 try:
     from logger_setup import setup_unified_logger, get_unified_logger
 except ImportError:
-    from sagemaker_logging import setup_sagemaker_logger as setup_unified_logger
-    from sagemaker_logging import setup_unified_logger, get_unified_logger
+    from logger_setup import setup_logger as setup_unified_logger
+    from logger_setup import setup_logger as setup_unified_logger, get_logger as get_unified_logger
 
 class ImageNetSageMakerTrainer:
     """Unified SageMaker wrapper for 7-step ImageNet training pipeline"""
     
     def __init__(self):
         # No need to change directories - use absolute paths
-        print(f"🔄 INIT: Working from: {os.getcwd()}")
-        
-        # Set up unified logging for all components
         self.unified_logger = setup_unified_logger()
         self.logger = get_unified_logger("sagemaker_wrapper")
-        
-        # Create subprocess logger for detailed logging
         self.subprocess_logger = get_unified_logger("subprocess_monitor")
-        
         self.config = {}
-        
-        # Double-check our working directory
+        self.logger.info(f"🔄 INIT: Working from: {os.getcwd()}")
         self.logger.info("="*80)
         self.logger.info("🚀 SAGEMAKER WRAPPER INITIALIZATION")
         self.logger.info("="*80)
         self.logger.info(f"🏠 SageMaker Wrapper initialized from: {os.getcwd()}")
         self.logger.info(f"📝 Unified log file: {getattr(self.unified_logger, 'unified_log_path', 'N/A')}")
-        
         if Path("imagenet_training_pipeline.py").exists():
             self.logger.info("✅ Found imagenet_training_pipeline.py in current directory")
         else:
@@ -132,7 +120,6 @@ class ImageNetSageMakerTrainer:
         # In SageMaker, all source code is uploaded to /opt/ml/code/
         
         # EARLY DEBUG - ensure this function is being called
-        print("🚨 DEBUG: build_pipeline_command() function called!")
         self.logger.info("🚨 DEBUG: build_pipeline_command() function called!")
         
         self.logger.info("🔍 Building pipeline command...")
@@ -337,14 +324,11 @@ class ImageNetSageMakerTrainer:
             # No need to change working directory - use absolute paths
             run_cwd = Path.cwd()
             self.logger.info(f"🏃 Running from current directory: {run_cwd}")
-            
             sagemaker_code_dir = Path("/opt/ml/code")
             if sagemaker_code_dir.exists():
                 self.logger.info(f"✅ SageMaker code directory exists: {sagemaker_code_dir}")
             else:
                 self.logger.warning(f"⚠️ SageMaker code directory not found: {sagemaker_code_dir}")
-            
-            
             # Verify the target script exists at absolute path
             target_script = Path("/opt/ml/code/imagenet_training_pipeline.py")
             if target_script.exists():
@@ -352,32 +336,25 @@ class ImageNetSageMakerTrainer:
             else:
                 self.logger.error(f"❌ Target script NOT found: {target_script}")
                 self.logger.error(f"❌ This will cause 'No such file or directory' error")
-            
             # Debug: Show what files are in the SageMaker code directory
             if sagemaker_code_dir.exists():
                 self.logger.info(f"📁 Files in {sagemaker_code_dir}:")
                 for f in sagemaker_code_dir.iterdir():
                     if f.is_file() and f.suffix == '.py':
                         self.logger.info(f"   📄 {f.name}")
-
-            # =============================================================================
-            # SUBPROCESS CALL TO IMAGENET_TRAINING_PIPELINE.PY
-            # =============================================================================
             from datetime import datetime
-            
-            # Console output for immediate visibility
-            print("=" * 80)
-            print("🚀 SAGEMAKER WRAPPER CALLING IMAGENET_TRAINING_PIPELINE.PY")
-            print("=" * 80)
-            print(f"📞 Caller: {__file__}")
-            print(f"🎯 Target Script: {cmd[1]}")
-            print(f"🐍 Python Executable: {cmd[0]}")
-            print(f"📋 Full Command: {' '.join(cmd)}")
-            print(f"💻 Working Directory: {run_cwd}")
-            print(f"⏰ Execution Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            print("=" * 80)
-            print("🎬 SUBPROCESS OUTPUT STREAMING BELOW:")
-            print("=" * 80)
+            self.logger.info("=" * 80)
+            self.logger.info("🚀 SAGEMAKER WRAPPER CALLING IMAGENET_TRAINING_PIPELINE.PY")
+            self.logger.info("=" * 80)
+            self.logger.info(f"📞 Caller: {__file__}")
+            self.logger.info(f"🎯 Target Script: {cmd[1]}")
+            self.logger.info(f"🐍 Python Executable: {cmd[0]}")
+            self.logger.info(f"📋 Full Command: {' '.join(cmd)}")
+            self.logger.info(f"💻 Working Directory: {run_cwd}")
+            self.logger.info(f"⏰ Execution Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            self.logger.info("=" * 80)
+            self.logger.info("🎬 SUBPROCESS OUTPUT STREAMING BELOW:")
+            self.logger.info("=" * 80)
             sys.stdout.flush()
             
             # Detailed logging to unified log file
@@ -450,9 +427,8 @@ class ImageNetSageMakerTrainer:
                     # Log all output to debug file
                     self.subprocess_logger.debug(f"SUBPROCESS_OUTPUT[{line_counter:06d}]: {clean_line}")
 
-                    # Print all lines except progress bars
-                    print(clean_line)
-                    sys.stdout.flush()
+                    # Log all lines except progress bars to unified logger
+                    self.logger.info(f"SUBPROCESS_OUTPUT: {clean_line}")
 
                     # Log important lines to main log, but avoid duplicate log lines
                     if not clean_line.startswith("INFO - [") and not clean_line.startswith("WARNING - [") and not clean_line.startswith("ERROR - ["):
@@ -469,15 +445,14 @@ class ImageNetSageMakerTrainer:
             # =============================================================================
             # SUBPROCESS COMPLETED
             # =============================================================================
-            print("=" * 80)
-            print("✅ IMAGENET_TRAINING_PIPELINE.PY SUBPROCESS COMPLETED")
-            print("=" * 80)
-            print(f"📊 Return Code: {return_code}")
-            print(f"⏰ Completion Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"⌛ Total Duration: {duration}")
-            print(f"📝 Total output lines: {line_counter}")
-            print("=" * 80)
-            sys.stdout.flush()
+            self.logger.info("=" * 80)
+            self.logger.info("✅ IMAGENET_TRAINING_PIPELINE.PY SUBPROCESS COMPLETED")
+            self.logger.info("=" * 80)
+            self.logger.info(f"📊 Return Code: {return_code}")
+            self.logger.info(f"⏰ Completion Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            self.logger.info(f"⌛ Total Duration: {duration}")
+            self.logger.info(f"📝 Total output lines: {line_counter}")
+            self.logger.info("=" * 80)
             
             # Comprehensive subprocess completion logging
             self.subprocess_logger.info("="*60)
@@ -650,16 +625,17 @@ class ImageNetSageMakerTrainer:
 
 def main():
     """Main SageMaker training entry point"""
-    print("🚀 SageMaker Wrapper v2.1 - Fixed Path Resolution")
-    print(f"🔍 Script location: {__file__}")
-    print(f"🔍 Current working directory: {os.getcwd()}")
-    
+    import logger_setup
+    logger = logger_setup.get_unified_logger("sagemaker_wrapper_main")
+    logger.info("🚀 SageMaker Wrapper v2.1 - Fixed Path Resolution")
+    logger.info(f"🔍 Script location: {__file__}")
+    logger.info(f"🔍 Current working directory: {os.getcwd()}")
     try:
         trainer = ImageNetSageMakerTrainer()
         trainer.run_training()
-        print("🎉 Training completed successfully!")
+        logger.info("🎉 Training completed successfully!")
     except Exception as e:
-        print(f"❌ Training failed: {e}")
+        logger.error(f"❌ Training failed: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

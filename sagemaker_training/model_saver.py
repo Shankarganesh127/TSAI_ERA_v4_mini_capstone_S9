@@ -15,7 +15,7 @@ from pathlib import Path
 from datetime import datetime
 
 try:
-    from sagemaker_logging import setup_sagemaker_logger
+    from logger_setup import setup_unified_logger
 except ImportError:
     # Fallback logging
     import logging
@@ -28,7 +28,7 @@ class EpochModelSaver:
     """Handles model saving and replacement for each epoch"""
     
     def __init__(self, output_dir, config_file=None):
-        self.logger = setup_sagemaker_logger(__name__)
+        self.logger = setup_unified_logger()
         self.output_dir = Path(output_dir)
         self.config = self._load_config(config_file)
         
@@ -300,7 +300,8 @@ def monkey_patch_training_save(training_module):
                 saver.save_epoch_model(model, optimizer, epoch, accuracy, loss, lr)
         
         except Exception as e:
-            print(f"Enhanced model saving failed: {e}")
+            saver = setup_sagemaker_logger("model_saver_patch")
+            saver.error(f"Enhanced model saving failed: {e}")
         
         return result
     
@@ -322,6 +323,6 @@ if __name__ == '__main__':
     # Create test saver
     saver = EpochModelSaver(args.output_dir, args.config_file)
     
-    print("Model saver test completed successfully!")
-    print(f"Models will be saved to: {saver.models_dir}")
-    print(f"Replace mode: {saver.config['replace_previous_model']}")
+    saver.logger.info("Model saver test completed successfully!")
+    saver.logger.info(f"Models will be saved to: {saver.models_dir}")
+    saver.logger.info(f"Replace mode: {saver.config['replace_previous_model']}")

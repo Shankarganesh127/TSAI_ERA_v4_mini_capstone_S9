@@ -14,7 +14,7 @@ import os
 import argparse
 import json
 from datetime import datetime
-from sagemaker_logging import setup_sagemaker_logger
+from logger_setup import setup_unified_logger
 
 
 class S3DatasetConverter:
@@ -22,7 +22,7 @@ class S3DatasetConverter:
     
     def __init__(self, bucket_name, aws_profile=None):
         self.bucket_name = bucket_name
-        self.logger = setup_sagemaker_logger(__name__)
+        self.logger = setup_unified_logger()
         
         # Initialize S3 client
         session = boto3.Session(profile_name=aws_profile) if aws_profile else boto3.Session()
@@ -657,7 +657,7 @@ def main():
     args = parser.parse_args()
     
     # Setup logging
-    logger = setup_sagemaker_logger(__name__)
+    logger = setup_unified_logger()
     
     try:
         logger.info("🔄 Starting S3 ILSVRC to SageMaker dataset conversion")

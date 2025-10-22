@@ -26,7 +26,7 @@ parent_dir = Path(__file__).parent.parent
 sys.path.append(str(parent_dir))
 
 # Local imports
-from sagemaker_logging import setup_sagemaker_logger
+from logger_setup import setup_logger
 from s3_dataset_converter import S3DatasetConverter
 from monitor_training import SageMakerMonitor
 
@@ -35,7 +35,7 @@ class SageMakerPipelineOrchestrator:
     """Complete SageMaker training pipeline orchestrator"""
     
     def __init__(self, config_file=None):
-        self.logger = setup_sagemaker_logger(__name__)
+        self.logger = setup_logger(__name__)
         self.config = self._load_config(config_file)
         self.aws_session = None
         self.s3_client = None
@@ -781,11 +781,13 @@ def main():
     # Run complete pipeline
     success = orchestrator.run_complete_pipeline(args)
     
+    import logger_setup
+    logger = logger_setup.get_unified_logger("sagemaker_orchestrator")
     if success:
-        print("\n🎉 SageMaker Training Pipeline completed successfully!")
+        logger.info("🎉 SageMaker Training Pipeline completed successfully!")
         return 0
     else:
-        print("\n❌ SageMaker Training Pipeline failed!")
+        logger.error("❌ SageMaker Training Pipeline failed!")
         return 1
 
 

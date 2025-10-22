@@ -14,19 +14,18 @@ import time
 from pathlib import Path
 
 from model_saver import EpochModelSaver
-from sagemaker_logging import setup_sagemaker_logger
+from logger_setup import setup_unified_logger
 
 
 class TrainingMonitorThread:
     """Monitor training and handle model replacement automatically"""
     
     def __init__(self, output_dir, config_file=None):
-        self.logger = setup_sagemaker_logger(__name__)
+        self.logger = setup_unified_logger()
         self.output_dir = Path(output_dir)
         self.model_saver = EpochModelSaver(output_dir, config_file)
         self.running = False
         self.thread = None
-        
         # Tracking
         self.last_epoch = 0
         self.last_model_time = 0
@@ -281,7 +280,7 @@ def patch_training_functions():
         return enhanced_torch_save
         
     except Exception as e:
-        logger = setup_sagemaker_logger(__name__)
+        logger = setup_unified_logger()
         logger.warning(f"Could not patch training functions: {e}")
         return None
 
@@ -291,7 +290,7 @@ if __name__ == '__main__':
     output_dir = os.environ.get('SM_MODEL_DIR', '/opt/ml/model')
     config_file = os.environ.get('SM_MODEL_CONFIG', None)
     
-    logger = setup_sagemaker_logger(__name__)
+    logger = setup_unified_logger()
     logger.info("🚀 Starting training integration with model replacement")
     
     # Setup monitoring

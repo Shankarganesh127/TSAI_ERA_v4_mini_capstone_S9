@@ -648,21 +648,20 @@ def main():
     # =============================================================================
     # SAGEMAKER TRAINING STARTED - SIMPLE STATUS LOG
     # =============================================================================
-    print("=" * 80)
-    print("🚀 SAGEMAKER IMAGENET TRAINING PIPELINE STARTED")
-    print("=" * 80)
-    print(f"⏰ Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"🐍 Python: {sys.version}")
-    print(f"🔥 PyTorch: {torch.__version__}")
-    print(f"💻 Working Directory: {os.getcwd()}")
-    print("=" * 80)
-    sys.stdout.flush()
+    logger.info("=" * 80)
+    logger.info("🚀 SAGEMAKER IMAGENET TRAINING PIPELINE STARTED")
+    logger.info("=" * 80)
+    logger.info(f"⏰ Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"🐍 Python: {sys.version}")
+    logger.info(f"🔥 PyTorch: {torch.__version__}")
+    logger.info(f"💻 Working Directory: {os.getcwd()}")
+    logger.info("=" * 80)
     
     # Log to unified log file
     logger.info("="*80)
-    logger.info("🚀 IMAGENET TRAINING PIPELINE - MAIN EXECUTION")
+    logger.debug("🚨 DEBUG: Entered main() function")
     logger.info("="*80)
-    logger.info(f"⏰ Pipeline start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.debug("🚨 DEBUG: Creating argument parser")
     logger.info(f"🐍 Python version: {sys.version}")
     logger.info(f"🔥 PyTorch version: {torch.__version__}")
     logger.info(f"💻 Working directory: {os.getcwd()}")
@@ -675,16 +674,16 @@ def main():
     
     print("🚨 DEBUG: Creating argument parser")
     logger.debug("🚨 DEBUG: Creating argument parser")
-    sys.stdout.flush()
+    logger.debug("🚨 DEBUG: Parsing arguments")
     parser = argparse.ArgumentParser(description='ImageNet Training Pipeline')
     parser.add_argument('--train', type=str, required=True, help='ImageNet training dataset path')
-    parser.add_argument('--val', type=str, required=True, help='ImageNet validation dataset path')
+    logger.debug(f"🚨 DEBUG: Arguments parsed successfully - train: {args.train}, val: {args.val}")
     parser.add_argument('--output', type=str, default='./imagenet_pipeline_results', help='Output directory')
     parser.add_argument('--batch-size', type=int, default=None, help='Batch size (auto-detect if not specified)')
-    parser.add_argument('--epochs', type=int, default=90, help='Number of epochs for full training')
+    logger.debug("🚨 DEBUG: Setting up logger")
     parser.add_argument('--skip-lr-test', action='store_true', help='Skip LR range test')
     parser.add_argument('--skip-wd-search', action='store_true', help='Skip weight decay search')
-    parser.add_argument('--quick-mode', action='store_true', help='Quick mode with fewer iterations')
+    logger.debug("🚨 DEBUG: Logger setup completed")
     
     print("🚨 DEBUG: Parsing arguments")
     sys.stdout.flush()
@@ -763,20 +762,18 @@ def main():
             logger.error(f"❌ DEBUG: Error creating model: {e}")
             raise
     
-    # STEP 0: Batch Size Detection (if not specified)
-    print("🚨 DEBUG: Checking batch size")
+        # STEP 0: Batch Size Detection (if not specified)
+        logger.debug("🚨 DEBUG: Checking batch size")
     if args.batch_size is None:
-        print("🚨 DEBUG: No batch size specified, starting batch size detection")
+        logger.debug("🚨 DEBUG: No batch size specified, starting batch size detection")
         logger.info("="*60)
         logger.info("🔧 STEP 0: Batch Size Detection")
         logger.info("="*60)
-        
         try:
             # Clear GPU cache if available
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 logger.info(f"🖥️  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
-            
             # Create a temporary model to test batch sizes
             logger.info("🔍 DEBUG: About to create temporary model for batch size detection")
             temp_model = create_model().to(device)
@@ -785,32 +782,28 @@ def main():
             logger.error(f"❌ DEBUG: Error in batch size detection setup: {e}")
             raise
         max_batch_size = BatchSizeFinder.find_max_batch_size(temp_model, (3, 224, 224), device)
-        
         # Use different safety factors based on mode
         if args.quick_mode:
             safety_factor = 0.25  # Very conservative for quick mode (training uses more memory than inference)
             logger.info("🚀 Quick mode: Using very conservative batch size for training stability")
         else:
             safety_factor = 0.5  # Conservative safety factor (training uses ~2x memory of inference)
-        
         initial_batch_size = int(max_batch_size * safety_factor)
         # Ensure it's a power of 2 and at least 1
         initial_batch_size = max(1, 2 ** int(np.log2(initial_batch_size))) if initial_batch_size > 0 else 32
-        
         logger.info(f"🎯 Optimal batch size: {initial_batch_size} (max: {max_batch_size}, safety: {safety_factor})")
-        
         # Clean up temporary model
         del temp_model
         torch.cuda.empty_cache()
-        print(f"🚨 DEBUG: Batch size detection completed, using batch size: {initial_batch_size}")
+        logger.debug(f"🚨 DEBUG: Batch size detection completed, using batch size: {initial_batch_size}")
     else:
         initial_batch_size = args.batch_size
         logger.info(f"📏 Using specified batch size: {initial_batch_size}")
-        print(f"🚨 DEBUG: Using specified batch size: {initial_batch_size}")
+        logger.debug(f"🚨 DEBUG: Using specified batch size: {initial_batch_size}")
     
     # Load data
     logger.info("📂 Loading ImageNet dataset...")
-    print("🚨 DEBUG: About to load dataset")
+    logger.debug("🚨 DEBUG: About to load dataset")
     
     #if dataset_format == 'ilsvrc':
     #    logger.info("Using ILSVRC dataset loader (handles flat validation directory)")
@@ -818,32 +811,32 @@ def main():
     #        args.data, batch_size=initial_batch_size, num_workers=4)
     #else:
     logger.info("Using standard ImageNet dataset loader")
-    print(f"🚨 DEBUG: Calling get_imagenet_dataloaders with train={args.train}, val={args.val}")
+    logger.debug(f"🚨 DEBUG: Calling get_imagenet_dataloaders with train={args.train}, val={args.val}")
     try:
         train_loader, val_loader = get_imagenet_dataloaders(
             train=args.train, val=args.val, batch_size=initial_batch_size, num_workers=4)
-        print("🚨 DEBUG: Dataset loading completed successfully")
+        logger.debug("🚨 DEBUG: Dataset loading completed successfully")
     except Exception as e:
-        print(f"🚨 DEBUG: Dataset loading failed with error: {e}")
+        logger.error(f"🚨 DEBUG: Dataset loading failed with error: {e}")
         logger.error(f"❌ Dataset loading failed: {e}")
         raise
     
     logger.info(f"📊 Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
-    print(f"🚨 DEBUG: Dataset sizes - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
+    logger.debug(f"🚨 DEBUG: Dataset sizes - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
     
     # =============================================================================
     # STARTING 7-STEP IMAGENET TRAINING PIPELINE
     # =============================================================================
-    print("\n" + "=" * 80)
-    print("🎯 STARTING 7-STEP IMAGENET TRAINING PIPELINE")
-    print("=" * 80)
-    print("📋 Pipeline Steps:")
-    print("   1️⃣  LR Range Test")
-    print("   2️⃣  Weight Decay Search") 
-    print("   3️⃣  Full Training with OneCycle LR")
-    print(f"📦 Batch Size: {initial_batch_size}")
-    print(f"🔄 Total Epochs: {args.epochs}")
-    print("=" * 80)
+    logger.debug("\n" + "=" * 80)
+    logger.debug("🎯 STARTING 7-STEP IMAGENET TRAINING PIPELINE")
+    logger.debug("=" * 80)
+    logger.debug("📋 Pipeline Steps:")
+    logger.debug("   1️⃣  LR Range Test")
+    logger.debug("   2️⃣  Weight Decay Search") 
+    logger.debug("   3️⃣  Full Training with OneCycle LR")
+    logger.debug(f"📦 Batch Size: {initial_batch_size}")
+    logger.debug(f"🔄 Total Epochs: {args.epochs}")
+    logger.debug("=" * 80)
     print("🚀 Starting Step 1: LR Range Test...")
     print("=" * 80)
     sys.stdout.flush()

@@ -98,7 +98,7 @@ class SageMakerMonitor:
             response = self.sagemaker.describe_training_job(TrainingJobName=job_name)
             return response
         except Exception as e:
-            print(f"Error getting job details: {str(e)}")
+            self.logger.error(f"Error getting job details: {str(e)}")
             return None
     
     def get_job_logs(self, job_name, lines=50, filter_pattern=None):
@@ -195,10 +195,10 @@ class SageMakerMonitor:
         """Stop a running training job"""
         try:
             self.sagemaker.stop_training_job(TrainingJobName=job_name)
-            print(f"✅ Stopped training job: {job_name}")
+            self.logger.info(f"✅ Stopped training job: {job_name}")
             return True
         except Exception as e:
-            print(f"❌ Error stopping job: {str(e)}")
+            self.logger.error(f"❌ Error stopping job: {str(e)}")
             return False
     
     def get_job_metrics(self, job_name):
@@ -569,102 +569,94 @@ def main():
     try:
         if args.list or (not any([args.details, args.logs, args.epochs, args.stop, args.metrics])):
             # List training jobs
-            print("📊 SageMaker Training Jobs")
-            print("=" * 50)
-            
+            logger = get_unified_logger("monitor_training")
+            logger.info("📊 SageMaker Training Jobs")
+            logger.info("=" * 50)
             jobs = monitor.list_training_jobs(args.status, args.max_results)
-            
             if jobs:
                 headers = ['Name', 'Status', 'Created', 'Duration', 'Instance']
                 table_data = [[job[h] for h in ['Name', 'Status', 'Created', 'Duration', 'Instance']] for job in jobs]
-                
-                if tabulate:
-                    print(tabulate(table_data, headers=headers, tablefmt='grid'))
-                else:
-                    print(simple_table(table_data, headers))
+                table_str = tabulate(table_data, headers=headers, tablefmt='grid') if tabulate else simple_table(table_data, headers)
+                logger.info(f"\n{table_str}")
             else:
-                print("No training jobs found.")
-            
+                logger.info("No training jobs found.")
             if args.watch:
-                print("\n🔄 Watching for updates (Ctrl+C to stop)...")
+                logger.info("🔄 Watching for updates (Ctrl+C to stop)...")
                 while True:
                     time.sleep(30)
-                    print(f"\n--- Refreshed at {datetime.now().strftime('%H:%M:%S')} ---")
+                    logger.info(f"--- Refreshed at {datetime.now().strftime('%H:%M:%S')} ---")
                     jobs = monitor.list_training_jobs(args.status, args.max_results)
                     if jobs:
                         table_data = [[job[h] for h in ['Name', 'Status', 'Created', 'Duration', 'Instance']] for job in jobs]
-                        if tabulate:
-                            print(tabulate(table_data, headers=headers, tablefmt='grid'))
-                        else:
-                            print(simple_table(table_data, headers))
+                        table_str = tabulate(table_data, headers=headers, tablefmt='grid') if tabulate else simple_table(table_data, headers)
+                        logger.info(f"\n{table_str}")
         
         elif args.details:
             # Get job details
-            print(f"📋 Training Job Details: {args.details}")
-            print("=" * 50)
-            
+            logger = get_unified_logger("monitor_training")
+            logger.info(f"📋 Training Job Details: {args.details}")
+            logger.info("=" * 50)
             details = monitor.get_job_details(args.details)
             if details:
-                print(f"Status: {details['TrainingJobStatus']}")
-                print(f"Instance: {details['ResourceConfig']['InstanceType']} (x{details['ResourceConfig']['InstanceCount']})")
-                print(f"Created: {details['CreationTime']}")
-                
+                logger.info(f"Status: {details['TrainingJobStatus']}")
+                logger.info(f"Instance: {details['ResourceConfig']['InstanceType']} (x{details['ResourceConfig']['InstanceCount']})")
+                logger.info(f"Created: {details['CreationTime']}")
                 if 'TrainingStartTime' in details:
-                    print(f"Started: {details['TrainingStartTime']}")
+                    logger.info(f"Started: {details['TrainingStartTime']}")
                 if 'TrainingEndTime' in details:
-                    print(f"Ended: {details['TrainingEndTime']}")
-                
+                    logger.info(f"Ended: {details['TrainingEndTime']}")
                 if 'HyperParameters' in details:
-                    print("\nHyperparameters:")
+                    logger.info("Hyperparameters:")
                     for k, v in details['HyperParameters'].items():
-                        print(f"  {k}: {v}")
-                
+                        logger.info(f"  {k}: {v}")
                 if 'ModelArtifacts' in details:
-                    print(f"\nModel Artifacts: {details['ModelArtifacts']['S3ModelArtifacts']}")
+                    logger.info(f"Model Artifacts: {details['ModelArtifacts']['S3ModelArtifacts']}")
         
         elif args.logs:
             # Get job logs
-            print(f"📜 Training Logs: {args.logs}")
+            logger = get_unified_logger("monitor_training")
+            logger.info(f"📜 Training Logs: {args.logs}")
             if args.filter:
-                print(f"🔍 Filter: '{args.filter}'")
-            print("=" * 50)
-            
+                logger.info(f"🔍 Filter: '{args.filter}'")
+            logger.info("=" * 50)
             logs = monitor.get_job_logs(args.logs, args.log_lines, args.filter)
-            print(logs)
+            logger.info(logs)
         
         elif args.epochs:
             # Get epoch-specific logs
-            print(f"📈 Epoch Progress: {args.epochs}")
-            print("=" * 50)
-            
+            logger = get_unified_logger("monitor_training")
+            logger.info(f"📈 Epoch Progress: {args.epochs}")
+            logger.info("=" * 50)
             logs = monitor.get_epoch_logs(args.epochs, args.log_lines)
-            print(logs)
+            logger.info(logs)
         
         elif args.stop:
             # Stop training job
-            print(f"🛑 Stopping Training Job: {args.stop}")
-            print("=" * 50)
-            
+            logger = get_unified_logger("monitor_training")
+            logger.info(f"🛑 Stopping Training Job: {args.stop}")
+            logger.info("=" * 50)
             success = monitor.stop_training_job(args.stop)
             if success:
-                print("Job stop request submitted.")
+                logger.info("Job stop request submitted.")
         
         elif args.metrics:
             # Get job metrics
-            print(f"📊 Training Metrics: {args.metrics}")
-            print("=" * 50)
-            
+            logger = get_unified_logger("monitor_training")
+            logger.info(f"📊 Training Metrics: {args.metrics}")
+            logger.info("=" * 50)
             metrics = monitor.get_job_metrics(args.metrics)
             if metrics:
-                print(json.dumps(metrics, indent=2, default=str))
+                logger.info(json.dumps(metrics, indent=2, default=str))
     
     except KeyboardInterrupt:
-        print("\n👋 Monitoring stopped by user.")
+        logger = get_unified_logger("monitor_training")
+        logger.info("Monitoring stopped by user.")
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
+        logger = get_unified_logger("monitor_training")
+        logger.error(f"Error: {str(e)}")
         import traceback
-        print("🔍 Full traceback:")
-        traceback.print_exc()
+        logger.error("Full traceback:")
+        logger.error(traceback.format_exc())
 
 
 if __name__ == '__main__':
