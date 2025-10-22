@@ -317,7 +317,7 @@ def main():
             training_job_name = estimator.latest_training_job.job_name
 
             # 2. Stream the logs from CloudWatch
-            estimator.latest_training_job.logs()
+            estimator.logs()
             
             if hasattr(signal, 'SIGALRM'):
                 signal.alarm(0)  # Cancel timeout
