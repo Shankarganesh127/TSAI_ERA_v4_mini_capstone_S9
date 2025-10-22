@@ -158,7 +158,7 @@ def create_sample_config(logger):
     
     sample_config = {
         "aws": {
-            "region": "us-east-1",
+            "region": "eu-west-2",
             "profile": None
         },
         "dataset": {

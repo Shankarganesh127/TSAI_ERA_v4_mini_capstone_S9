@@ -22,7 +22,7 @@ except ImportError:
 
 
 class SageMakerMonitor:
-    def __init__(self, region='us-east-1'):
+    def __init__(self, region='eu-west-2'):
         """Initialize SageMaker monitor"""
         self.logger = setup_logger("sagemaker_monitor")
         self.sagemaker = boto3.client('sagemaker', region_name=region)
@@ -450,8 +450,8 @@ class SageMakerMonitor:
 def main():
     parser = argparse.ArgumentParser(description='Monitor SageMaker Training Jobs')
     
-    parser.add_argument('--region', type=str, default='us-east-1',
-                       help='AWS region (default: us-east-1)')
+    parser.add_argument('--region', type=str, default='eu-west-2',
+                       help='AWS region (default: eu-west-2)')
     
     # Commands
     parser.add_argument('--list', action='store_true',
