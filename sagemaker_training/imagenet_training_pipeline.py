@@ -553,6 +553,9 @@ def detect_dataset_format(data_path):
 
 def main():
     """Main training pipeline"""
+    print("🚨 DEBUG: Entered main() function")
+    
+    print("🚨 DEBUG: Creating argument parser")
     parser = argparse.ArgumentParser(description='ImageNet Training Pipeline')
     parser.add_argument('--train', type=str, required=True, help='ImageNet training dataset path')
     parser.add_argument('--val', type=str, required=True, help='ImageNet validation dataset path')
@@ -563,10 +566,14 @@ def main():
     parser.add_argument('--skip-wd-search', action='store_true', help='Skip weight decay search')
     parser.add_argument('--quick-mode', action='store_true', help='Quick mode with fewer iterations')
     
+    print("🚨 DEBUG: Parsing arguments")
     args = parser.parse_args()
+    print(f"🚨 DEBUG: Arguments parsed successfully - train: {args.train}, val: {args.val}")
     
     # Setup logging
+    print("🚨 DEBUG: Setting up logger")
     logger = setup_logger('imagenet_pipeline')
+    print("🚨 DEBUG: Logger setup completed")
     
     # DEBUG: Add extensive early debugging
     logger.info("🔍 DEBUG: Arguments parsed successfully")
@@ -633,7 +640,9 @@ def main():
             raise
     
     # STEP 0: Batch Size Detection (if not specified)
+    print("🚨 DEBUG: Checking batch size")
     if args.batch_size is None:
+        print("🚨 DEBUG: No batch size specified, starting batch size detection")
         logger.info("="*60)
         logger.info("🔧 STEP 0: Batch Size Detection")
         logger.info("="*60)
@@ -669,12 +678,15 @@ def main():
         # Clean up temporary model
         del temp_model
         torch.cuda.empty_cache()
+        print(f"🚨 DEBUG: Batch size detection completed, using batch size: {initial_batch_size}")
     else:
         initial_batch_size = args.batch_size
         logger.info(f"📏 Using specified batch size: {initial_batch_size}")
+        print(f"🚨 DEBUG: Using specified batch size: {initial_batch_size}")
     
     # Load data
     logger.info("📂 Loading ImageNet dataset...")
+    print("🚨 DEBUG: About to load dataset")
     
     #if dataset_format == 'ilsvrc':
     #    logger.info("Using ILSVRC dataset loader (handles flat validation directory)")
@@ -682,10 +694,18 @@ def main():
     #        args.data, batch_size=initial_batch_size, num_workers=4)
     #else:
     logger.info("Using standard ImageNet dataset loader")
-    train_loader, val_loader = get_imagenet_dataloaders(
-    train = args.train, val = args.val, batch_size=initial_batch_size, num_workers=4)
+    print(f"🚨 DEBUG: Calling get_imagenet_dataloaders with train={args.train}, val={args.val}")
+    try:
+        train_loader, val_loader = get_imagenet_dataloaders(
+            train=args.train, val=args.val, batch_size=initial_batch_size, num_workers=4)
+        print("🚨 DEBUG: Dataset loading completed successfully")
+    except Exception as e:
+        print(f"🚨 DEBUG: Dataset loading failed with error: {e}")
+        logger.error(f"❌ Dataset loading failed: {e}")
+        raise
     
     logger.info(f"📊 Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
+    print(f"🚨 DEBUG: Dataset sizes - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
     
     # STEP 1: LR Range Test
     lr_config = None
@@ -846,18 +866,25 @@ def main():
 
 
 if __name__ == '__main__':
+    print("🚨 DEBUG: Starting imagenet_training_pipeline.py")
     try:
+        print("🚨 DEBUG: About to call main()")
         main()
+        print("🚨 DEBUG: main() completed successfully")
     except Exception as e:
         # Setup basic logger for error reporting if main logger fails
+        print(f"🚨 DEBUG: Exception caught in __main__: {e}")
         import logging
-        logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
         logger = logging.getLogger(__name__)
         logger.error(f"❌ CRITICAL ERROR: Pipeline failed with exception: {e}")
         logger.error(f"❌ Exception type: {type(e).__name__}")
         import traceback
         logger.error(f"❌ Full traceback:")
-        for line in traceback.format_exc().split('\n'):
+        traceback_lines = traceback.format_exc()
+        print(f"🚨 DEBUG: Full traceback (print): {traceback_lines}")
+        for line in traceback_lines.split('\n'):
             if line.strip():
                 logger.error(f"   {line}")
+        print(f"🚨 DEBUG: About to re-raise exception")
         raise

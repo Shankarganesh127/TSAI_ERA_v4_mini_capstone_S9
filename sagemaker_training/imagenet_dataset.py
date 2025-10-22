@@ -41,12 +41,13 @@ def get_imagenet_transforms(input_size=224):
     
     return train_transform, val_transform
 
-def get_imagenet_dataloaders( train, val, batch_size=32, num_workers=4, pin_memory=True):
+def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memory=True):
     """
     Create ImageNet-1K data loaders
     
     Args:
-        data_dir: Path to ImageNet dataset directory
+        train: Path to training dataset directory
+        val: Path to validation dataset directory
         batch_size: Batch size for training
         num_workers: Number of worker processes for data loading
         pin_memory: Whether to pin memory for faster GPU transfer
@@ -55,23 +56,42 @@ def get_imagenet_dataloaders( train, val, batch_size=32, num_workers=4, pin_memo
         train_loader, val_loader
     """
     
+    print(f"🚨 DEBUG: get_imagenet_dataloaders called with train={train}, val={val}")
+    
     train_transform, val_transform = get_imagenet_transforms()
+    print("🚨 DEBUG: Transforms created")
     
-    # Check if data directory exists
-    if not os.path.exists(data_dir):
-        raise FileNotFoundError(f"ImageNet data directory not found: {data_dir}")
+    # Use the provided paths directly
+    train_dir = train
+    val_dir = val
     
-    train_dir = train #os.path.join(data_dir, 'train')
-    val_dir = val #os.path.join(data_dir, 'val')
+    print(f"🚨 DEBUG: Checking paths - train_dir={train_dir}, val_dir={val_dir}")
     
     if not os.path.exists(train_dir):
+        print(f"🚨 DEBUG: Training directory does not exist: {train_dir}")
         raise FileNotFoundError(f"Training data directory not found: {train_dir}")
     if not os.path.exists(val_dir):
+        print(f"🚨 DEBUG: Validation directory does not exist: {val_dir}")
         raise FileNotFoundError(f"Validation data directory not found: {val_dir}")
     
+    print("🚨 DEBUG: Both directories exist, creating datasets")
+    
     # Create datasets
-    train_dataset = torchvision.datasets.ImageFolder(train_dir, transform=train_transform)
-    val_dataset = torchvision.datasets.ImageFolder(val_dir, transform=val_transform)
+    try:
+        print(f"🚨 DEBUG: Creating training dataset from {train_dir}")
+        train_dataset = torchvision.datasets.ImageFolder(train_dir, transform=train_transform)
+        print(f"🚨 DEBUG: Training dataset created successfully with {len(train_dataset)} samples")
+    except Exception as e:
+        print(f"🚨 DEBUG: Error creating training dataset: {e}")
+        raise
+    
+    try:
+        print(f"🚨 DEBUG: Creating validation dataset from {val_dir}")
+        val_dataset = torchvision.datasets.ImageFolder(val_dir, transform=val_transform)
+        print(f"🚨 DEBUG: Validation dataset created successfully with {len(val_dataset)} samples")
+    except Exception as e:
+        print(f"🚨 DEBUG: Error creating validation dataset: {e}")
+        raise
     
     # Log dataset information if called directly (not from other modules)
     try:
@@ -84,24 +104,38 @@ def get_imagenet_dataloaders( train, val, batch_size=32, num_workers=4, pin_memo
         pass
     
     # Create data loaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=True if num_workers > 0 else False
-    )
+    print("🚨 DEBUG: Creating data loaders")
+    try:
+        print(f"🚨 DEBUG: Creating training data loader with batch_size={batch_size}")
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=True if num_workers > 0 else False
+        )
+        print("🚨 DEBUG: Training data loader created successfully")
+    except Exception as e:
+        print(f"🚨 DEBUG: Error creating training data loader: {e}")
+        raise
     
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=True if num_workers > 0 else False
-    )
+    try:
+        print(f"🚨 DEBUG: Creating validation data loader with batch_size={batch_size}")
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=True if num_workers > 0 else False
+        )
+        print("🚨 DEBUG: Validation data loader created successfully")
+    except Exception as e:
+        print(f"🚨 DEBUG: Error creating validation data loader: {e}")
+        raise
     
+    print("🚨 DEBUG: Both data loaders created, returning")
     return train_loader, val_loader
 
 
