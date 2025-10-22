@@ -49,8 +49,10 @@ class LiveProgressManager:
                 desc=f"🔄 {desc}",
                 unit="it",
                 ncols=120,
-                leave=False,  # Clean display
-                bar_format='{desc}: {percentage:3.0f}%|{bar}| {n}/{total} [{elapsed}<{remaining}]'
+                leave=True,  # Keep progress bars visible after completion
+                mininterval=1.0,  # Update every 1 second for live progress
+                maxinterval=5.0,  # Force update every 5 seconds
+                bar_format='{desc}: {percentage:3.0f}%|{bar}| {n}/{total} [{elapsed}<{remaining}, {rate_fmt}]'
             )
             return self.current_bar
     
@@ -69,10 +71,17 @@ class LiveProgressManager:
                 self.current_bar.set_description(desc)
             self.current_bar.refresh()
         
-        # Log milestone progress regardless of tqdm state
-        if step > 0 and self.current_bar and step % max(1, self.current_bar.total // 10) == 0:
-            percentage = (step / self.current_bar.total) * 100
-            self.logger.info(f"📊 Progress: {percentage:.0f}% completed")
+        # Log progress more frequently for better visibility
+        if step > 0 and self.current_bar:
+            total = self.current_bar.total
+            percentage = (step / total) * 100
+            # Log every 20% or every 50 steps, whichever is more frequent
+            log_interval = min(max(1, total // 5), 50)
+            if step % log_interval == 0:
+                self.logger.info(f"📊 Progress: {percentage:.1f}% ({step}/{total})")
+        elif not self.current_bar:
+            # If no progress bar, log more frequently
+            self.logger.info(f"📊 Step {step} completed")
     
     def close_progress_bar(self):
         """Close current progress bar"""
