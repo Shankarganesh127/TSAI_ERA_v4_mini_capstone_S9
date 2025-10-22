@@ -19,6 +19,32 @@ try:
     from tabulate import tabulate
 except ImportError:
     tabulate = None
+    
+def simple_table(data, headers):
+    """Simple table fallback when tabulate is not available"""
+    if not data:
+        return "No data"
+    
+    # Calculate column widths
+    widths = [len(str(h)) for h in headers]
+    for row in data:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(str(cell)))
+    
+    # Create table
+    lines = []
+    
+    # Header
+    header_line = " | ".join(str(h).ljust(w) for h, w in zip(headers, widths))
+    lines.append(header_line)
+    lines.append("-" * len(header_line))
+    
+    # Data rows
+    for row in data:
+        row_line = " | ".join(str(cell).ljust(w) for cell, w in zip(row, widths))
+        lines.append(row_line)
+    
+    return "\n".join(lines)
 
 
 class SageMakerMonitor:
@@ -74,8 +100,8 @@ class SageMakerMonitor:
             print(f"Error getting job details: {str(e)}")
             return None
     
-    def get_job_logs(self, job_name, lines=50):
-        """Get recent logs for a training job"""
+    def get_job_logs(self, job_name, lines=50, filter_pattern=None):
+        """Get recent logs for a training job with optional filtering"""
         log_group = '/aws/sagemaker/TrainingJobs'
         
         try:
@@ -103,12 +129,66 @@ class SageMakerMonitor:
             log_lines = []
             for event in logs_response['events']:
                 timestamp = datetime.fromtimestamp(event['timestamp'] / 1000.0)
-                log_lines.append(f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')} {event['message']}")
+                message = event['message']
+                
+                # Apply filter if provided
+                if filter_pattern and filter_pattern.lower() not in message.lower():
+                    continue
+                    
+                log_lines.append(f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')} {message}")
+            
+            if filter_pattern and not log_lines:
+                return f"No logs found matching pattern: '{filter_pattern}'"
             
             return '\n'.join(log_lines)
             
         except Exception as e:
             return f"Error getting logs: {str(e)}"
+    
+    def get_epoch_logs(self, job_name, lines=200):
+        """Get epoch-specific logs (training progress)"""
+        log_group = '/aws/sagemaker/TrainingJobs'
+        
+        try:
+            # Get log streams for this job
+            streams_response = self.logs.describe_log_streams(
+                logGroupName=log_group,
+                logStreamNamePrefix=job_name,
+                descending=True
+            )
+            
+            if not streams_response['logStreams']:
+                return "No logs found for this job."
+            
+            # Get logs from the most recent stream
+            stream_name = streams_response['logStreams'][0]['logStreamName']
+            
+            logs_response = self.logs.get_log_events(
+                logGroupName=log_group,
+                logStreamName=stream_name,
+                limit=lines,
+                startFromHead=False
+            )
+            
+            # Filter for epoch-related logs
+            epoch_patterns = ['epoch', 'train', 'val', 'loss', 'acc', 'lr:', 'momentum', '📊', '🔄', '💾', '🎯']
+            
+            log_lines = []
+            for event in logs_response['events']:
+                timestamp = datetime.fromtimestamp(event['timestamp'] / 1000.0)
+                message = event['message'].lower()
+                
+                # Check if message contains epoch-related keywords
+                if any(pattern in message for pattern in epoch_patterns):
+                    log_lines.append(f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')} {event['message']}")
+            
+            if not log_lines:
+                return "No epoch-related logs found. Training might not have started yet."
+            
+            return '\n'.join(log_lines)
+            
+        except Exception as e:
+            return f"Error getting epoch logs: {str(e)}"
     
     def stop_training_job(self, job_name):
         """Stop a running training job"""
@@ -462,6 +542,10 @@ def main():
                        help='Get details for specific job name')
     parser.add_argument('--logs', type=str,
                        help='Get logs for specific job name')
+    parser.add_argument('--epochs', type=str,
+                       help='Get epoch-specific logs for training progress')
+    parser.add_argument('--filter', type=str,
+                       help='Filter logs by pattern (case-insensitive)')
     parser.add_argument('--stop', type=str,
                        help='Stop specific training job')
     parser.add_argument('--metrics', type=str,
@@ -477,11 +561,23 @@ def main():
     
     args = parser.parse_args()
     
+    # Debug: Print parsed arguments
+    print(f"🔍 Debug - Parsed arguments: {args}")
+    
     # Initialize monitor
     monitor = SageMakerMonitor(args.region)
     
     try:
-        if args.list or (not any([args.details, args.logs, args.stop, args.metrics])):
+        print(f"🔍 Debug - Checking conditions...")
+        print(f"   args.list: {args.list}")
+        print(f"   args.details: {args.details}")
+        print(f"   args.logs: {args.logs}")
+        print(f"   args.epochs: {args.epochs}")
+        print(f"   args.stop: {args.stop}")
+        print(f"   args.metrics: {args.metrics}")
+        
+        if args.list or (not any([args.details, args.logs, args.epochs, args.stop, args.metrics])):
+            print("🔍 Debug - Entering list jobs section")
             # List training jobs
             print("📊 SageMaker Training Jobs")
             print("=" * 50)
@@ -491,7 +587,11 @@ def main():
             if jobs:
                 headers = ['Name', 'Status', 'Created', 'Duration', 'Instance']
                 table_data = [[job[h] for h in ['Name', 'Status', 'Created', 'Duration', 'Instance']] for job in jobs]
-                print(tabulate(table_data, headers=headers, tablefmt='grid'))
+                
+                if tabulate:
+                    print(tabulate(table_data, headers=headers, tablefmt='grid'))
+                else:
+                    print(simple_table(table_data, headers))
             else:
                 print("No training jobs found.")
             
@@ -503,7 +603,10 @@ def main():
                     jobs = monitor.list_training_jobs(args.status, args.max_results)
                     if jobs:
                         table_data = [[job[h] for h in ['Name', 'Status', 'Created', 'Duration', 'Instance']] for job in jobs]
-                        print(tabulate(table_data, headers=headers, tablefmt='grid'))
+                        if tabulate:
+                            print(tabulate(table_data, headers=headers, tablefmt='grid'))
+                        else:
+                            print(simple_table(table_data, headers))
         
         elif args.details:
             # Get job details
@@ -532,9 +635,19 @@ def main():
         elif args.logs:
             # Get job logs
             print(f"📜 Training Logs: {args.logs}")
+            if args.filter:
+                print(f"🔍 Filter: '{args.filter}'")
             print("=" * 50)
             
-            logs = monitor.get_job_logs(args.logs, args.log_lines)
+            logs = monitor.get_job_logs(args.logs, args.log_lines, args.filter)
+            print(logs)
+        
+        elif args.epochs:
+            # Get epoch-specific logs
+            print(f"📈 Epoch Progress: {args.epochs}")
+            print("=" * 50)
+            
+            logs = monitor.get_epoch_logs(args.epochs, args.log_lines)
             print(logs)
         
         elif args.stop:
@@ -559,6 +672,9 @@ def main():
         print("\n👋 Monitoring stopped by user.")
     except Exception as e:
         print(f"❌ Error: {str(e)}")
+        import traceback
+        print("🔍 Full traceback:")
+        traceback.print_exc()
 
 
 if __name__ == '__main__':
