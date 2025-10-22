@@ -55,7 +55,22 @@ def create_sagemaker_estimator(args, hyperparameters):
             framework_version='2.0.0',
             py_version='py310',
             instance_count=args.instance_count,
-            distribution=distribution
+            instance_type=args.instance_type,
+            hyperparameters=hyperparameters,
+            distribution=distribution,
+            use_spot_instances=args.spot_training,
+            max_wait=43200 if args.spot_training else None,
+            max_run=36000,
+            checkpoint_s3_uri=f"{args.s3_bucket}/checkpoints/{args.job_name}",
+            output_path=f"{args.s3_bucket}/output/{args.job_name}",
+            volume_size=args.volume_size,
+            enable_sagemaker_metrics=True,
+            tags=[
+                {'Key': 'Project', 'Value': 'ImageNet-7Step'},
+                {'Key': 'QuickMode', 'Value': str(args.quick_mode)},
+                {'Key': 'LRFinder', 'Value': str(not args.skip_lr_finder)},
+                {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)}
+            ]
         )
         return estimator
     else:
