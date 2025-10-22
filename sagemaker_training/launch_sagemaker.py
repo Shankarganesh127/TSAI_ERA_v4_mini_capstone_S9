@@ -313,11 +313,17 @@ def main():
                 wait=False  # Don't wait for job completion, just submission
             )
             
+            # 1. Get the name of the completed training job
+            training_job_name = estimator.latest_training_job.job_name
+
+            # 2. Stream the logs from CloudWatch
+            estimator.latest_training_job.logs()
+            
             if hasattr(signal, 'SIGALRM'):
                 signal.alarm(0)  # Cancel timeout
                 
             elapsed = time.time() - start_time
-            logger.info(f"✅ Training job submitted successfully in {elapsed:.1f} seconds!")
+            logger.info(f"✅ Training job submitted successfully in {elapsed:.1f} seconds! logs are streaming... in {training_job_name}")
             
         except Exception as fit_error:
             if hasattr(signal, 'SIGALRM'):
