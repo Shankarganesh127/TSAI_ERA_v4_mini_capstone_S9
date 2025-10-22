@@ -83,7 +83,6 @@ class SageMakerMonitor:
             streams_response = self.logs.describe_log_streams(
                 logGroupName=log_group,
                 logStreamNamePrefix=job_name,
-                orderBy='LastEventTime',
                 descending=True
             )
             
