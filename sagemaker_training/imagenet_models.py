@@ -215,9 +215,14 @@ def model_device_setup_for_ddp(model):
         
         print(f"DDP device_ids parameter: {device_ids}")
         
-        # Initialize distributed process group
+        # Initialize distributed process group only if not already initialized
         import torch.distributed as dist
-        dist.init_process_group(backend='smddp')
+        if not dist.is_initialized():
+            print("🔧 Initializing distributed process group...")
+            dist.init_process_group(backend='smddp')
+            print("✅ Distributed process group initialized")
+        else:
+            print("✅ Distributed process group already initialized")
         
         # Wrap model in DDP
         model = torch.nn.parallel.DistributedDataParallel(
