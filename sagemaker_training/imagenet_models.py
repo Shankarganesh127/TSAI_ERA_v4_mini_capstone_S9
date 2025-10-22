@@ -9,16 +9,28 @@ import torch.nn.functional as F
 from logger_setup import get_logger
 import os
 
-# Only import distributed modules if we're in a distributed environment
+# Only import distributed modules if we're in a multi-instance distributed job
 try:
-    if 'SM_NUM_GPUS' in os.environ and int(os.environ.get('SM_NUM_GPUS', 1)) > 1:
+    # Check for SageMaker distributed training environment variables
+    # SM_HOSTS contains all hosts in distributed training
+    # WORLD_SIZE > 1 indicates distributed training across multiple processes
+    sm_hosts = os.environ.get('SM_HOSTS', '[]')
+    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    
+    # Only enable distributed if we have multiple hosts OR world_size > 1
+    is_distributed_job = (len(eval(sm_hosts)) > 1 or world_size > 1)
+    
+    if is_distributed_job:
         import smdistributed.dataparallel.torch.torch_smddp
         import torch.distributed as dist
         DISTRIBUTED_AVAILABLE = True
+        print(f"🔧 Distributed training detected: {len(eval(sm_hosts))} hosts, world_size={world_size}")
     else:
         DISTRIBUTED_AVAILABLE = False
-except ImportError:
+        print(f"🔧 Single-instance training: {len(eval(sm_hosts))} host, world_size={world_size}")
+except (ImportError, Exception):
     DISTRIBUTED_AVAILABLE = False
+    print("🔧 Distributed training not available or not configured")
 
 class BasicBlock(nn.Module):
     """Basic residual block for ResNet-18/34"""
@@ -173,9 +185,12 @@ def model_device_setup_for_ddp(model):
     """
     
     # Check if we should use distributed training
-    num_gpus = int(os.environ.get('SM_NUM_GPUS', 1))
+    # Use the same logic as the import detection
+    sm_hosts = os.environ.get('SM_HOSTS', '[]')
+    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    
     is_distributed = (DISTRIBUTED_AVAILABLE and 
-                     num_gpus > 1 and 
+                     (len(eval(sm_hosts)) > 1 or world_size > 1) and 
                      'LOCAL_RANK' in os.environ)
     
     if is_distributed:
