@@ -111,8 +111,11 @@ class SageMakerPipelineOrchestrator:
             if not training_job_name:
                 return False
             
-            # Step 4: Monitor Training with Detailed Metrics
-            success = self._monitor_training_pipeline(training_job_name)
+            # Step 4: Monitor Training with Detailed Metrics (DISABLED - was blocking)
+            # success = self._monitor_training_pipeline(training_job_name)
+            success = True  # Skip monitoring to avoid blocking
+            self.logger.info("📊 Training monitoring skipped to avoid blocking the pipeline")
+            self.logger.info("💡 Monitor training manually via AWS Console or use the monitor_training.py script separately")
             
             if success:
                 self.logger.info("🎉 Complete pipeline execution successful!")

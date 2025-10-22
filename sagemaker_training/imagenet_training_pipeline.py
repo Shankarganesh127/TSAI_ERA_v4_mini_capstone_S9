@@ -553,9 +553,12 @@ def detect_dataset_format(data_path):
 
 def main():
     """Main training pipeline"""
+    import sys
     print("🚨 DEBUG: Entered main() function")
+    sys.stdout.flush()
     
     print("🚨 DEBUG: Creating argument parser")
+    sys.stdout.flush()
     parser = argparse.ArgumentParser(description='ImageNet Training Pipeline')
     parser.add_argument('--train', type=str, required=True, help='ImageNet training dataset path')
     parser.add_argument('--val', type=str, required=True, help='ImageNet validation dataset path')
@@ -567,13 +570,17 @@ def main():
     parser.add_argument('--quick-mode', action='store_true', help='Quick mode with fewer iterations')
     
     print("🚨 DEBUG: Parsing arguments")
+    sys.stdout.flush()
     args = parser.parse_args()
     print(f"🚨 DEBUG: Arguments parsed successfully - train: {args.train}, val: {args.val}")
+    sys.stdout.flush()
     
     # Setup logging
     print("🚨 DEBUG: Setting up logger")
+    sys.stdout.flush()
     logger = setup_logger('imagenet_pipeline')
     print("🚨 DEBUG: Logger setup completed")
+    sys.stdout.flush()
     
     # DEBUG: Add extensive early debugging
     logger.info("🔍 DEBUG: Arguments parsed successfully")
@@ -866,14 +873,19 @@ def main():
 
 
 if __name__ == '__main__':
+    import sys
     print("🚨 DEBUG: Starting imagenet_training_pipeline.py")
+    sys.stdout.flush()
     try:
         print("🚨 DEBUG: About to call main()")
+        sys.stdout.flush()
         main()
         print("🚨 DEBUG: main() completed successfully")
+        sys.stdout.flush()
     except Exception as e:
         # Setup basic logger for error reporting if main logger fails
         print(f"🚨 DEBUG: Exception caught in __main__: {e}")
+        sys.stdout.flush()
         import logging
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
         logger = logging.getLogger(__name__)
@@ -883,8 +895,10 @@ if __name__ == '__main__':
         logger.error(f"❌ Full traceback:")
         traceback_lines = traceback.format_exc()
         print(f"🚨 DEBUG: Full traceback (print): {traceback_lines}")
+        sys.stdout.flush()
         for line in traceback_lines.split('\n'):
             if line.strip():
                 logger.error(f"   {line}")
         print(f"🚨 DEBUG: About to re-raise exception")
+        sys.stdout.flush()
         raise
