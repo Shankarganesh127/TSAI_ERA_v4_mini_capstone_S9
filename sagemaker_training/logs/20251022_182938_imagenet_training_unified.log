@@ -1,0 +1,6 @@
+2025-10-22 18:29:38 - [sagemaker_wrapper] - INFO - ================================================================================
+2025-10-22 18:29:38 - [sagemaker_wrapper] - INFO - 🚀 SAGEMAKER WRAPPER INITIALIZATION
+2025-10-22 18:29:38 - [sagemaker_wrapper] - INFO - ================================================================================
+2025-10-22 18:29:38 - [sagemaker_wrapper] - INFO - 🏠 SageMaker Wrapper initialized from: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-22 18:29:38 - [sagemaker_wrapper] - INFO - 📝 Unified log file: logs\20251022_182938_imagenet_training_unified.log
+2025-10-22 18:29:38 - [sagemaker_wrapper] - INFO - ✅ Found imagenet_training_pipeline.py in current directory
