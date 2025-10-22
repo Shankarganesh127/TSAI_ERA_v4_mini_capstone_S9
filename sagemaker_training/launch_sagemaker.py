@@ -27,7 +27,7 @@ sys.path.append(str(current_dir))
 
 # Import logger from same directory
 try:
-    from logger_setup import setup_logger
+    from logger_setup import setup_unified_logger, get_unified_logger
 except ImportError:
     from sagemaker_logging import setup_sagemaker_logger as setup_logger
 
@@ -100,8 +100,9 @@ def create_sagemaker_estimator(args, hyperparameters):
         return estimator
     
 def main():
-    # Setup logging
-    logger = setup_logger("sagemaker_launcher")
+    # Setup unified logging
+    setup_unified_logger()
+    logger = get_unified_logger("sagemaker_launcher")
     
     # Default S3 paths configuration - modify these for your datasets
     DEFAULT_CONFIG = {

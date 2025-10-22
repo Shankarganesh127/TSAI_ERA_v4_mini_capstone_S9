@@ -168,11 +168,17 @@ def get_logger(name=None):
     if name is None:
         name = Path(sys.argv[0]).stem
     
+    # Check if unified logging is set up, if not, use unified logger
+    root_logger = logging.getLogger()
+    if not root_logger.handlers or not hasattr(root_logger, 'unified_log_path'):
+        # Fall back to unified logging if not set up
+        return get_unified_logger(name)
+    
     logger = logging.getLogger(name)
     
-    # If logger doesn't have handlers, set it up
+    # If logger doesn't have handlers, set it up using unified system
     if not logger.handlers:
-        logger = setup_logger(name)
+        return get_unified_logger(name)
     
     return logger
 

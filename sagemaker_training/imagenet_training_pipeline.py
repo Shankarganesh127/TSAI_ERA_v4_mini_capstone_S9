@@ -624,7 +624,7 @@ def main():
     # Setup logging
     print("🚨 DEBUG: Setting up logger")
     sys.stdout.flush()
-    logger = setup_logger('imagenet_pipeline')
+    logger = get_unified_logger('imagenet_pipeline')
     print("🚨 DEBUG: Logger setup completed")
     sys.stdout.flush()
     
