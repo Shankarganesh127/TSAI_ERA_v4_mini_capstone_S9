@@ -570,6 +570,7 @@ def detect_dataset_format(data_path):
 def main():
     """Main training pipeline"""
     import sys
+    import os
     
     # Set up unified logging first thing
     logger = get_unified_logger("imagenet_pipeline")
