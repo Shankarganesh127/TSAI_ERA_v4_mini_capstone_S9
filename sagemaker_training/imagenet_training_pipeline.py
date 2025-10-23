@@ -19,7 +19,6 @@ from tqdm import tqdm
 import argparse
 from datetime import datetime
 import gc
-from typing import Dict, List, Tuple, Optional
 import logging
 
 from imagenet_models import resnet50_imagenet
@@ -29,10 +28,22 @@ from training_performance_optimizer import TrainingPerformanceOptimizer, create_
 from logger_setup import get_unified_logger
 
 # Set memory fragmentation fix BEFORE any PyTorch operations
-# Increased to 512MB to aggressively prevent fragmentation
+# Make split size adaptive to GPU memory size for optimal performance
 if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
-    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
-    print("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512 to aggressively prevent memory fragmentation")
+    try:
+        if torch.cuda.is_available():
+            gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            # Use 2-4% of GPU memory for split size (optimal range for most GPUs)
+            split_size_mb = max(128, min(512, int(gpu_memory_gb * 25)))  # 128MB min, 512MB max
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = f'max_split_size_mb:{split_size_mb}'
+            print(f"🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:{split_size_mb} (adaptive to {gpu_memory_gb:.1f}GB GPU)")
+        else:
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+            print("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128 (CPU mode)")
+    except Exception as e:
+        # Fallback to conservative setting
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256'
+        print("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256 (fallback)")
 
 def optimize_num_workers(batch_size, available_memory_gb=None, cpu_count=None):
     """
@@ -61,12 +72,22 @@ def optimize_num_workers(batch_size, available_memory_gb=None, cpu_count=None):
     if available_memory_gb is None:
         available_memory_gb = psutil.virtual_memory().available / (1024**3)
 
-    # Base calculation: CPU cores - 1 (leave one core for main process)
-    base_workers = max(1, cpu_count - 1)
+    # Get instance profile for optimal worker scaling
+    instance_profile = get_instance_resource_profile()
+    max_workers_per_core = instance_profile['max_workers_per_core']
+
+    # Base calculation: Use instance-optimized workers per core
+    base_workers = max(1, int(cpu_count * max_workers_per_core))
 
     # Memory-based adjustment (rough heuristic)
-    # Assume ~500MB per worker for typical ImageNet preprocessing
-    memory_per_worker_mb = 500
+    # Adjust memory per worker based on instance type
+    if instance_profile['instance_type'] in ['high_end', 'mid_high_end']:
+        memory_per_worker_mb = 400  # High-end instances can handle more memory per worker
+    elif instance_profile['instance_type'] == 'mid_range':
+        memory_per_worker_mb = 500  # Standard memory per worker
+    else:
+        memory_per_worker_mb = 600  # Conservative for lower-end instances
+
     max_workers_by_memory = int(available_memory_gb * 1024 / memory_per_worker_mb)
 
     # Batch size adjustment (larger batches need fewer workers to avoid memory pressure)
@@ -221,44 +242,239 @@ def log_detailed_memory_usage(stage="unknown"):
     if fragmentation_ratio > 0.5:
         logger.warning(f"[MEMORY:{stage}] High fragmentation detected: {fragmentation_ratio:.1%}")
 
+def get_instance_resource_profile():
+    """
+    Detect instance type and return optimal resource utilization profile.
+
+    Returns:
+        dict: Resource profile with optimal settings for the detected instance
+    """
+    profile = {
+        'gpu_memory_gb': 0,
+        'cpu_cores': 0,
+        'memory_per_core_gb': 0,
+        'instance_type': 'unknown',
+        'optimal_batch_memory_fraction': 0.4,  # Conservative default
+        'max_workers_per_core': 1,
+        'enable_gradient_checkpointing': False,
+        'gradient_accumulation_base': 1
+    }
+
+    try:
+        import multiprocessing as mp
+
+        # Detect CPU resources
+        profile['cpu_cores'] = mp.cpu_count()
+
+        if torch.cuda.is_available():
+            gpu_props = torch.cuda.get_device_properties(0)
+            profile['gpu_memory_gb'] = gpu_props.total_memory / (1024**3)
+
+            # Classify instance type based on GPU memory and CPU cores
+            gpu_mem = profile['gpu_memory_gb']
+            cpu_cores = profile['cpu_cores']
+
+            # AWS SageMaker instance classification
+            if gpu_mem >= 80:  # A100, H100 instances
+                profile['instance_type'] = 'high_end'
+                profile['optimal_batch_memory_fraction'] = 0.5  # Can use more memory
+                profile['max_workers_per_core'] = 1.5
+                profile['enable_gradient_checkpointing'] = False  # Don't need for large memory
+                profile['gradient_accumulation_base'] = 1
+            elif gpu_mem >= 40:  # V100, A10G instances
+                profile['instance_type'] = 'mid_high_end'
+                profile['optimal_batch_memory_fraction'] = 0.45
+                profile['max_workers_per_core'] = 1.2
+                profile['enable_gradient_checkpointing'] = False
+                profile['gradient_accumulation_base'] = 1
+            elif gpu_mem >= 20:  # T4, M60 instances (like ml.g6.12xlarge)
+                profile['instance_type'] = 'mid_range'
+                profile['optimal_batch_memory_fraction'] = 0.4
+                profile['max_workers_per_core'] = 1.0
+                profile['enable_gradient_checkpointing'] = True  # Enable for smaller batches
+                profile['gradient_accumulation_base'] = 2
+            elif gpu_mem >= 8:  # GTX 1080, smaller instances
+                profile['instance_type'] = 'entry_level'
+                profile['optimal_batch_memory_fraction'] = 0.35
+                profile['max_workers_per_core'] = 0.8
+                profile['enable_gradient_checkpointing'] = True
+                profile['gradient_accumulation_base'] = 4
+            else:  # Very small GPUs
+                profile['instance_type'] = 'low_end'
+                profile['optimal_batch_memory_fraction'] = 0.3
+                profile['max_workers_per_core'] = 0.5
+                profile['enable_gradient_checkpointing'] = True
+                profile['gradient_accumulation_base'] = 8
+
+            # Adjust based on CPU cores (for multi-GPU instances)
+            if cpu_cores >= 64:  # High CPU core count instances
+                profile['max_workers_per_core'] *= 1.2
+            elif cpu_cores >= 32:
+                profile['max_workers_per_core'] *= 1.1
+            elif cpu_cores <= 8:  # Low CPU core instances
+                profile['max_workers_per_core'] *= 0.8
+
+        else:
+            profile['instance_type'] = 'cpu_only'
+            profile['optimal_batch_memory_fraction'] = 0.2  # Very conservative for CPU
+
+        # Calculate memory per core
+        try:
+            import psutil
+            total_memory_gb = psutil.virtual_memory().total / (1024**3)
+            profile['memory_per_core_gb'] = total_memory_gb / cpu_cores
+        except:
+            profile['memory_per_core_gb'] = 4.0  # Default assumption
+
+    except Exception as e:
+        print(f"⚠️  Warning: Could not detect instance profile: {e}")
+        # Keep default conservative settings
+
+    return profile
+
 def get_ultra_conservative_batch_size(model, input_shape=(3, 224, 224), device='cuda', max_memory_gb=22.0):
     """
     Calculate ultra-conservative batch size that leaves significant memory buffer.
-    Uses extremely conservative estimates to prevent OOM errors.
-    
+    Uses instance-aware optimization for different hardware profiles.
+
     Args:
         model: PyTorch model
         input_shape: Input tensor shape (C, H, W)
         device: Device to test on
         max_memory_gb: Maximum GPU memory in GB
-    
+
     Returns:
         int: Ultra-conservative batch size
     """
     if not torch.cuda.is_available():
-        return 8  # Very conservative for CPU
-    
+        return 4  # Conservative for CPU
+
     logger = get_unified_logger("batch_size_calc")
-    
-    # Reserve massive memory for overhead (model params, gradients, optimizer states, etc.)
-    # Use only 40% of GPU memory for batch processing to leave huge buffer
-    available_for_batch = max_memory_gb * 0.4
-    logger.info(f"[BATCH_CALC] Using only {available_for_batch:.1f}GB ({available_for_batch/max_memory_gb:.0%}) of GPU memory for batch processing")
-    
-    # Estimate memory per sample (very conservative heuristic)
-    # ImageNet 224x224 with ResNet50: ~3-5MB per sample including all overhead
-    estimated_mb_per_sample = 5.0  # Ultra-conservative estimate
-    
+
+    # Get instance profile for optimal resource utilization
+    instance_profile = get_instance_resource_profile()
+    optimal_fraction = instance_profile['optimal_batch_memory_fraction']
+
+    # Use instance-optimized memory fraction
+    available_for_batch = max_memory_gb * optimal_fraction
+    logger.info(f"[BATCH_CALC] Instance type: {instance_profile['instance_type']} ({instance_profile['gpu_memory_gb']:.1f}GB GPU, {instance_profile['cpu_cores']} CPU cores)")
+    logger.info(f"[BATCH_CALC] Using {optimal_fraction:.0%} of GPU memory ({available_for_batch:.1f}GB) for batch processing")
+
+    # Adjust memory estimate based on instance type
+    if instance_profile['instance_type'] in ['high_end', 'mid_high_end']:
+        estimated_mb_per_sample = 3.0  # Less conservative for high-end GPUs
+    elif instance_profile['instance_type'] == 'mid_range':
+        estimated_mb_per_sample = 4.0  # Moderate for mid-range
+    else:
+        estimated_mb_per_sample = 5.0  # Conservative for entry-level
+
     # Calculate maximum batch size
     max_batch = int((available_for_batch * 1024) / estimated_mb_per_sample)
-    
-    # Apply extremely conservative safety factors - target very small batches
-    conservative_batch = max(1, min(max_batch // 8, 4))  # Max 4, min 1 - very aggressive
-    
-    logger.info(f"[BATCH_CALC] Estimated max batch: {max_batch}, Ultra-conservative batch: {conservative_batch}")
+
+    # Apply instance-aware safety factors
+    if instance_profile['instance_type'] == 'high_end':
+        conservative_batch = max(1, min(max_batch // 2, 16))  # Less conservative
+    elif instance_profile['instance_type'] == 'mid_high_end':
+        conservative_batch = max(1, min(max_batch // 3, 12))
+    elif instance_profile['instance_type'] == 'mid_range':
+        conservative_batch = max(1, min(max_batch // 4, 8))
+    else:  # entry_level, low_end
+        conservative_batch = max(1, min(max_batch // 6, 4))  # Very conservative
+
+    logger.info(f"[BATCH_CALC] Estimated max batch: {max_batch}, Instance-optimized batch: {conservative_batch}")
     logger.info(f"[BATCH_CALC] Memory estimate: {estimated_mb_per_sample:.1f}MB per sample, {available_for_batch:.1f}GB available")
-    
+
     return conservative_batch
+
+
+def get_adaptive_gradient_accumulation_steps(batch_size, target_effective_batch=256):
+    """
+    Calculate gradient accumulation steps for effective batch size scaling
+    """
+    if batch_size >= target_effective_batch:
+        return 1  # No accumulation needed
+
+    accumulation_steps = max(1, target_effective_batch // batch_size)
+    return min(accumulation_steps, 8)  # Cap at 8 to prevent too much accumulation
+
+
+def create_oom_resilient_trainer(model, optimizer, criterion, device, max_retries=3):
+    """
+    Create a training wrapper that automatically handles OOM errors by reducing batch size
+    """
+    logger = get_unified_logger("oom_trainer")
+
+    class OOMResilientTrainer:
+        def __init__(self, model, optimizer, criterion, device, max_retries=3):
+            self.model = model
+            self.optimizer = optimizer
+            self.criterion = criterion
+            self.device = device
+            self.max_retries = max_retries
+            self.scaler = torch.cuda.amp.GradScaler() if torch.cuda.is_available() else None
+            self.oom_count = 0
+
+        def train_step(self, inputs, targets, gradient_accumulation_steps=1):
+            """Single training step with OOM resilience"""
+            retry_count = 0
+            current_accumulation = gradient_accumulation_steps
+
+            while retry_count <= self.max_retries:
+                try:
+                    # Memory cleanup before step
+                    if retry_count > 0:
+                        aggressive_memory_cleanup()
+                        logger.warning(f"🔄 OOM retry {retry_count}/{self.max_retries} - reducing accumulation to {current_accumulation}")
+
+                    # Training step with mixed precision if available
+                    if self.scaler and torch.cuda.is_available():
+                        with torch.cuda.amp.autocast():
+                            outputs = self.model(inputs)
+                            loss = self.criterion(outputs, targets)
+
+                        # Scale loss for accumulation
+                        self.scaler.scale(loss / current_accumulation).backward()
+                    else:
+                        outputs = self.model(inputs)
+                        loss = self.criterion(outputs, targets)
+                        (loss / current_accumulation).backward()
+
+                    return outputs, loss.item()
+
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower():
+                        self.oom_count += 1
+                        retry_count += 1
+                        current_accumulation = max(1, current_accumulation // 2)
+
+                        if retry_count > self.max_retries:
+                            logger.error(f"❌ Max OOM retries exceeded. Final error: {e}")
+                            raise e
+                    else:
+                        # Not an OOM error, re-raise
+                        raise e
+
+            return None, None
+
+        def optimizer_step(self):
+            """Perform optimizer step with gradient clipping and scaler update"""
+            if self.scaler and torch.cuda.is_available():
+                # Unscale gradients for clipping
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
+                # Optimizer step with scaler
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                # Standard gradient clipping and step
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.optimizer.step()
+
+            self.optimizer.zero_grad()
+
+    return OOMResilientTrainer(model, optimizer, criterion, device, max_retries)
+
 
 # Global progress bar manager to avoid subprocess complexity
 class LiveProgressManager:
@@ -886,10 +1102,17 @@ class FullTrainer:
         
     def train(self, lr_config, epochs, batch_size, weight_decay=1e-4, 
               save_checkpoints=True, early_stopping_patience=10, args=None, performance_optimizer=None,
-              gradient_accumulation_steps=1):
+              gradient_accumulation_steps=1, enable_oom_protection=True):
         """Full training with OneCycle LR and cyclical momentum"""
         
         logger = get_unified_logger()
+        
+        # Calculate adaptive gradient accumulation if not specified
+        if gradient_accumulation_steps == 1:
+            gradient_accumulation_steps = get_adaptive_gradient_accumulation_steps(batch_size)
+        
+        effective_batch_size = batch_size * gradient_accumulation_steps
+        
         logger.info("[START] Starting Full Training:")
         logger.info(f"   📚 Epochs: {epochs}")
         logger.info(f"   [SIZE] LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
@@ -897,8 +1120,8 @@ class FullTrainer:
         logger.info(f"   [BATCH] Batch Size: {batch_size}")
         logger.info(f"   [GRAD] Gradient Accumulation Steps: {gradient_accumulation_steps}")
         if gradient_accumulation_steps > 1:
-            effective_batch_size = batch_size * gradient_accumulation_steps
             logger.info(f"   [EFFECTIVE] Effective Batch Size: {effective_batch_size}")
+        logger.info(f"   [OOM] OOM Protection: {'Enabled' if enable_oom_protection else 'Disabled'}")
         
         # Scale learning rate based on batch size using TrainingPerformanceOptimizer
         base_min_lr = lr_config['min_lr']
@@ -974,7 +1197,7 @@ class FullTrainer:
             progress_manager.create_status_updater(epoch_status_key, f"[PROGRESS] Epoch {epoch+1}/{epochs} - Training...")
 
             # Training
-            train_loss, train_acc = self._train_epoch(optimizer, criterion, scheduler, scaler, performance_optimizer, gradient_accumulation_steps)
+            train_loss, train_acc = self._train_epoch(optimizer, criterion, scheduler, scaler, performance_optimizer, gradient_accumulation_steps, enable_oom_protection)
 
             # Update status to validation phase
             progress_manager.update_status(epoch_status_key, f"[PROGRESS] Epoch {epoch+1}/{epochs} - Validating...")
@@ -1029,98 +1252,136 @@ class FullTrainer:
         progress_manager.finalize_status(completion_key)
         return self.history
     
-    def _train_epoch(self, optimizer, criterion, scheduler, scaler=None, performance_optimizer=None, gradient_accumulation_steps=1):
-        """Train one epoch with optional mixed precision, performance optimization, and gradient accumulation"""
+    def _train_epoch(self, optimizer, criterion, scheduler, scaler=None, performance_optimizer=None, gradient_accumulation_steps=1, enable_oom_protection=True):
+        """Train one epoch with optional mixed precision, performance optimization, gradient accumulation, and OOM protection"""
+        logger = get_unified_logger()
         self.model.train()
         running_loss = 0.0
         correct = 0
         total = 0
         
+        # Create OOM resilient trainer if protection is enabled and no performance optimizer
+        if enable_oom_protection and not performance_optimizer:
+            oom_trainer = create_oom_resilient_trainer(self.model, optimizer, criterion, self.device)
+            accumulation_counter = 0
+        else:
+            oom_trainer = None
+            accumulation_counter = 0
+        
         # Use progress manager for clean progress tracking
         progress_manager.create_progress_bar("Training", len(self.train_loader))
         
-        accumulation_counter = 0
+        step_count = 0
         for batch_idx, batch_data in enumerate(self.train_loader):
             inputs, targets = batch_data
             inputs, targets = inputs.to(self.device), targets.to(self.device)
+            step_count += 1
             
-            # Use TrainingPerformanceOptimizer for optimized training step if available
-            if performance_optimizer:
-                step_metrics = performance_optimizer.optimize_training_step((inputs, targets), step_type='train')
-                loss = step_metrics['loss']
-                
-                # Get predictions for accuracy calculation
-                with torch.no_grad():
-                    outputs = self.model(inputs)
-                    _, predicted = outputs.max(1)
-                
-                # For gradient accumulation with performance optimizer, we need to handle accumulation manually
-                accumulation_counter += 1
-                if accumulation_counter % gradient_accumulation_steps == 0:
-                    # Update optimizer and scheduler manually since optimizer is managed by performance_optimizer
-                    scheduler.step()
-                    accumulation_counter = 0
-            else:
-                # Original training step logic with gradient accumulation
-                # Only zero gradients at the start of accumulation cycle
-                if accumulation_counter == 0:
-                    optimizer.zero_grad()
-                
-                # Mixed precision training
-                if scaler:
-                    with torch.cuda.amp.autocast():
+            try:
+                # Use TrainingPerformanceOptimizer for optimized training step if available
+                if performance_optimizer:
+                    step_metrics = performance_optimizer.optimize_training_step((inputs, targets), step_type='train')
+                    loss = step_metrics['loss']
+                    
+                    # Get predictions for accuracy calculation
+                    with torch.no_grad():
+                        outputs = self.model(inputs)
+                        _, predicted = outputs.max(1)
+                    
+                    # For gradient accumulation with performance optimizer, we need to handle accumulation manually
+                    accumulation_counter += 1
+                    if accumulation_counter % gradient_accumulation_steps == 0:
+                        # Update optimizer and scheduler manually since optimizer is managed by performance_optimizer
+                        scheduler.step()
+                        accumulation_counter = 0
+                elif oom_trainer:
+                    # Use OOM resilient training
+                    if accumulation_counter == 0:
+                        optimizer.zero_grad()
+                    
+                    outputs, loss_value = oom_trainer.train_step(inputs, targets, gradient_accumulation_steps)
+                    accumulation_counter += 1
+                    
+                    # Perform optimizer step after accumulation
+                    if accumulation_counter >= gradient_accumulation_steps:
+                        oom_trainer.optimizer_step()
+                        scheduler.step()
+                        accumulation_counter = 0
+                else:
+                    # Original training step logic with gradient accumulation
+                    # Only zero gradients at the start of accumulation cycle
+                    if accumulation_counter == 0:
+                        optimizer.zero_grad()
+                    
+                    # Mixed precision training
+                    if scaler:
+                        with torch.cuda.amp.autocast():
+                            outputs = self.model(inputs)
+                            loss = criterion(outputs, targets)
+                        
+                        # Scale loss and backpropagate (accumulate gradients)
+                        scaler.scale(loss / gradient_accumulation_steps).backward()
+                    else:
+                        # Standard precision training
                         outputs = self.model(inputs)
                         loss = criterion(outputs, targets)
+                        (loss / gradient_accumulation_steps).backward()
                     
-                    # Scale loss and backpropagate (accumulate gradients)
-                    scaler.scale(loss / gradient_accumulation_steps).backward()
+                    _, predicted = outputs.max(1)
+                    accumulation_counter += 1
+                    
+                    # Perform optimizer step only after accumulating gradients
+                    if accumulation_counter % gradient_accumulation_steps == 0:
+                        if scaler:
+                            # Gradient clipping with scaler
+                            scaler.unscale_(optimizer)
+                            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                            
+                            # Optimizer step with scaler
+                            scaler.step(optimizer)
+                            scaler.update()
+                        else:
+                            # Gradient clipping
+                            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                            
+                            # Optimizer step
+                            optimizer.step()
+                        
+                        # Step scheduler
+                        scheduler.step()
+                        accumulation_counter = 0
+                
+                # Update metrics
+                if performance_optimizer:
+                    running_loss += loss
                 else:
-                    # Standard precision training
-                    outputs = self.model(inputs)
-                    loss = criterion(outputs, targets)
-                    (loss / gradient_accumulation_steps).backward()
+                    running_loss += loss_value if oom_trainer else loss.item()
                 
-                _, predicted = outputs.max(1)
-                accumulation_counter += 1
+                total += targets.size(0)
+                correct += predicted.eq(targets).sum().item()
                 
-                # Perform optimizer step only after accumulating gradients
-                if accumulation_counter % gradient_accumulation_steps == 0:
-                    if scaler:
-                        # Gradient clipping with scaler
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                        
-                        # Optimizer step with scaler
-                        scaler.step(optimizer)
-                        scaler.update()
-                    else:
-                        # Gradient clipping
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                        
-                        # Optimizer step
-                        optimizer.step()
+                # Update progress with metrics
+                progress_manager.update_progress(batch_idx + 1, {
+                    'loss': running_loss/(batch_idx + 1),
+                    'accuracy': 100.*correct/total,
+                    'lr': optimizer.param_groups[0]["lr"]
+                })
+                
+                # Clean up GPU memory after each batch to prevent accumulation
+                del inputs, targets, outputs, loss, predicted
+                if torch.cuda.is_available() and (batch_idx + 1) % 50 == 0:  # Clean every 50 batches (more frequent)
+                    torch.cuda.empty_cache()
+                    import gc
+                    gc.collect()
                     
-                    # Step scheduler
-                    scheduler.step()
-                    accumulation_counter = 0
-            
-            running_loss += loss
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
-            
-            # Update progress with metrics
-            progress_manager.update_progress(batch_idx + 1, {
-                'loss': running_loss/(batch_idx + 1),
-                'accuracy': 100.*correct/total,
-                'lr': optimizer.param_groups[0]["lr"]
-            })
-            
-            # Clean up GPU memory after each batch to prevent accumulation
-            del inputs, targets, outputs, loss, predicted
-            if torch.cuda.is_available() and (batch_idx + 1) % 50 == 0:  # Clean every 50 batches (more frequent)
-                torch.cuda.empty_cache()
-                import gc
-                gc.collect()
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower() and not oom_trainer:
+                    logger.error(f"❌ OOM in training step {step_count}: {e}")
+                    logger.info("💡 Consider enabling OOM protection or reducing batch_size/gradient_accumulation_steps")
+                    aggressive_memory_cleanup()
+                    raise e
+                else:
+                    raise e
         
         progress_manager.close_progress_bar()
         return running_loss / len(self.train_loader), 100. * correct / total
@@ -1259,22 +1520,12 @@ def main():
     
     # Log to unified log file
     logger.info("="*80)
-    logger.debug("[DEBUG] DEBUG: Entered main() function")
-    logger.info("="*80)
-    logger.debug("[DEBUG] DEBUG: Creating argument parser")
     logger.info(f"[PYTHON] Python version: {sys.version}")
     logger.info(f"[PYTORCH] PyTorch version: {torch.__version__}")
     logger.info(f"[SYSTEM] Working directory: {os.getcwd()}")
     logger.info(f"[FILE] Script path: {sys.argv[0]}")
     logger.info(f"[ARGS] Command line args: {sys.argv[1:] if len(sys.argv) > 1 else 'None'}")
     
-    print("[DEBUG] DEBUG: Entered main() function")
-    sys.stdout.flush()
-    logger.debug("[DEBUG] DEBUG: Entered main() function")
-    
-    print("[DEBUG] DEBUG: Creating argument parser")
-    logger.debug("[DEBUG] DEBUG: Creating argument parser")
-    logger.debug("[DEBUG] DEBUG: Parsing arguments")
     parser = argparse.ArgumentParser(description='ImageNet Training Pipeline')
     parser.add_argument('--train', type=str, required=True, help='ImageNet training dataset path')
     parser.add_argument('--val', type=str, required=True, help='ImageNet validation dataset path')
@@ -1286,23 +1537,13 @@ def main():
     parser.add_argument('--no-amp', action='store_true', help='Disable mixed precision training')
     parser.add_argument('--no-compile', action='store_true', help='Disable torch.compile optimization')
     parser.add_argument('--lightweight-augs', action='store_true', help='Use lightweight augmentations for maximum speed')
-    logger.debug("[DEBUG] DEBUG: Setting up logger")
     parser.add_argument('--skip-lr-test', action='store_true', help='Skip LR range test')
     parser.add_argument('--skip-wd-search', action='store_true', help='Skip weight decay search')
-    logger.debug("[DEBUG] DEBUG: Logger setup completed")
     
-    print("[DEBUG] DEBUG: Parsing arguments")
-    sys.stdout.flush()
     args = parser.parse_args()
-    print(f"[DEBUG] DEBUG: Arguments parsed successfully - train: {args.train}, val: {args.val}, epochs: {args.epochs}")
-    sys.stdout.flush()
     
     # Setup logging
-    print("[DEBUG] DEBUG: Setting up logger")
-    sys.stdout.flush()
     logger = get_unified_logger('imagenet_pipeline')
-    print("[DEBUG] DEBUG: Logger setup completed")
-    sys.stdout.flush()
     
     # DEBUG: Add extensive early debugging
     logger.info("[DEBUG] DEBUG: Arguments parsed successfully")
@@ -1399,8 +1640,16 @@ def main():
                 enable_profiling=False  # Disable profiling for batch size detection
             )
             
-            # Use optimizer's batch size detection method
-            max_memory_gb = 14.0 if torch.cuda.is_available() else 4.0  # Adjust based on GPU availability
+            # Use optimizer's batch size detection method with actual GPU memory
+            if torch.cuda.is_available():
+                actual_gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                # Use 70% of actual GPU memory for initial estimation (will be further reduced by safety factors)
+                max_memory_gb = actual_gpu_memory_gb * 0.7
+                logger.info(f"[BATCH] Using {max_memory_gb:.1f}GB ({max_memory_gb/actual_gpu_memory_gb:.0%}) of detected {actual_gpu_memory_gb:.1f}GB GPU memory")
+            else:
+                max_memory_gb = 4.0  # Conservative for CPU
+                logger.info(f"[BATCH] CPU mode: Using {max_memory_gb:.1f}GB memory limit")
+
             optimal_batch_size = temp_performance_optimizer.get_optimal_batch_size(max_memory_gb=max_memory_gb)
             
             # Apply safety factors based on mode - now much more conservative
@@ -1632,13 +1881,18 @@ def main():
     if check_memory_fragmentation():
         logger.warning("[MEMORY] High fragmentation detected - applying ultra-conservative sizing")
         
-        # Use ultra-conservative batch size calculation
+        # Use ultra-conservative batch size calculation with actual GPU memory
         try:
             temp_model = create_model()
-            ultra_conservative_batch = get_ultra_conservative_batch_size(temp_model, max_memory_gb=22.0)
+            if torch.cuda.is_available():
+                actual_gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            else:
+                actual_gpu_memory_gb = 8.0  # Conservative CPU estimate
+
+            ultra_conservative_batch = get_ultra_conservative_batch_size(temp_model, max_memory_gb=actual_gpu_memory_gb)
             del temp_model
             torch.cuda.empty_cache()
-            
+
             # Use the more conservative of current batch size or ultra-conservative calculation
             optimal_batch_size = min(optimal_batch_size, ultra_conservative_batch)
             logger.info(f"[MEMORY] Ultra-conservative batch size: {ultra_conservative_batch}, Using: {optimal_batch_size}")
@@ -1692,13 +1946,16 @@ def main():
     # Log memory usage after model creation
     log_detailed_memory_usage("after_model_creation")
     
-    # Enable gradient checkpointing for memory efficiency if batch size is very small
-    if optimal_batch_size <= 8:
-        logger.info("[MEMORY] Enabling gradient checkpointing for ultra-low batch sizes")
+    # Enable gradient checkpointing based on instance profile and batch size
+    instance_profile = get_instance_resource_profile()
+    should_checkpoint = instance_profile['enable_gradient_checkpointing'] or optimal_batch_size <= 8
+
+    if should_checkpoint:
+        logger.info("[MEMORY] Enabling gradient checkpointing for memory efficiency")
         try:
             # Import checkpoint utilities
             from torch.utils.checkpoint import checkpoint_sequential
-            
+
             # Apply gradient checkpointing to ResNet layers to reduce memory usage
             # This trades computation for memory by recomputing activations during backward pass
             def apply_checkpointing(model):
@@ -1716,7 +1973,7 @@ def main():
                     if isinstance(model, torch.nn.Sequential):
                         model = torch.nn.utils.checkpoint.checkpoint_wrapper(model)
                         logger.info("[MEMORY] Applied sequential gradient checkpointing")
-            
+
             apply_checkpointing(model)
             logger.info("[MEMORY] Gradient checkpointing enabled - expect ~50% memory reduction")
         except Exception as e:
@@ -1728,20 +1985,26 @@ def main():
     progress_manager.update_status(full_train_key,
         f"[START] STEP 6: Full OneCycle Training - LR: {lr_config['min_lr']:.2e}→{lr_config['max_lr']:.2e}, WD: {best_weight_decay:.2e}, Batch: {optimal_batch_size}")
 
-    # Determine gradient accumulation steps based on batch size to maintain effective batch size
+    # Determine gradient accumulation steps based on batch size and instance profile
+    instance_profile = get_instance_resource_profile()
+    base_accumulation = instance_profile['gradient_accumulation_base']
+
     gradient_accumulation_steps = 1
     if optimal_batch_size <= 4:
-        gradient_accumulation_steps = 16  # Effective batch size: 64
+        gradient_accumulation_steps = base_accumulation * 4  # Instance-aware scaling
         logger.info(f"[GRAD] Ultra-low batch size detected, using aggressive gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
     elif optimal_batch_size <= 8:
-        gradient_accumulation_steps = 8  # Effective batch size: 64
+        gradient_accumulation_steps = base_accumulation * 2
         logger.info(f"[GRAD] Low batch size detected, using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
     elif optimal_batch_size <= 16:
-        gradient_accumulation_steps = 4  # Effective batch size: 64
+        gradient_accumulation_steps = base_accumulation
         logger.info(f"[GRAD] Using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
     elif optimal_batch_size <= 32:
-        gradient_accumulation_steps = 2  # Effective batch size: 64
-        logger.info(f"[GRAD] Using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
+        gradient_accumulation_steps = max(1, base_accumulation // 2)
+        if gradient_accumulation_steps > 1:
+            logger.info(f"[GRAD] Using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
+        else:
+            logger.info(f"[GRAD] No gradient accumulation needed (batch size: {optimal_batch_size})")
     else:
         logger.info(f"[GRAD] No gradient accumulation needed (batch size: {optimal_batch_size})")
 
@@ -1869,58 +2132,11 @@ def main():
     logger.info(f"[DIR] Results saved to: {args.output}")
 
 
-if __name__ == '__main__':
-    import sys
-    import os
-    import inspect
-    
-    # =============================================================================
-    # SCRIPT EXECUTION CONTEXT LOGGING
-    # =============================================================================
-    print("=" * 80)
-    print("SCRIPT: IMAGENET_TRAINING_PIPELINE.PY CALLED")
-    print("=" * 80)
-    print(f"PATH: Script Path: {__file__}")
-    print(f"DIR:  Working Directory: {os.getcwd()}")
-    print(f"PY:   Python Executable: {sys.executable}")
-    print(f"ARGS: Command Line Args: {sys.argv}")
-    print(f"COUNT: Number of Args: {len(sys.argv)}")
-    
-    # Show calling context
-    frame = inspect.currentframe()
-    if frame and frame.f_back:
-        caller_frame = frame.f_back
-        print(f"CALLER: Called From: {caller_frame.f_code.co_filename}:{caller_frame.f_lineno}")
-        print(f"FUNC:   Caller Function: {caller_frame.f_code.co_name}")
-    else:
-        print("CALLER: Called From: Direct execution (no caller frame)")
-    
-    # Environment context
-    print(f"[ENV] Environment Variables (SageMaker related):")
-    sm_vars = {k: v for k, v in os.environ.items() if 'SM_' in k or 'SAGEMAKER' in k}
-    if sm_vars:
-        for key, value in list(sm_vars.items())[:10]:  # Show first 10
-            print(f"   {key}: {value}")
-        if len(sm_vars) > 10:
-            print(f"   ... and {len(sm_vars) - 10} more SM_ variables")
-    else:
-        print("   No SageMaker environment variables found")
-    
-    print("=" * 80)
-    sys.stdout.flush()
-    
-    print("[DEBUG] DEBUG: Starting imagenet_training_pipeline.py")
-    sys.stdout.flush()
+if __name__ == "__main__":
     try:
-        print("[DEBUG] DEBUG: About to call main()")
-        sys.stdout.flush()
         main()
-        print("[DEBUG] DEBUG: main() completed successfully")
-        sys.stdout.flush()
     except Exception as e:
         # Setup unified logger for error reporting if main logger fails
-        print(f"[DEBUG] DEBUG: Exception caught in __main__: {e}")
-        sys.stdout.flush()
         try:
             from logger_setup import setup_unified_logger
             logger = setup_unified_logger()
@@ -1932,12 +2148,7 @@ if __name__ == '__main__':
         logger.error(f"[ERROR] Exception type: {type(e).__name__}")
         import traceback
         logger.error(f"[ERROR] Full traceback:")
-        traceback_lines = traceback.format_exc()
-        print(f"[DEBUG] DEBUG: Full traceback (print): {traceback_lines}")
-        sys.stdout.flush()
-        for line in traceback_lines.split('\n'):
+        for line in traceback.format_exc().split('\n'):
             if line.strip():
                 logger.error(f"   {line}")
-        print(f"[DEBUG] DEBUG: About to re-raise exception")
-        sys.stdout.flush()
         raise
