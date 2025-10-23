@@ -28,9 +28,10 @@ from training_performance_optimizer import TrainingPerformanceOptimizer, create_
 from logger_setup import get_unified_logger
 
 # Set memory fragmentation fix BEFORE any PyTorch operations
+# Increased from 32 to 128 to prevent severe fragmentation
 if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
-    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32'
-    print("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32 to prevent memory fragmentation")
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+    print("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128 to prevent memory fragmentation")
 
 def optimize_num_workers(batch_size, available_memory_gb=None, cpu_count=None):
     """
@@ -128,6 +129,58 @@ def monitor_gpu_utilization(duration_seconds=5):
     except Exception as e:
         # Fallback if nvidia-smi monitoring fails
         return {'avg_utilization': 50, 'is_bottleneck': False, 'error': str(e)}
+
+def aggressive_memory_cleanup():
+    """
+    Aggressive GPU memory cleanup to prevent fragmentation and OOM errors.
+    """
+    if torch.cuda.is_available():
+        # Force garbage collection
+        import gc
+        gc.collect()
+        
+        # Clear CUDA cache multiple times
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()  # Wait for all operations to complete
+        
+        # Additional cleanup - reset peak memory stats
+        torch.cuda.reset_peak_memory_stats()
+        
+        # Log memory status
+        allocated = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        logger = get_unified_logger("memory_cleanup")
+        logger.info(f"[MEMORY] Cleanup completed - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+def check_memory_fragmentation():
+    """
+    Check for memory fragmentation and warn if severe.
+    
+    Returns:
+        bool: True if fragmentation is severe and may cause OOM
+    """
+    if not torch.cuda.is_available():
+        return False
+    
+    allocated = torch.cuda.memory_allocated()
+    reserved = torch.cuda.memory_reserved()
+    
+    if reserved == 0:
+        return False
+    
+    fragmentation_ratio = (reserved - allocated) / reserved
+    
+    # Severe fragmentation if reserved is much higher than allocated
+    is_severe = fragmentation_ratio > 0.8  # More than 80% fragmentation
+    
+    if is_severe:
+        allocated_gb = allocated / 1024**3
+        reserved_gb = reserved / 1024**3
+        logger = get_unified_logger("memory_monitor")
+        logger.warning(f"[MEMORY] Severe fragmentation detected - Allocated: {allocated_gb:.2f}GB, Reserved: {reserved_gb:.2f}GB, Ratio: {fragmentation_ratio:.2%}")
+        logger.warning("[MEMORY] Consider reducing batch size or increasing max_split_size_mb")
+    
+    return is_severe
 
 # Global progress bar manager to avoid subprocess complexity
 class LiveProgressManager:
@@ -1448,10 +1501,7 @@ def main():
             
         # Clean up GPU memory to prevent OOM
         del model, optimizer, criterion, lr_finder, lr_test_loader
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            import gc
-            gc.collect()
+        aggressive_memory_cleanup()
     else:
         # Default LR config
         lr_config = {'min_lr': 1e-3, 'max_lr': 0.1}
@@ -1487,10 +1537,24 @@ def main():
 
         progress_manager.update_status(wd_step_key, f"[OK] STEP 5: Weight Decay Search Complete - Best WD: {best_weight_decay:.2e}")
         progress_manager.finalize_status(wd_step_key)
+        
+        # Check for memory fragmentation after weight decay search
+        check_memory_fragmentation()
+        
     else:
         wd_skip_key = "wd_skip"
         progress_manager.create_status_updater(wd_skip_key, "⏭️ STEP 5: Skipping weight decay search, using default 1e-4")
         progress_manager.finalize_status(wd_skip_key)
+    
+    # Aggressive memory cleanup before full training to prevent fragmentation
+    logger.info("[MEMORY] Performing aggressive memory cleanup before full training...")
+    aggressive_memory_cleanup()
+    
+    # Check for memory fragmentation before starting full training
+    if check_memory_fragmentation():
+        logger.warning("[MEMORY] High fragmentation detected - reducing batch size for safety")
+        optimal_batch_size = max(8, optimal_batch_size // 2)
+        logger.info(f"[MEMORY] Reduced batch size to: {optimal_batch_size}")
     
     # STEP 6: Full Training
     training_epochs = 20 if args.quick_mode else args.epochs
