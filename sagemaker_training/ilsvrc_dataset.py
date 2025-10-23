@@ -147,6 +147,11 @@ def get_ilsvrc_dataloaders(data_root, batch_size=32, num_workers=4, pin_memory=T
         val_solution_file = os.path.join(downloads_dir, "LOC_val_solution.csv")
     
     logger = get_unified_logger("ilsvrc_dataset")
+    logger.info(f"get_ilsvrc_dataloaders called with:")
+    logger.info(f"  data_root={data_root}")
+    logger.info(f"  batch_size={batch_size}")
+    logger.info(f"  num_workers={num_workers}")
+    logger.info(f"  pin_memory={pin_memory}")
     logger.info(f"Train directory: {train_dir}")
     logger.info(f"Val directory: {val_dir}")
     logger.info(f"Val labels file: {val_labels_file}")

@@ -133,6 +133,12 @@ class TrainingPerformanceOptimizer:
             Tuple of (optimized_train_loader, optimized_val_loader)
         """
         logger.info(f"🔧 Optimizing data loading pipelines with {target_workers} workers")
+        logger.info(f"   Current train_loader settings:")
+        logger.info(f"     - batch_size: {self.train_loader.batch_size}")
+        logger.info(f"     - num_workers: {self.train_loader.num_workers}")
+        logger.info(f"     - pin_memory: {self.train_loader.pin_memory}")
+        logger.info(f"     - persistent_workers: {getattr(self.train_loader, 'persistent_workers', 'N/A')}")
+        logger.info(f"   Target optimization: num_workers → {target_workers}")
 
         # Optimize training loader
         train_current_workers = self.train_loader.num_workers

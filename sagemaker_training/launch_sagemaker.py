@@ -71,6 +71,93 @@ def is_multi_gpu_instance(instance_type):
 
     return multi_gpu_instances.get(instance_type, 0) > 1
 
+def get_instance_specs(instance_type):
+    """
+    Get instance specifications for hyperparameter optimization.
+    
+    Returns dict with gpu_count, gpu_memory_gb, cpu_count
+    """
+    specs = {
+        # P3 instances
+        'ml.p3.2xlarge': {'gpus': 1, 'gpu_memory_gb': 16, 'cpus': 8},
+        'ml.p3.8xlarge': {'gpus': 4, 'gpu_memory_gb': 16, 'cpus': 32},
+        'ml.p3.16xlarge': {'gpus': 8, 'gpu_memory_gb': 16, 'cpus': 64},
+        'ml.p3dn.24xlarge': {'gpus': 8, 'gpu_memory_gb': 32, 'cpus': 96},
+
+        # P4 instances
+        'ml.p4d.24xlarge': {'gpus': 8, 'gpu_memory_gb': 40, 'cpus': 96},
+        'ml.p4de.24xlarge': {'gpus': 8, 'gpu_memory_gb': 40, 'cpus': 96},
+
+        # G4dn instances
+        'ml.g4dn.xlarge': {'gpus': 1, 'gpu_memory_gb': 16, 'cpus': 4},
+        'ml.g4dn.2xlarge': {'gpus': 1, 'gpu_memory_gb': 16, 'cpus': 8},
+        'ml.g4dn.4xlarge': {'gpus': 1, 'gpu_memory_gb': 16, 'cpus': 16},
+        'ml.g4dn.8xlarge': {'gpus': 1, 'gpu_memory_gb': 16, 'cpus': 32},
+        'ml.g4dn.12xlarge': {'gpus': 4, 'gpu_memory_gb': 16, 'cpus': 48},
+        'ml.g4dn.16xlarge': {'gpus': 1, 'gpu_memory_gb': 16, 'cpus': 64},
+
+        # G5 instances
+        'ml.g5.xlarge': {'gpus': 1, 'gpu_memory_gb': 24, 'cpus': 4},
+        'ml.g5.2xlarge': {'gpus': 1, 'gpu_memory_gb': 24, 'cpus': 8},
+        'ml.g5.4xlarge': {'gpus': 1, 'gpu_memory_gb': 24, 'cpus': 16},
+        'ml.g5.8xlarge': {'gpus': 1, 'gpu_memory_gb': 24, 'cpus': 32},
+        'ml.g5.12xlarge': {'gpus': 4, 'gpu_memory_gb': 24, 'cpus': 48},
+        'ml.g5.16xlarge': {'gpus': 1, 'gpu_memory_gb': 24, 'cpus': 64},
+        'ml.g5.24xlarge': {'gpus': 4, 'gpu_memory_gb': 24, 'cpus': 96},
+        'ml.g5.48xlarge': {'gpus': 8, 'gpu_memory_gb': 24, 'cpus': 192},
+        
+        # G6 instances
+        'ml.g6.2xlarge': {'gpus': 1, 'gpu_memory_gb': 32, 'cpus': 8},
+        'ml.g6.4xlarge': {'gpus': 1, 'gpu_memory_gb': 32, 'cpus': 16},
+        'ml.g6.8xlarge': {'gpus': 1, 'gpu_memory_gb': 32, 'cpus': 32},
+        'ml.g6.12xlarge': {'gpus': 4, 'gpu_memory_gb': 32, 'cpus': 48},
+        'ml.g6.16xlarge': {'gpus': 1, 'gpu_memory_gb': 32, 'cpus': 64},
+        'ml.g6.24xlarge': {'gpus': 4, 'gpu_memory_gb': 32, 'cpus': 96},
+        'ml.g6.48xlarge': {'gpus': 8, 'gpu_memory_gb': 32, 'cpus': 192},
+    }
+    
+    return specs.get(instance_type, {'gpus': 1, 'gpu_memory_gb': 16, 'cpus': 8})
+
+def calculate_optimal_hyperparameters(instance_type, is_quick_mode=False):
+    """
+    Calculate optimal hyperparameters based on instance specifications.
+    
+    Returns dict with optimal batch_size, num_workers, etc.
+    """
+    specs = get_instance_specs(instance_type)
+    gpu_count = specs['gpus']
+    gpu_memory_gb = specs['gpu_memory_gb']
+    cpu_count = specs['cpus']
+    
+    # Calculate optimal batch size per GPU
+    # Base batch size scales with GPU memory, adjusted for multi-GPU setups
+    base_batch_per_gpu = min(64, max(16, int(gpu_memory_gb * 2)))
+    
+    # For multi-GPU, we can use larger effective batch size
+    if gpu_count > 1:
+        total_batch_size = base_batch_per_gpu * gpu_count * 2  # Effective batch size across GPUs
+    else:
+        total_batch_size = base_batch_per_gpu
+    
+    # Calculate optimal number of workers
+    # Rule of thumb: 2-4 workers per GPU, but not more than CPU cores
+    workers_per_gpu = 4 if gpu_memory_gb >= 24 else 2
+    optimal_workers = min(cpu_count // 2, gpu_count * workers_per_gpu)
+    optimal_workers = max(2, min(optimal_workers, 16))  # Clamp between 2 and 16
+    
+    # Adjust for quick mode
+    if is_quick_mode:
+        total_batch_size = max(32, total_batch_size // 2)
+        optimal_workers = max(2, optimal_workers // 2)
+    
+    return {
+        'batch_size': total_batch_size,
+        'num_workers': optimal_workers,
+        'gpu_count': gpu_count,
+        'gpu_memory_gb': gpu_memory_gb,
+        'cpu_count': cpu_count
+    }
+
 def create_sagemaker_estimator(args, hyperparameters):
     """Create SageMaker PyTorch estimator with given args"""
     logger = get_unified_logger("sagemaker_estimator")
@@ -266,18 +353,34 @@ def main():
         logger.info(f"   - Data Type: S3Prefix")
         logger.info(f"   - Note: Using single channel (train/val as subdirectories)")
     
+    # Calculate optimal hyperparameters based on instance type
+    logger.info(f"🧠 Calculating optimal hyperparameters for {args.instance_type}...")
+    optimal_params = calculate_optimal_hyperparameters(args.instance_type, args.quick_mode)
+    
+    logger.info("📊 Instance Specifications:")
+    logger.info(f"   - GPUs: {optimal_params['gpu_count']}")
+    logger.info(f"   - GPU Memory: {optimal_params['gpu_memory_gb']}GB per GPU")
+    logger.info(f"   - CPUs: {optimal_params['cpu_count']}")
+    logger.info(f"   - Multi-GPU: {is_multi_gpu_instance(args.instance_type)}")
+    
     # Prepare hyperparameters for 7-step training
     hyperparameters = {
         'epochs': str(args.epochs),
-        'num_workers': str(args.num_workers),
+        'num_workers': str(optimal_params['num_workers']),  # Use calculated optimal workers
         'run_lr_finder': str(not args.skip_lr_finder).lower(),
         'run_wd_search': str(not args.skip_wd_search).lower(),
         'quick_mode': str(args.quick_mode).lower(),
     }
     
-    # Add optional hyperparameters
-    if args.batch_size:
+    # Use calculated batch size unless manually overridden
+    if not args.batch_size:
+        hyperparameters['batch_size'] = str(optimal_params['batch_size'])
+        logger.info(f"   - Batch Size: {optimal_params['batch_size']} (auto-calculated)")
+    else:
         hyperparameters['batch_size'] = str(args.batch_size)
+        logger.info(f"   - Batch Size: {args.batch_size} (manually set)")
+    
+    # Add optional hyperparameters
     if args.lr_min:
         hyperparameters['lr_min'] = str(args.lr_min)
     if args.lr_max:
@@ -290,6 +393,7 @@ def main():
     logger.info(f"   - Weight Decay Search: {'Enabled' if not args.skip_wd_search else 'Disabled'}")
     logger.info(f"   - Quick Mode: {'Enabled' if args.quick_mode else 'Disabled'}")
     logger.info(f"   - Epochs: {args.epochs}")
+    logger.info(f"   - Workers: {optimal_params['num_workers']} (optimized for {args.instance_type})")
     
     logger.info(f"🔧 Hyperparameters:")
     for key, value in hyperparameters.items():

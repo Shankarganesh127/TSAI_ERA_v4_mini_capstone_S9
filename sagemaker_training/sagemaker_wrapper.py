@@ -197,6 +197,10 @@ class ImageNetSageMakerTrainer:
             cmd.append("--quick-mode")
             self.logger.info("🚀 Quick mode enabled")
         
+        # Data loading configuration
+        cmd.extend(["--num-workers", str(args.num_workers)])
+        self.logger.info(f"🔧 DataLoader workers: {args.num_workers}")
+        
         return cmd
     
     def _setup_model_saving_directories(self, args):
@@ -291,6 +295,25 @@ class ImageNetSageMakerTrainer:
         
         # Parse configuration
         args = self.parse_hyperparameters()
+        
+        # Log all hyperparameters
+        self.logger.info("🔧 Hyperparameters Configuration:")
+        self.logger.info(f"   data_dir: {args.data_dir}")
+        self.logger.info(f"   val_dir: {args.val_dir}")
+        self.logger.info(f"   output_dir: {args.output_dir}")
+        self.logger.info(f"   epochs: {args.epochs}")
+        self.logger.info(f"   batch_size: {args.batch_size}")
+        self.logger.info(f"   num_workers: {args.num_workers}")
+        self.logger.info(f"   run_lr_finder: {args.run_lr_finder}")
+        self.logger.info(f"   run_wd_search: {args.run_wd_search}")
+        self.logger.info(f"   quick_mode: {args.quick_mode}")
+        self.logger.info(f"   mixed_precision: {args.mixed_precision}")
+        self.logger.info(f"   gradient_clip: {args.gradient_clip}")
+        if args.lr_min and args.lr_max:
+            self.logger.info(f"   manual_lr_bounds: {args.lr_min:.2e} → {args.lr_max:.2e}")
+        if args.weight_decay:
+            self.logger.info(f"   manual_weight_decay: {args.weight_decay:.2e}")
+        self.logger.info("=" * 60)
         
         # Setup model saving directories
         self._setup_model_saving_directories(args)

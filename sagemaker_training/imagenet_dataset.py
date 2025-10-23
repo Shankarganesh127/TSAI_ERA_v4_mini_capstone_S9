@@ -155,7 +155,13 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     """
     
     logger = get_unified_logger("imagenet_dataset")
-    logger.info(f"get_imagenet_dataloaders called with train={train}, val={val}")
+    logger.info(f"get_imagenet_dataloaders called with:")
+    logger.info(f"  train={train}")
+    logger.info(f"  val={val}")
+    logger.info(f"  batch_size={batch_size}")
+    logger.info(f"  num_workers={num_workers}")
+    logger.info(f"  pin_memory={pin_memory}")
+    logger.info(f"  lightweight_augs={lightweight_augs}")
 
     train_transform, val_transform = get_imagenet_transforms(lightweight=lightweight_augs)
     if lightweight_augs:

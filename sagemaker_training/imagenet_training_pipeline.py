@@ -475,6 +475,11 @@ class HyperparameterOptimizer:
     def weight_decay_search(self, lr_config, batch_size, wd_values=[1e-5, 5e-5, 1e-4, 5e-4, 1e-3], epochs=5):
         """Search for optimal weight decay"""
         logger = get_unified_logger()
+        logger.info(f"weight_decay_search called with:")
+        logger.info(f"  lr_config: min_lr={lr_config.get('min_lr', 'N/A')}, max_lr={lr_config.get('max_lr', 'N/A')}")
+        logger.info(f"  batch_size: {batch_size}")
+        logger.info(f"  wd_values: {wd_values}")
+        logger.info(f"  epochs: {epochs}")
         logger.info(f"[DEBUG] Weight Decay Search: {wd_values}")
         
         results = []
