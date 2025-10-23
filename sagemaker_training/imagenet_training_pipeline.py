@@ -27,6 +27,11 @@ from ilsvrc_dataset import get_ilsvrc_dataloaders
 from training_performance_optimizer import TrainingPerformanceOptimizer, create_optimized_trainer
 from logger_setup import get_unified_logger
 
+# Set memory fragmentation fix BEFORE any PyTorch operations
+if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32'
+    print("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32 to prevent memory fragmentation")
+
 # Global progress bar manager to avoid subprocess complexity
 class LiveProgressManager:
     """Manages live updating progress bars and status messages to avoid subprocess issues"""
@@ -621,6 +626,12 @@ class HyperparameterOptimizer:
             train_losses.append(train_loss / train_batches)
             val_losses.append(val_loss / val_batches)
             val_accs.append(100. * val_correct / val_total)
+            
+            # Clean up GPU memory to prevent OOM accumulation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
         
         return train_losses, val_losses, val_accs
 
@@ -641,7 +652,8 @@ class FullTrainer:
         }
         
     def train(self, lr_config, epochs, batch_size, weight_decay=1e-4, 
-              save_checkpoints=True, early_stopping_patience=10, args=None, performance_optimizer=None):
+              save_checkpoints=True, early_stopping_patience=10, args=None, performance_optimizer=None,
+              gradient_accumulation_steps=1):
         """Full training with OneCycle LR and cyclical momentum"""
         
         logger = get_unified_logger()
@@ -650,6 +662,10 @@ class FullTrainer:
         logger.info(f"   [SIZE] LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
         logger.info(f"   [WEIGHT]  Weight Decay: {weight_decay:.2e}")
         logger.info(f"   [BATCH] Batch Size: {batch_size}")
+        logger.info(f"   [GRAD] Gradient Accumulation Steps: {gradient_accumulation_steps}")
+        if gradient_accumulation_steps > 1:
+            effective_batch_size = batch_size * gradient_accumulation_steps
+            logger.info(f"   [EFFECTIVE] Effective Batch Size: {effective_batch_size}")
         
         # Scale learning rate based on batch size using TrainingPerformanceOptimizer
         base_min_lr = lr_config['min_lr']
@@ -683,7 +699,7 @@ class FullTrainer:
             optimizer, 
             max_lr=scaled_max_lr,
             epochs=epochs,
-            steps_per_epoch=len(self.train_loader),
+            steps_per_epoch=len(self.train_loader) // gradient_accumulation_steps,  # Adjust for gradient accumulation
             pct_start=0.3,
             div_factor=lr_config['max_lr'] / lr_config['min_lr'],
             final_div_factor=1000,
@@ -725,7 +741,7 @@ class FullTrainer:
             progress_manager.create_status_updater(epoch_status_key, f"[PROGRESS] Epoch {epoch+1}/{epochs} - Training...")
 
             # Training
-            train_loss, train_acc = self._train_epoch(optimizer, criterion, scheduler, scaler, performance_optimizer)
+            train_loss, train_acc = self._train_epoch(optimizer, criterion, scheduler, scaler, performance_optimizer, gradient_accumulation_steps)
 
             # Update status to validation phase
             progress_manager.update_status(epoch_status_key, f"[PROGRESS] Epoch {epoch+1}/{epochs} - Validating...")
@@ -780,8 +796,8 @@ class FullTrainer:
         progress_manager.finalize_status(completion_key)
         return self.history
     
-    def _train_epoch(self, optimizer, criterion, scheduler, scaler=None, performance_optimizer=None):
-        """Train one epoch with optional mixed precision and performance optimization"""
+    def _train_epoch(self, optimizer, criterion, scheduler, scaler=None, performance_optimizer=None, gradient_accumulation_steps=1):
+        """Train one epoch with optional mixed precision, performance optimization, and gradient accumulation"""
         self.model.train()
         running_loss = 0.0
         correct = 0
@@ -790,6 +806,7 @@ class FullTrainer:
         # Use progress manager for clean progress tracking
         progress_manager.create_progress_bar("Training", len(self.train_loader))
         
+        accumulation_counter = 0
         for batch_idx, batch_data in enumerate(self.train_loader):
             inputs, targets = batch_data
             inputs, targets = inputs.to(self.device), targets.to(self.device)
@@ -799,16 +816,22 @@ class FullTrainer:
                 step_metrics = performance_optimizer.optimize_training_step((inputs, targets), step_type='train')
                 loss = step_metrics['loss']
                 
-                # Update optimizer and scheduler manually since optimizer is managed by performance_optimizer
-                scheduler.step()
-                
                 # Get predictions for accuracy calculation
                 with torch.no_grad():
                     outputs = self.model(inputs)
                     _, predicted = outputs.max(1)
+                
+                # For gradient accumulation with performance optimizer, we need to handle accumulation manually
+                accumulation_counter += 1
+                if accumulation_counter % gradient_accumulation_steps == 0:
+                    # Update optimizer and scheduler manually since optimizer is managed by performance_optimizer
+                    scheduler.step()
+                    accumulation_counter = 0
             else:
-                # Original training step logic
-                optimizer.zero_grad()
+                # Original training step logic with gradient accumulation
+                # Only zero gradients at the start of accumulation cycle
+                if accumulation_counter == 0:
+                    optimizer.zero_grad()
                 
                 # Mixed precision training
                 if scaler:
@@ -816,29 +839,37 @@ class FullTrainer:
                         outputs = self.model(inputs)
                         loss = criterion(outputs, targets)
                     
-                    # Scale loss and backpropagate
-                    scaler.scale(loss).backward()
-                    
-                    # Gradient clipping with scaler
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    
-                    # Optimizer step with scaler
-                    scaler.step(optimizer)
-                    scaler.update()
+                    # Scale loss and backpropagate (accumulate gradients)
+                    scaler.scale(loss / gradient_accumulation_steps).backward()
                 else:
                     # Standard precision training
                     outputs = self.model(inputs)
                     loss = criterion(outputs, targets)
-                    loss.backward()
-                    
-                    # Gradient clipping
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    
-                    optimizer.step()
+                    (loss / gradient_accumulation_steps).backward()
                 
-                scheduler.step()
                 _, predicted = outputs.max(1)
+                accumulation_counter += 1
+                
+                # Perform optimizer step only after accumulating gradients
+                if accumulation_counter % gradient_accumulation_steps == 0:
+                    if scaler:
+                        # Gradient clipping with scaler
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        
+                        # Optimizer step with scaler
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        # Gradient clipping
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        
+                        # Optimizer step
+                        optimizer.step()
+                    
+                    # Step scheduler
+                    scheduler.step()
+                    accumulation_counter = 0
             
             running_loss += loss
             total += targets.size(0)
@@ -853,8 +884,10 @@ class FullTrainer:
             
             # Clean up GPU memory after each batch to prevent accumulation
             del inputs, targets, outputs, loss, predicted
-            if torch.cuda.is_available() and (batch_idx + 1) % 100 == 0:  # Clean every 100 batches
+            if torch.cuda.is_available() and (batch_idx + 1) % 50 == 0:  # Clean every 50 batches (more frequent)
                 torch.cuda.empty_cache()
+                import gc
+                gc.collect()
         
         progress_manager.close_progress_bar()
         return running_loss / len(self.train_loader), 100. * correct / total
@@ -888,8 +921,10 @@ class FullTrainer:
                 
                 # Clean up GPU memory after each validation batch
                 del inputs, targets, outputs, loss, predicted
-                if torch.cuda.is_available() and (batch_idx + 1) % 50 == 0:  # Clean every 50 batches (validation usually smaller)
+                if torch.cuda.is_available() and (batch_idx + 1) % 25 == 0:  # Clean every 25 batches (more frequent for validation)
                     torch.cuda.empty_cache()
+                    import gc
+                    gc.collect()
             
             progress_manager.close_progress_bar()
         
@@ -1136,11 +1171,11 @@ def main():
             
             # Apply safety factors based on mode
             if args.quick_mode:
-                safety_factor = 0.5  # Conservative for quick mode
+                safety_factor = 0.4  # More conservative for quick mode to prevent OOM
                 logger.info("[QUICK] Quick mode: Using conservative batch size for training stability")
             else:
-                safety_factor = 0.8  # Less conservative for full training
-                logger.info("[FULL] Full training: Using optimized batch size")
+                safety_factor = 0.6  # More conservative for full training to prevent OOM
+                logger.info("[FULL] Full training: Using conservative batch size for stability")
             
             initial_batch_size = int(optimal_batch_size * safety_factor)
             # Ensure it's a power of 2 and at least 1
@@ -1280,6 +1315,13 @@ def main():
         # Save results
         with open(os.path.join(args.output, 'lr_config.json'), 'w') as f:
             json.dump({k: float(v) for k, v in lr_config.items()}, f, indent=2)
+            
+        # Clean up GPU memory to prevent OOM
+        del model, optimizer, criterion, lr_finder
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            import gc
+            gc.collect()
     else:
         # Default LR config
         lr_config = {'min_lr': 1e-3, 'max_lr': 0.1}
@@ -1337,6 +1379,17 @@ def main():
     progress_manager.update_status(full_train_key,
         f"[START] STEP 6: Full OneCycle Training - LR: {lr_config['min_lr']:.2e}→{lr_config['max_lr']:.2e}, WD: {best_weight_decay:.2e}, Batch: {optimal_batch_size}")
 
+    # Determine gradient accumulation steps based on batch size to maintain effective batch size
+    gradient_accumulation_steps = 1
+    if optimal_batch_size <= 16:
+        gradient_accumulation_steps = 4  # Effective batch size: 64
+        logger.info(f"[GRAD] Using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
+    elif optimal_batch_size <= 32:
+        gradient_accumulation_steps = 2  # Effective batch size: 64
+        logger.info(f"[GRAD] Using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
+    else:
+        logger.info(f"[GRAD] No gradient accumulation needed (batch size: {optimal_batch_size})")
+
     history = trainer.train(
         lr_config=lr_config,
         epochs=training_epochs,
@@ -1345,7 +1398,8 @@ def main():
         save_checkpoints=True,
         early_stopping_patience=15 if not args.quick_mode else 5,
         args=args,
-        performance_optimizer=performance_optimizer
+        performance_optimizer=performance_optimizer,
+        gradient_accumulation_steps=gradient_accumulation_steps
     )
 
     progress_manager.update_status(full_train_key, f"[OK] STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")

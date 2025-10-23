@@ -51,6 +51,11 @@ class ImageNetSageMakerTrainer:
     """Unified SageMaker wrapper for 7-step ImageNet training pipeline"""
     
     def __init__(self):
+        # Set memory fragmentation fix BEFORE any PyTorch operations
+        if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32'
+            self.logger.info("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32 to prevent memory fragmentation")
+        
         # No need to change directories - use absolute paths
         self.unified_logger = setup_unified_logger()
         self.logger = get_unified_logger("sagemaker_wrapper")
