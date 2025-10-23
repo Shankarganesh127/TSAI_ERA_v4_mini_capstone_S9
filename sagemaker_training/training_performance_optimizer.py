@@ -138,10 +138,14 @@ class TrainingPerformanceOptimizer:
         train_current_workers = self.train_loader.num_workers
         logger.info(f"   Training loader: {train_current_workers} → {target_workers} workers")
 
+        # Check if shuffle is enabled by examining the sampler type
+        from torch.utils.data import RandomSampler
+        train_shuffle = isinstance(self.train_loader.sampler, RandomSampler)
+
         optimized_train_loader = DataLoader(
             self.train_loader.dataset,
             batch_size=self.train_loader.batch_size,
-            shuffle=self.train_loader.shuffle,
+            shuffle=train_shuffle,
             sampler=self.train_loader.sampler,
             num_workers=target_workers,
             pin_memory=self.train_loader.pin_memory,
@@ -156,10 +160,13 @@ class TrainingPerformanceOptimizer:
             val_current_workers = self.val_loader.num_workers
             logger.info(f"   Validation loader: {val_current_workers} → {min(target_workers, 8)} workers")
 
+            # Check if shuffle is enabled by examining the sampler type
+            val_shuffle = isinstance(self.val_loader.sampler, RandomSampler)
+
             optimized_val_loader = DataLoader(
                 self.val_loader.dataset,
                 batch_size=self.val_loader.batch_size,
-                shuffle=self.val_loader.shuffle,
+                shuffle=val_shuffle,
                 sampler=self.val_loader.sampler,
                 num_workers=min(target_workers, 8),  # Use fewer workers for validation (typically smaller)
                 pin_memory=self.val_loader.pin_memory,

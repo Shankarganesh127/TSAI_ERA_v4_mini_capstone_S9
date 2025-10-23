@@ -38,8 +38,42 @@ except ImportError:
     PyTorch = None
     TrainingInput = None
 
+def is_multi_gpu_instance(instance_type):
+    """
+    Check if the instance type has multiple GPUs and should use DDP distribution.
+
+    Returns True for multi-GPU instances that benefit from PyTorch DDP.
+    """
+    multi_gpu_instances = {
+        # P3 instances
+        'ml.p3.8xlarge': 4,   # 4 GPUs
+        'ml.p3.16xlarge': 8,  # 8 GPUs
+        'ml.p3dn.24xlarge': 8, # 8 GPUs
+
+        # P4 instances
+        'ml.p4d.24xlarge': 8, # 8 GPUs
+        'ml.p4de.24xlarge': 8, # 8 GPUs
+
+        # G4dn instances
+        'ml.g4dn.12xlarge': 4, # 4 GPUs
+        'ml.g4dn.16xlarge': 1, # Only 1 GPU - not multi-GPU
+
+        # G5 instances
+        'ml.g5.12xlarge': 4,  # 4 GPUs
+        'ml.g5.24xlarge': 4,  # 4 GPUs
+        'ml.g5.48xlarge': 8,  # 8 GPUs
+        
+        'ml.g6.12xlarge': 4,  # 4 GPUs
+        'ml.g6.8xlarge': 1,  # 1 GPUs
+        'ml.g6.4xlarge': 1,  # 1 GPUs
+        'ml.g6.2xlarge': 1,  # 1 GPUs
+    }
+
+    return multi_gpu_instances.get(instance_type, 0) > 1
+
 def create_sagemaker_estimator(args, hyperparameters):
     """Create SageMaker PyTorch estimator with given args"""
+    logger = get_unified_logger("sagemaker_estimator")
     if args.instance_count > 1:
         distribution = {
             "smdistributed": {
@@ -74,15 +108,28 @@ def create_sagemaker_estimator(args, hyperparameters):
         )
         return estimator
     else:
+        # Single-node training - enable DDP only for multi-GPU instances
+        distribution = None
+        if is_multi_gpu_instance(args.instance_type):
+            distribution = {
+                'pytorchddp': {
+                    'enabled': True  # Enables distributed launcher for single-node multi-GPU
+                }
+            }
+            logger.info(f"[DISTRIBUTION] Enabling PyTorch DDP for multi-GPU instance: {args.instance_type}")
+        else:
+            logger.info(f"[DISTRIBUTION] Single GPU/CPU instance ({args.instance_type}) - using standard training")
+
         estimator = PyTorch(
             entry_point='sagemaker_wrapper.py',  # Direct file in sagemaker_training directory
             source_dir=str(current_dir),  # Use current sagemaker_training directory
             role=args.role_arn,
-            framework_version='2.0.0', 
+            framework_version='2.0.0',
             py_version='py310',
             instance_count=1,
             instance_type=args.instance_type,
             hyperparameters=hyperparameters,
+            distribution=distribution,  # Enable PyTorch DDP only for multi-GPU instances
             use_spot_instances=args.spot_training,
             max_wait=43200 if args.spot_training else None,  # 12 hours (must be >= max_run)
             max_run=36000,  # 10 hours
@@ -94,7 +141,8 @@ def create_sagemaker_estimator(args, hyperparameters):
                 {'Key': 'Project', 'Value': 'ImageNet-7Step'},
                 {'Key': 'QuickMode', 'Value': str(args.quick_mode)},
                 {'Key': 'LRFinder', 'Value': str(not args.skip_lr_finder)},
-                {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)}
+                {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)},
+                {'Key': 'MultiGPU', 'Value': str(is_multi_gpu_instance(args.instance_type))}
             ]
         )
         return estimator
