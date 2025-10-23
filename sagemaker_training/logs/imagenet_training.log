@@ -1,0 +1,37 @@
+2025-10-23 18:46:29 - [sagemaker_wrapper_startup] - INFO - 🔍 Current working directory: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-23 18:46:29 - [sagemaker_wrapper_startup] - INFO - 🔍 Wrapper script location: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training\sagemaker_wrapper.py
+2025-10-23 18:46:29 - [sagemaker_wrapper_startup] - INFO - 🔍 SageMaker training directory: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-23 18:46:29 - [sagemaker_wrapper_startup] - INFO - 🔄 Working from: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-23 18:46:29 - [sagemaker_wrapper_startup] - INFO - 🔍 Pipeline script path: \opt\ml\code\imagenet_training_pipeline.py
+2025-10-23 18:46:29 - [sagemaker_wrapper_startup] - INFO - 🔍 Pipeline script exists: False
+2025-10-23 18:46:29 - [sagemaker_wrapper_startup] - INFO - 🔍 /opt/ml/code/ directory does not exist
+2025-10-23 18:46:29 - [sagemaker_wrapper] - INFO - 🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32 to prevent memory fragmentation
+2025-10-23 18:46:29 - [sagemaker_wrapper] - INFO - 🔄 INIT: Working from: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-23 18:46:29 - [sagemaker_wrapper] - INFO - ================================================================================
+2025-10-23 18:46:29 - [sagemaker_wrapper] - INFO - 🚀 SAGEMAKER WRAPPER INITIALIZATION
+2025-10-23 18:46:29 - [sagemaker_wrapper] - INFO - ================================================================================
+2025-10-23 18:46:29 - [sagemaker_wrapper] - INFO - 🏠 SageMaker Wrapper initialized from: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-23 18:46:29 - [sagemaker_wrapper] - INFO - 📝 Unified log file: logs\imagenet_training.log
+2025-10-23 18:46:29 - [sagemaker_wrapper] - INFO - ✅ Found imagenet_training_pipeline.py in current directory
+2025-10-23 18:47:26 - [sagemaker_wrapper_startup] - INFO - 🔍 Current working directory: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-23 18:47:26 - [sagemaker_wrapper_startup] - INFO - 🔍 Wrapper script location: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training\sagemaker_wrapper.py
+2025-10-23 18:47:26 - [sagemaker_wrapper_startup] - INFO - 🔍 SageMaker training directory: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-23 18:47:26 - [sagemaker_wrapper_startup] - INFO - 🔄 Working from: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-23 18:47:26 - [sagemaker_wrapper_startup] - INFO - 🔍 Pipeline script path: \opt\ml\code\imagenet_training_pipeline.py
+2025-10-23 18:47:26 - [sagemaker_wrapper_startup] - INFO - 🔍 Pipeline script exists: False
+2025-10-23 18:47:26 - [sagemaker_wrapper_startup] - INFO - 🔍 /opt/ml/code/ directory does not exist
+2025-10-23 18:47:26 - [sagemaker_wrapper] - INFO - 🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32 to prevent memory fragmentation
+2025-10-23 18:47:26 - [sagemaker_wrapper] - INFO - 🔄 INIT: Working from: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-23 18:47:26 - [sagemaker_wrapper] - INFO - ================================================================================
+2025-10-23 18:47:26 - [sagemaker_wrapper] - INFO - 🚀 SAGEMAKER WRAPPER INITIALIZATION
+2025-10-23 18:47:26 - [sagemaker_wrapper] - INFO - ================================================================================
+2025-10-23 18:47:26 - [sagemaker_wrapper] - INFO - 🏠 SageMaker Wrapper initialized from: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-23 18:47:26 - [sagemaker_wrapper] - INFO - 📝 Unified log file: logs\imagenet_training.log
+2025-10-23 18:47:26 - [sagemaker_wrapper] - INFO - ✅ Found imagenet_training_pipeline.py in current directory
+2025-10-23 18:48:40 - [sagemaker_wrapper_startup] - INFO - 🔍 Current working directory: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-23 18:48:40 - [sagemaker_wrapper_startup] - INFO - 🔍 Wrapper script location: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training\sagemaker_wrapper.py
+2025-10-23 18:48:40 - [sagemaker_wrapper_startup] - INFO - 🔍 SageMaker training directory: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-23 18:48:40 - [sagemaker_wrapper_startup] - INFO - 🔄 Working from: D:\TSAI\ERAv4\ERAv4_class_S9\ERAv4_mini_capstone_S9\ERAv4_mini_capstone_S9\TSAI_ERAv4_mini_capstone_S9\sagemaker_training
+2025-10-23 18:48:40 - [sagemaker_wrapper_startup] - INFO - 🔍 Pipeline script path: \opt\ml\code\imagenet_training_pipeline.py
+2025-10-23 18:48:40 - [sagemaker_wrapper_startup] - INFO - 🔍 Pipeline script exists: False
+2025-10-23 18:48:40 - [sagemaker_wrapper_startup] - INFO - 🔍 /opt/ml/code/ directory does not exist

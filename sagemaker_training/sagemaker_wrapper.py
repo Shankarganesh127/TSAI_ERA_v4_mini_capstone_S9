@@ -51,26 +51,45 @@ class ImageNetSageMakerTrainer:
     """Unified SageMaker wrapper for 7-step ImageNet training pipeline"""
     
     def __init__(self):
-        # Set memory fragmentation fix BEFORE any PyTorch operations
-        if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
-            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32'
-            self.logger.info("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32 to prevent memory fragmentation")
+        # Initialize logger attributes first to ensure they're always available
+        self.logger = None
+        self.unified_logger = None
+        self.subprocess_logger = None
         
-        # No need to change directories - use absolute paths
-        self.unified_logger = setup_unified_logger()
-        self.logger = get_unified_logger("sagemaker_wrapper")
-        self.subprocess_logger = get_unified_logger("subprocess_monitor")
-        self.config = {}
-        self.logger.info(f"🔄 INIT: Working from: {os.getcwd()}")
-        self.logger.info("="*80)
-        self.logger.info("🚀 SAGEMAKER WRAPPER INITIALIZATION")
-        self.logger.info("="*80)
-        self.logger.info(f"🏠 SageMaker Wrapper initialized from: {os.getcwd()}")
-        self.logger.info(f"📝 Unified log file: {getattr(self.unified_logger, 'unified_log_path', 'N/A')}")
-        if Path("imagenet_training_pipeline.py").exists():
-            self.logger.info("✅ Found imagenet_training_pipeline.py in current directory")
-        else:
-            self.logger.error("❌ imagenet_training_pipeline.py NOT found in current directory!")
+        try:
+            # Set up logging
+            self.unified_logger = setup_unified_logger()
+            self.logger = get_unified_logger("sagemaker_wrapper")
+            self.subprocess_logger = get_unified_logger("subprocess_monitor")
+            
+            # Set memory fragmentation fix BEFORE any PyTorch operations
+            if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
+                os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32'
+                if self.logger:
+                    self.logger.info("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32 to prevent memory fragmentation")
+            
+            # No need to change directories - use absolute paths
+            self.config = {}
+            if self.logger:
+                self.logger.info(f"🔄 INIT: Working from: {os.getcwd()}")
+                self.logger.info("="*80)
+                self.logger.info("🚀 SAGEMAKER WRAPPER INITIALIZATION")
+                self.logger.info("="*80)
+                self.logger.info(f"🏠 SageMaker Wrapper initialized from: {os.getcwd()}")
+                self.logger.info(f"📝 Unified log file: {getattr(self.unified_logger, 'unified_log_path', 'N/A')}")
+                if Path("imagenet_training_pipeline.py").exists():
+                    self.logger.info("✅ Found imagenet_training_pipeline.py in current directory")
+                else:
+                    self.logger.error("❌ imagenet_training_pipeline.py NOT found in current directory!")
+                    
+        except Exception as e:
+            # Fallback logger setup if unified logging fails
+            import logging
+            logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+            self.logger = logging.getLogger("sagemaker_wrapper_fallback")
+            self.logger.error(f"Failed to setup unified logger, using fallback: {e}")
+            self.unified_logger = self.logger
+            self.subprocess_logger = self.logger
         
     def parse_hyperparameters(self):
         """Parse SageMaker hyperparameters"""
@@ -279,6 +298,9 @@ class ImageNetSageMakerTrainer:
     
     def run_training(self):
         """Execute the complete 7-step training pipeline"""
+        if not self.logger:
+            raise RuntimeError("Logger not initialized")
+            
         self.logger.info("🚀 Starting SageMaker 7-Step ImageNet Training")
         self.logger.info("=" * 60)
         
@@ -661,10 +683,18 @@ def main():
     logger.info(f"🔍 Current working directory: {os.getcwd()}")
     try:
         trainer = ImageNetSageMakerTrainer()
+        if not hasattr(trainer, 'logger') or trainer.logger is None:
+            raise RuntimeError("ImageNetSageMakerTrainer logger not properly initialized")
         trainer.run_training()
         logger.info("🎉 Training completed successfully!")
     except Exception as e:
         logger.error(f"❌ Training failed: {e}")
+        logger.error(f"❌ Exception type: {type(e).__name__}")
+        import traceback
+        logger.error(f"❌ Full traceback:")
+        for line in traceback.format_exc().split('\n'):
+            if line.strip():
+                logger.error(f"   {line}")
         sys.exit(1)
 
 if __name__ == "__main__":
