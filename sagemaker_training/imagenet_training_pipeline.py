@@ -28,17 +28,54 @@ from logger_setup import get_unified_logger
 
 # Global progress bar manager to avoid subprocess complexity
 class LiveProgressManager:
-    """Manages live updating progress bars to avoid subprocess issues"""
-    
+    """Manages live updating progress bars and status messages to avoid subprocess issues"""
+
     def __init__(self):
         self.current_bar = None
         self.logger = get_unified_logger("LiveProgressManager")
-        
+        self._status_lines = {}  # Track status messages for in-place updates
+
+    def create_status_updater(self, status_key, initial_message=""):
+        """Create a status updater that can update messages in place"""
+        self._status_lines[status_key] = {
+            'message': initial_message,
+            'first_print': True
+        }
+        if initial_message:
+            self.logger.info(initial_message)
+
+    def update_status(self, status_key, message):
+        """Update a status message in place"""
+        if status_key not in self._status_lines:
+            self.create_status_updater(status_key, message)
+            return
+
+        status_info = self._status_lines[status_key]
+
+        # Handle cursor control for status updates
+        if not status_info['first_print']:
+            # Move cursor up one line and clear it for subsequent prints
+            print('\033[1A\033[K', end='', flush=True)
+        else:
+            status_info['first_print'] = False
+
+        status_info['message'] = message
+        self.logger.info(message)
+
+    def finalize_status(self, status_key, final_message=None):
+        """Finalize a status message (print final message on new line)"""
+        if status_key in self._status_lines:
+            if final_message:
+                # Print final message on a new line
+                print()
+                self.logger.info(final_message)
+            del self._status_lines[status_key]
+
     def create_progress_bar(self, desc, total, disable_tqdm=False):
         """Create a new progress bar for the current step"""
         if self.current_bar:
             self.current_bar.close()
-            
+
         # Check if we should disable tqdm (e.g., in SageMaker wrapper mode)
         if os.environ.get('TQDM_DISABLE', '0') == '1' or disable_tqdm:
             self.current_bar = None
@@ -50,6 +87,7 @@ class LiveProgressManager:
             self._log_progress_start_time = time.time()
             self._last_log_time = 0
             self._last_log_step = 0
+            self._first_progress_print = True  # Track first print for cursor control
             self._draw_ascii_progress_bar(0, total, desc)
             return None
         else:
@@ -121,6 +159,14 @@ class LiveProgressManager:
             if 'step' in metrics:
                 progress_str += f" | {metrics['step']}"
         
+        # Handle cursor control for progress bar updates
+        if hasattr(self, '_first_progress_print'):
+            if not self._first_progress_print:
+                # Move cursor up one line and clear it for subsequent prints
+                print('\033[1A\033[K', end='', flush=True)
+            else:
+                self._first_progress_print = False
+        
         self.logger.info(progress_str)
     
     def update_progress(self, step, metrics=None):
@@ -183,6 +229,8 @@ class LiveProgressManager:
         elif hasattr(self, '_log_progress_total'):
             # Show final completion for ASCII progress bar
             self._draw_ascii_progress_bar(self._log_progress_total, self._log_progress_total, self._log_progress_desc)
+            # Print completion message on a new line (don't overwrite the final progress bar)
+            print()  # New line
             self.logger.info(f"✅ {self._log_progress_desc} completed!")
 
 # Global progress manager instance
@@ -529,8 +577,12 @@ class HyperparameterOptimizer:
             val_total = 0
             val_batches = 0
             
+            # Use progress manager for validation progress
+            val_limit = min(50, len(self.val_loader))  # Limit validation batches for speed
+            progress_manager.create_progress_bar(f"Validation {epoch+1}/{epochs}", val_limit)
+            
             with torch.no_grad():
-                for inputs, targets in self.val_loader:
+                for batch_idx, (inputs, targets) in enumerate(self.val_loader):
                     inputs, targets = inputs.to(self.device), targets.to(self.device)
                     outputs = model(inputs)
                     loss = criterion(outputs, targets)
@@ -541,9 +593,17 @@ class HyperparameterOptimizer:
                     val_correct += predicted.eq(targets).sum().item()
                     val_batches += 1
                     
+                    # Update progress with validation metrics
+                    progress_manager.update_progress(val_batches, {
+                        'loss': val_loss/val_batches,
+                        'accuracy': 100.*val_correct/val_total
+                    })
+                    
                     # Limit validation batches for speed
                     if val_batches >= 50:
                         break
+            
+            progress_manager.close_progress_bar()
             
             train_losses.append(train_loss / train_batches)
             val_losses.append(val_loss / val_batches)
@@ -604,14 +664,19 @@ class FullTrainer:
         progress_manager.create_progress_bar("Full Training", epochs)
         
         for epoch in range(epochs):
-            logger.info(f"🔄 Epoch {epoch+1}/{epochs}")
-            
+            # Create status updater for epoch progress
+            epoch_status_key = f"epoch_{epoch+1}"
+            progress_manager.create_status_updater(epoch_status_key, f"🔄 Epoch {epoch+1}/{epochs} - Training...")
+
             # Training
             train_loss, train_acc = self._train_epoch(optimizer, criterion, scheduler)
-            
+
+            # Update status to validation phase
+            progress_manager.update_status(epoch_status_key, f"🔄 Epoch {epoch+1}/{epochs} - Validating...")
+
             # Validation
             val_loss, val_acc = self._validate_epoch(criterion)
-            
+
             # Record history
             self.history['train_loss'].append(train_loss)
             self.history['train_acc'].append(train_acc)
@@ -619,22 +684,13 @@ class FullTrainer:
             self.history['val_acc'].append(val_acc)
             self.history['lr'].append(optimizer.param_groups[0]['lr'])
             self.history['momentum'].append(optimizer.param_groups[0]['momentum'])
-            
-            # Logging
-            logger.info(f"📊 Train - Loss: {train_loss:.4f}, Acc: {train_acc:.2f}%")
-            logger.info(f"📊 Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.2f}%")
-            logger.info(f"📈 LR: {optimizer.param_groups[0]['lr']:.2e}, "
-                  f"Momentum: {optimizer.param_groups[0]['momentum']:.3f}")
-            
-            # Update epoch progress
-            progress_manager.update_progress(epoch + 1, {
-                'epoch': epoch + 1,
-                'train_loss': train_loss,
-                'train_acc': train_acc,
-                'val_loss': val_loss,
-                'val_acc': val_acc,
-                'best_val_acc': max(self.history['val_acc'])
-            })
+
+            # Update status with final epoch results
+            progress_manager.update_status(epoch_status_key,
+                f"✅ Epoch {epoch+1}/{epochs} | Train: {train_loss:.4f}/{train_acc:.2f}% | Val: {val_loss:.4f}/{val_acc:.2f}% | LR: {optimizer.param_groups[0]['lr']:.2e}")
+
+            # Finalize the epoch status
+            progress_manager.finalize_status(epoch_status_key)
             
             # Save best model
             if val_acc > best_val_acc:
@@ -642,17 +698,24 @@ class FullTrainer:
                 patience_counter = 0
                 if save_checkpoints:
                     self._save_checkpoint(epoch, val_acc, optimizer, scheduler)
-                logger.info(f"💾 New best model saved! Val Acc: {val_acc:.2f}%")
+                # Use status updater for best model message
+                best_model_key = "best_model"
+                progress_manager.create_status_updater(best_model_key, f"💾 New best model saved! Val Acc: {val_acc:.2f}%")
+                progress_manager.finalize_status(best_model_key)
             else:
                 patience_counter += 1
-            
+
             # Early stopping
             if patience_counter >= early_stopping_patience:
-                logger.info(f"⏰ Early stopping after {patience_counter} epochs without improvement")
+                early_stop_key = "early_stopping"
+                progress_manager.create_status_updater(early_stop_key, f"⏰ Early stopping after {patience_counter} epochs without improvement")
+                progress_manager.finalize_status(early_stop_key)
                 break
-                
+
         progress_manager.close_progress_bar()
-        logger.info(f"🎯 Training completed! Best Val Acc: {best_val_acc:.2f}%")
+        completion_key = "training_complete"
+        progress_manager.create_status_updater(completion_key, f"🎯 Training completed! Best Val Acc: {best_val_acc:.2f}%")
+        progress_manager.finalize_status(completion_key)
         return self.history
     
     def _train_epoch(self, optimizer, criterion, scheduler):
@@ -1015,41 +1078,41 @@ def main():
     # STEP 1: LR Range Test
     lr_config = None
     if not args.skip_lr_test:
-        logger.info("="*60)
-        logger.info("🔍 STEP 1: LR Range Test")
-        logger.info("="*60)
-        
+        lr_step_key = "lr_range_test"
+        progress_manager.create_status_updater(lr_step_key, "🔍 STEP 1: LR Range Test - Starting...")
+
         model = create_model().to(device)
         optimizer = optim.SGD(model.parameters(), lr=1e-7, momentum=0.9)
         criterion = nn.CrossEntropyLoss()
-        
+
         lr_finder = LRFinder(model, optimizer, criterion, device)
-        
+
         num_iter = 100 if args.quick_mode else 200
-        
-        logger.info(f"🔍 Running LR range test with optimized batch size {initial_batch_size}")
+
+        progress_manager.update_status(lr_step_key, f"🔍 STEP 1: LR Range Test - Running {num_iter} iterations...")
         lrs, losses = lr_finder.range_test(train_loader, num_iter=num_iter)
-        
+
         # Plot results
         fig, min_lr = lr_finder.plot()
         fig.savefig(os.path.join(args.output, 'lr_range_test.png'))
         plt.close(fig)
-        
+
         # Get suggestions
         lr_config = lr_finder.suggest_lr()
-        
-        logger.info("📈 LR Range Test Results:")
-        logger.info(f"   Min LR: {lr_config['min_lr']:.2e}")
-        logger.info(f"   Max LR: {lr_config['max_lr']:.2e}")
-        logger.info(f"   Steepest decline LR: {lr_config['steepest_decline_lr']:.2e}")
-        
+
+        progress_manager.update_status(lr_step_key,
+            f"✅ STEP 1: LR Range Test Complete - Min: {lr_config['min_lr']:.2e}, Max: {lr_config['max_lr']:.2e}")
+        progress_manager.finalize_status(lr_step_key)
+
         # Save results
         with open(os.path.join(args.output, 'lr_config.json'), 'w') as f:
             json.dump({k: float(v) for k, v in lr_config.items()}, f, indent=2)
     else:
         # Default LR config
         lr_config = {'min_lr': 1e-3, 'max_lr': 0.1}
-        logger.info("⏭️  Skipping LR Range Test, using default config")
+        lr_skip_key = "lr_skip"
+        progress_manager.create_status_updater(lr_skip_key, "⏭️ STEP 1: Skipping LR Range Test, using default config")
+        progress_manager.finalize_status(lr_skip_key)
     
     # STEP 2 & 3: Already incorporated in lr_config
     logger.info(f"✅ LR bounds selected: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
@@ -1061,48 +1124,46 @@ def main():
     # STEP 5: Weight Decay Search
     best_weight_decay = 1e-4  # Default
     if not args.skip_wd_search:
-        print("\n" + "🚀 Starting Step 2: Weight Decay Search...")
-        print("=" * 50)
-        sys.stdout.flush()
-        
-        logger.info("="*60)
-        logger.info("⚖️  STEP 5: Weight Decay Search")
-        logger.info("="*60)
-        
+        wd_step_key = "weight_decay_search"
+        progress_manager.create_status_updater(wd_step_key, "⚖️ STEP 5: Weight Decay Search - Starting...")
+
         optimizer = HyperparameterOptimizer(create_model, train_loader, val_loader, device)
-        
+
         wd_values = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3] if not args.quick_mode else [1e-4, 5e-4]
         search_epochs = 3 if args.quick_mode else 5
-        
+
+        progress_manager.update_status(wd_step_key, f"⚖️ STEP 5: Weight Decay Search - Testing {len(wd_values)} values for {search_epochs} epochs each...")
         wd_results, best_weight_decay = optimizer.weight_decay_search(
             lr_config, optimal_batch_size, wd_values, epochs=search_epochs)
-        
+
         # Save results
         with open(os.path.join(args.output, 'weight_decay_search.json'), 'w') as f:
             json.dump(wd_results, f, indent=2)
-            
-        logger.info(f"🎯 Best weight decay: {best_weight_decay:.2e}")
+
+        progress_manager.update_status(wd_step_key, f"✅ STEP 5: Weight Decay Search Complete - Best WD: {best_weight_decay:.2e}")
+        progress_manager.finalize_status(wd_step_key)
     else:
-        logger.info("⏭️  Skipping weight decay search, using default 1e-4")
+        wd_skip_key = "wd_skip"
+        progress_manager.create_status_updater(wd_skip_key, "⏭️ STEP 5: Skipping weight decay search, using default 1e-4")
+        progress_manager.finalize_status(wd_skip_key)
     
     # STEP 6: Full Training
     training_epochs = 20 if args.quick_mode else args.epochs
-    
-    print(f"\n🚀 Starting Step 3: Full Training ({training_epochs} epochs)...")
-    print("=" * 50)
-    print(f"📈 LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
-    print(f"⚖️  Weight Decay: {best_weight_decay:.2e}")
-    print(f"📦 Batch Size: {optimal_batch_size}")
-    print("=" * 50)
-    sys.stdout.flush()
-    
+
+    full_train_key = "full_training"
+    progress_manager.create_status_updater(full_train_key,
+        f"🚀 STEP 6: Full OneCycle Training - Starting {training_epochs} epochs...")
+
     logger.info("="*60)
     logger.info("🚀 STEP 6: Full OneCycle Training")
     logger.info("="*60)
-    
+
     model = create_model().to(device)
     trainer = FullTrainer(model, train_loader, val_loader, device, args.output)
-    
+
+    progress_manager.update_status(full_train_key,
+        f"🚀 STEP 6: Full OneCycle Training - LR: {lr_config['min_lr']:.2e}→{lr_config['max_lr']:.2e}, WD: {best_weight_decay:.2e}, Batch: {optimal_batch_size}")
+
     history = trainer.train(
         lr_config=lr_config,
         epochs=training_epochs,
@@ -1111,6 +1172,9 @@ def main():
         save_checkpoints=True,
         early_stopping_patience=15 if not args.quick_mode else 5
     )
+
+    progress_manager.update_status(full_train_key, f"✅ STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")
+    progress_manager.finalize_status(full_train_key)
     
     # STEP 7: Results Analysis and Plotting
     logger.info("="*60)
@@ -1188,15 +1252,10 @@ def main():
     # =============================================================================
     # TRAINING PIPELINE COMPLETED!
     # =============================================================================
-    print("\n" + "=" * 80)
-    print("🎉 IMAGENET TRAINING PIPELINE COMPLETED!")
-    print("=" * 80)
-    print(f"✅ Best Validation Accuracy: {final_results['best_val_acc']:.2f}%")
-    print(f"📈 Final Training Accuracy: {final_results['final_train_acc']:.2f}%")
-    print(f"📊 Total Epochs Trained: {final_results['total_epochs']}")
-    print(f"⏰ Completion Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 80)
-    sys.stdout.flush()
+    completion_key = "pipeline_complete"
+    progress_manager.create_status_updater(completion_key,
+        f"🎉 ImageNet Training Pipeline Completed! Best Val Acc: {final_results['best_val_acc']:.2f}%")
+    progress_manager.finalize_status(completion_key)
 
     logger.info("🎉 Pipeline Complete!")
     logger.info("📊 Final Results:")
