@@ -79,7 +79,7 @@ class LiveProgressManager:
         # Check if we should disable tqdm (e.g., in SageMaker wrapper mode)
         if os.environ.get('TQDM_DISABLE', '0') == '1' or disable_tqdm:
             self.current_bar = None
-            self.logger.info(f"🔄 Starting {desc} (progress via logs)")
+            self.logger.info(f"[PROGRESS] Starting {desc} (progress via logs)")
             # Initialize progress tracking for log-based progress
             self._log_progress_desc = desc
             self._log_progress_total = total
@@ -87,13 +87,12 @@ class LiveProgressManager:
             self._log_progress_start_time = time.time()
             self._last_log_time = 0
             self._last_log_step = 0
-            self._first_progress_print = True  # Track first print for cursor control
             self._draw_ascii_progress_bar(0, total, desc)
             return None
         else:
             self.current_bar = tqdm(
                 total=total,
-                desc=f"🔄 {desc}",
+                desc=f"[PROGRESS] {desc}",
                 unit="it",
                 ncols=120,
                 leave=True,  # Keep progress bars visible after completion
@@ -104,19 +103,19 @@ class LiveProgressManager:
             return self.current_bar
     
     def _draw_ascii_progress_bar(self, current, total, desc, metrics=None):
-        """Draw an ASCII progress bar for log environments"""
+        """Draw an ASCII progress bar for log environments (SageMaker-compatible)"""
         if total == 0:
             return
             
         percentage = (current / total) * 100
         bar_width = 30
         filled_width = int(bar_width * current / total)
-        bar = '█' * filled_width + '░' * (bar_width - filled_width)
+        bar = '#' * filled_width + '-' * (bar_width - filled_width)
         
         elapsed = time.time() - self._log_progress_start_time
         eta = (elapsed / current * (total - current)) if current > 0 else 0
         
-        progress_str = f"🔄 {desc}: {percentage:5.1f}%|{bar}| {current}/{total} [{elapsed:.1f}s<{eta:.1f}s]"
+        progress_str = f"[PROGRESS] {desc}: {percentage:5.1f}%|{bar}| {current}/{total} [{elapsed:.1f}s<{eta:.1f}s]"
         
         if metrics:
             # Standard training metrics
@@ -159,15 +158,24 @@ class LiveProgressManager:
             if 'step' in metrics:
                 progress_str += f" | {metrics['step']}"
         
-        # Handle cursor control for progress bar updates
-        if hasattr(self, '_first_progress_print'):
-            if not self._first_progress_print:
-                # Move cursor up one line and clear it for subsequent prints
-                print('\033[1A\033[K', end='', flush=True)
-            else:
-                self._first_progress_print = False
+        # For SageMaker compatibility: only log at significant progress points
+        # Log every 10% progress or every 2 minutes, whichever comes first
+        current_time = time.time()
+        time_since_last_log = current_time - getattr(self, '_last_log_time', 0)
+        progress_since_last_log = current - getattr(self, '_last_log_step', 0)
         
-        self.logger.info(progress_str)
+        should_log = (
+            current == 0 or  # Always log start
+            current == total or  # Always log completion
+            percentage % 10 < (getattr(self, '_last_logged_percentage', 0) % 10) or  # Every 10%
+            time_since_last_log >= 120  # Every 2 minutes
+        )
+        
+        if should_log:
+            self.logger.info(progress_str)
+            self._last_log_time = current_time
+            self._last_log_step = current
+            self._last_logged_percentage = percentage
     
     def update_progress(self, step, metrics=None):
         """Update progress bar with metrics"""
@@ -191,7 +199,7 @@ class LiveProgressManager:
             # Log every 20% or every 50 steps, whichever is more frequent
             log_interval = min(max(1, total // 5), 50)
             if step % log_interval == 0:
-                self.logger.info(f"📊 Progress: {percentage:.1f}% ({step}/{total})")
+                self.logger.info(f"[ANALYSIS] Progress: {percentage:.1f}% ({step}/{total})")
     def update_progress(self, step, metrics=None):
         """Update progress bar with metrics"""
         if self.current_bar:
@@ -208,18 +216,10 @@ class LiveProgressManager:
             self.current_bar.refresh()
         
         elif not self.current_bar:
-            # Live ASCII progress bar for log environments
-            current_time = time.time()
-            
-            # Update every 0.5 seconds OR every 2 steps, whichever is more frequent for smooth progress
-            time_since_last_update = current_time - self._last_log_time
-            steps_since_last_update = step - self._last_log_step
-            
-            if time_since_last_update >= 0.5 or steps_since_last_update >= 2 or step == self._log_progress_total:
-                self._log_progress_current = step
-                self._draw_ascii_progress_bar(step, self._log_progress_total, self._log_progress_desc, metrics)
-                self._last_log_time = current_time
-                self._last_log_step = step
+            # ASCII progress bar for log environments (SageMaker-compatible)
+            # The _draw_ascii_progress_bar method now handles its own logging intervals
+            self._log_progress_current = step
+            self._draw_ascii_progress_bar(step, self._log_progress_total, self._log_progress_desc, metrics)
     
     def close_progress_bar(self):
         """Close current progress bar"""
@@ -231,7 +231,7 @@ class LiveProgressManager:
             self._draw_ascii_progress_bar(self._log_progress_total, self._log_progress_total, self._log_progress_desc)
             # Print completion message on a new line (don't overwrite the final progress bar)
             print()  # New line
-            self.logger.info(f"✅ {self._log_progress_desc} completed!")
+            self.logger.info(f"[OK] {self._log_progress_desc} completed!")
 
 # Global progress manager instance
 progress_manager = LiveProgressManager()
@@ -250,7 +250,7 @@ class LRFinder:
     def range_test(self, dataloader, start_lr=1e-7, end_lr=1, num_iter=100, smooth_factor=0.05):
         """Perform LR range test"""
         logger = get_unified_logger("lr_range_test")
-        logger.info(f"🔍 Starting LR Range Test: {start_lr:.2e} → {end_lr:.2e}")
+        logger.info(f"[DEBUG] Starting LR Range Test: {start_lr:.2e} → {end_lr:.2e}")
         
         # Calculate multiplicative factor
         lr_lambda = (end_lr / start_lr) ** (1.0 / num_iter)
@@ -296,7 +296,7 @@ class LRFinder:
             
             # Stop if loss explodes
             if smoothed_loss > 4 * best_loss or torch.isnan(loss):
-                logger.warning(f"💥 Stopping early at iteration {i}, loss exploded")
+                logger.warning(f"[ERROR] Stopping early at iteration {i}, loss exploded")
                 break
                 
             if smoothed_loss < best_loss:
@@ -390,7 +390,7 @@ class BatchSizeFinder:
         batch_size = 1
         criterion = nn.CrossEntropyLoss()
         
-        logger.info("🔍 Finding maximum batch size (training mode)...")
+        logger.info("[DEBUG] Finding maximum batch size (training mode)...")
         
         # Calculate number of batch size tests needed
         test_count = 0
@@ -421,7 +421,7 @@ class BatchSizeFinder:
                 del dummy_input, dummy_target, outputs, loss
                 torch.cuda.empty_cache()
                 
-                logger.info(f"✅ Batch size {batch_size} works (train mode)")
+                logger.info(f"[OK] Batch size {batch_size} works (train mode)")
                 
                 # Update progress
                 test_idx += 1
@@ -434,9 +434,9 @@ class BatchSizeFinder:
                 
             except RuntimeError as e:
                 if "out of memory" in str(e):
-                    logger.warning(f"❌ Batch size {batch_size} failed (OOM)")
+                    logger.warning(f"[ERROR] Batch size {batch_size} failed (OOM)")
                     max_working_batch_size = batch_size // 2
-                    logger.info(f"🎯 Maximum batch size: {max_working_batch_size}")
+                    logger.info(f"[COMPLETE] Maximum batch size: {max_working_batch_size}")
                     
                     # Update final progress
                     progress_manager.update_progress(test_count, {
@@ -474,7 +474,7 @@ class HyperparameterOptimizer:
     def weight_decay_search(self, lr_config, batch_size, wd_values=[1e-5, 5e-5, 1e-4, 5e-4, 1e-3], epochs=5):
         """Search for optimal weight decay"""
         logger = get_unified_logger()
-        logger.info(f"🔍 Weight Decay Search: {wd_values}")
+        logger.info(f"[DEBUG] Weight Decay Search: {wd_values}")
         
         results = []
         
@@ -482,7 +482,7 @@ class HyperparameterOptimizer:
         progress_manager.create_progress_bar("Weight Decay Search", len(wd_values))
         
         for idx, wd in enumerate(wd_values):
-            logger.info(f"📊 Testing Weight Decay: {wd:.2e} ({idx+1}/{len(wd_values)})")
+            logger.info(f"[ANALYSIS] Testing Weight Decay: {wd:.2e} ({idx+1}/{len(wd_values)})")
             
             # Create fresh model
             model = self.model_fn().to(self.device)
@@ -511,7 +511,7 @@ class HyperparameterOptimizer:
             }
             results.append(result)
             
-            logger.info(f"📈 Results - Val Acc: {result['final_val_acc']:.2f}%, "
+            logger.info(f"[PLOT] Results - Val Acc: {result['final_val_acc']:.2f}%, "
                   f"Val Loss: {result['final_val_loss']:.3f}")
             
             # Update progress
@@ -525,7 +525,7 @@ class HyperparameterOptimizer:
         
         # Find best weight decay
         best_result = max(results, key=lambda x: x['best_val_acc'])
-        logger.info(f"🎯 Best Weight Decay: {best_result['weight_decay']:.2e} "
+        logger.info(f"[COMPLETE] Best Weight Decay: {best_result['weight_decay']:.2e} "
               f"(Val Acc: {best_result['best_val_acc']:.2f}%)")
         
         return results, best_result['weight_decay']
@@ -632,11 +632,11 @@ class FullTrainer:
         """Full training with OneCycle LR and cyclical momentum"""
         
         logger = get_unified_logger()
-        logger.info("🚀 Starting Full Training:")
+        logger.info("[START] Starting Full Training:")
         logger.info(f"   📚 Epochs: {epochs}")
-        logger.info(f"   📏 LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
-        logger.info(f"   ⚖️  Weight Decay: {weight_decay:.2e}")
-        logger.info(f"   📦 Batch Size: {batch_size}")
+        logger.info(f"   [SIZE] LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
+        logger.info(f"   [WEIGHT]  Weight Decay: {weight_decay:.2e}")
+        logger.info(f"   [BATCH] Batch Size: {batch_size}")
         
         # Setup optimizer and scheduler
         optimizer = optim.SGD(self.model.parameters(), lr=lr_config['min_lr'],
@@ -666,13 +666,13 @@ class FullTrainer:
         for epoch in range(epochs):
             # Create status updater for epoch progress
             epoch_status_key = f"epoch_{epoch+1}"
-            progress_manager.create_status_updater(epoch_status_key, f"🔄 Epoch {epoch+1}/{epochs} - Training...")
+            progress_manager.create_status_updater(epoch_status_key, f"[PROGRESS] Epoch {epoch+1}/{epochs} - Training...")
 
             # Training
             train_loss, train_acc = self._train_epoch(optimizer, criterion, scheduler)
 
             # Update status to validation phase
-            progress_manager.update_status(epoch_status_key, f"🔄 Epoch {epoch+1}/{epochs} - Validating...")
+            progress_manager.update_status(epoch_status_key, f"[PROGRESS] Epoch {epoch+1}/{epochs} - Validating...")
 
             # Validation
             val_loss, val_acc = self._validate_epoch(criterion)
@@ -687,7 +687,7 @@ class FullTrainer:
 
             # Update status with final epoch results
             progress_manager.update_status(epoch_status_key,
-                f"✅ Epoch {epoch+1}/{epochs} | Train: {train_loss:.4f}/{train_acc:.2f}% | Val: {val_loss:.4f}/{val_acc:.2f}% | LR: {optimizer.param_groups[0]['lr']:.2e}")
+                f"[OK] Epoch {epoch+1}/{epochs} | Train: {train_loss:.4f}/{train_acc:.2f}% | Val: {val_loss:.4f}/{val_acc:.2f}% | LR: {optimizer.param_groups[0]['lr']:.2e}")
 
             # Finalize the epoch status
             progress_manager.finalize_status(epoch_status_key)
@@ -700,7 +700,7 @@ class FullTrainer:
                     self._save_checkpoint(epoch, val_acc, optimizer, scheduler)
                 # Use status updater for best model message
                 best_model_key = "best_model"
-                progress_manager.create_status_updater(best_model_key, f"💾 New best model saved! Val Acc: {val_acc:.2f}%")
+                progress_manager.create_status_updater(best_model_key, f"[SAVE] New best model saved! Val Acc: {val_acc:.2f}%")
                 progress_manager.finalize_status(best_model_key)
             else:
                 patience_counter += 1
@@ -708,13 +708,13 @@ class FullTrainer:
             # Early stopping
             if patience_counter >= early_stopping_patience:
                 early_stop_key = "early_stopping"
-                progress_manager.create_status_updater(early_stop_key, f"⏰ Early stopping after {patience_counter} epochs without improvement")
+                progress_manager.create_status_updater(early_stop_key, f"[TIME] Early stopping after {patience_counter} epochs without improvement")
                 progress_manager.finalize_status(early_stop_key)
                 break
 
         progress_manager.close_progress_bar()
         completion_key = "training_complete"
-        progress_manager.create_status_updater(completion_key, f"🎯 Training completed! Best Val Acc: {best_val_acc:.2f}%")
+        progress_manager.create_status_updater(completion_key, f"[COMPLETE] Training completed! Best Val Acc: {best_val_acc:.2f}%")
         progress_manager.finalize_status(completion_key)
         return self.history
     
@@ -813,7 +813,7 @@ def detect_dataset_format(data_path):
         'imagenet' or 'ilsvrc'
     """
     logger = get_unified_logger()
-    logger.info(f"🔍 Checking dataset format for: {data_path}")
+    logger.info(f"[DEBUG] Checking dataset format for: {data_path}")
     
     # Case 1: Check if data_path points directly to ILSVRC root
     ilsvrc_root_indicators = [
@@ -823,7 +823,7 @@ def detect_dataset_format(data_path):
     ]
     
     if all(os.path.exists(path) for path in ilsvrc_root_indicators):
-        logger.info("✅ Detected ILSVRC format (root directory)")
+        logger.info("[OK] Detected ILSVRC format (root directory)")
         return 'ilsvrc'
     
     # Case 2: Check if data_path points to CLS-LOC subdirectory
@@ -833,7 +833,7 @@ def detect_dataset_format(data_path):
         potential_root = os.path.dirname(os.path.dirname(data_path))
         imagesets_path = os.path.join(potential_root, "ImageSets", "CLS-LOC", "val.txt")
         if os.path.exists(imagesets_path):
-            logger.info("✅ Detected ILSVRC format (CLS-LOC subdirectory)")
+            logger.info("[OK] Detected ILSVRC format (CLS-LOC subdirectory)")
             return 'ilsvrc'
     
     # Case 3: Check if we have flat validation directory (ILSVRC-style)
@@ -844,7 +844,7 @@ def detect_dataset_format(data_path):
         if val_contents:
             first_item = os.path.join(val_dir, val_contents[0])
             if os.path.isfile(first_item) and first_item.lower().endswith(('.jpg', '.jpeg')):
-                logger.info("✅ Detected ILSVRC format (flat validation directory)")
+                logger.info("[OK] Detected ILSVRC format (flat validation directory)")
                 return 'ilsvrc'
     
     # Case 4: Check for standard ImageNet format
@@ -854,7 +854,7 @@ def detect_dataset_format(data_path):
     ]
     
     if all(os.path.exists(path) for path in standard_paths):
-        logger.info("✅ Detected standard ImageNet format")
+        logger.info("[OK] Detected standard ImageNet format")
         return 'imagenet'
     
     # Default to ILSVRC if we can't determine
@@ -874,32 +874,32 @@ def main():
     # SAGEMAKER TRAINING STARTED - SIMPLE STATUS LOG
     # =============================================================================
     logger.info("=" * 80)
-    logger.info("🚀 SAGEMAKER IMAGENET TRAINING PIPELINE STARTED")
+    logger.info("[START] SAGEMAKER IMAGENET TRAINING PIPELINE STARTED")
     logger.info("=" * 80)
-    logger.info(f"⏰ Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"🐍 Python: {sys.version}")
-    logger.info(f"🔥 PyTorch: {torch.__version__}")
-    logger.info(f"💻 Working Directory: {os.getcwd()}")
+    logger.info(f"[TIME] Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"[PYTHON] Python: {sys.version}")
+    logger.info(f"[PYTORCH] PyTorch: {torch.__version__}")
+    logger.info(f"[SYSTEM] Working Directory: {os.getcwd()}")
     logger.info("=" * 80)
     
     # Log to unified log file
     logger.info("="*80)
-    logger.debug("🚨 DEBUG: Entered main() function")
+    logger.debug("[DEBUG] DEBUG: Entered main() function")
     logger.info("="*80)
-    logger.debug("🚨 DEBUG: Creating argument parser")
-    logger.info(f"🐍 Python version: {sys.version}")
-    logger.info(f"🔥 PyTorch version: {torch.__version__}")
-    logger.info(f"💻 Working directory: {os.getcwd()}")
-    logger.info(f"📄 Script path: {sys.argv[0]}")
-    logger.info(f"📋 Command line args: {sys.argv[1:] if len(sys.argv) > 1 else 'None'}")
+    logger.debug("[DEBUG] DEBUG: Creating argument parser")
+    logger.info(f"[PYTHON] Python version: {sys.version}")
+    logger.info(f"[PYTORCH] PyTorch version: {torch.__version__}")
+    logger.info(f"[SYSTEM] Working directory: {os.getcwd()}")
+    logger.info(f"[FILE] Script path: {sys.argv[0]}")
+    logger.info(f"[ARGS] Command line args: {sys.argv[1:] if len(sys.argv) > 1 else 'None'}")
     
-    print("🚨 DEBUG: Entered main() function")
+    print("[DEBUG] DEBUG: Entered main() function")
     sys.stdout.flush()
-    logger.debug("🚨 DEBUG: Entered main() function")
+    logger.debug("[DEBUG] DEBUG: Entered main() function")
     
-    print("🚨 DEBUG: Creating argument parser")
-    logger.debug("🚨 DEBUG: Creating argument parser")
-    logger.debug("🚨 DEBUG: Parsing arguments")
+    print("[DEBUG] DEBUG: Creating argument parser")
+    logger.debug("[DEBUG] DEBUG: Creating argument parser")
+    logger.debug("[DEBUG] DEBUG: Parsing arguments")
     parser = argparse.ArgumentParser(description='ImageNet Training Pipeline')
     parser.add_argument('--train', type=str, required=True, help='ImageNet training dataset path')
     parser.add_argument('--val', type=str, required=True, help='ImageNet validation dataset path')
@@ -907,130 +907,130 @@ def main():
     parser.add_argument('--batch-size', type=int, default=None, help='Batch size (auto-detect if not specified)')
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--quick-mode', action='store_true', help='Enable quick mode for faster testing')
-    logger.debug("🚨 DEBUG: Setting up logger")
+    logger.debug("[DEBUG] DEBUG: Setting up logger")
     parser.add_argument('--skip-lr-test', action='store_true', help='Skip LR range test')
     parser.add_argument('--skip-wd-search', action='store_true', help='Skip weight decay search')
-    logger.debug("🚨 DEBUG: Logger setup completed")
+    logger.debug("[DEBUG] DEBUG: Logger setup completed")
     
-    print("🚨 DEBUG: Parsing arguments")
+    print("[DEBUG] DEBUG: Parsing arguments")
     sys.stdout.flush()
     args = parser.parse_args()
-    print(f"🚨 DEBUG: Arguments parsed successfully - train: {args.train}, val: {args.val}, epochs: {args.epochs}")
+    print(f"[DEBUG] DEBUG: Arguments parsed successfully - train: {args.train}, val: {args.val}, epochs: {args.epochs}")
     sys.stdout.flush()
     
     # Setup logging
-    print("🚨 DEBUG: Setting up logger")
+    print("[DEBUG] DEBUG: Setting up logger")
     sys.stdout.flush()
     logger = get_unified_logger('imagenet_pipeline')
-    print("🚨 DEBUG: Logger setup completed")
+    print("[DEBUG] DEBUG: Logger setup completed")
     sys.stdout.flush()
     
     # DEBUG: Add extensive early debugging
-    logger.info("🔍 DEBUG: Arguments parsed successfully")
-    logger.info(f"🔍 DEBUG: Training data path: {args.train}")
-    logger.info(f"🔍 DEBUG: Validation data path: {args.val}")
-    logger.info(f"🔍 DEBUG: Output path: {args.output}")
-    logger.info(f"🔍 DEBUG: Epochs: {args.epochs}")
+    logger.info("[DEBUG] DEBUG: Arguments parsed successfully")
+    logger.info(f"[DEBUG] DEBUG: Training data path: {args.train}")
+    logger.info(f"[DEBUG] DEBUG: Validation data path: {args.val}")
+    logger.info(f"[DEBUG] DEBUG: Output path: {args.output}")
+    logger.info(f"[DEBUG] DEBUG: Epochs: {args.epochs}")
     
     # Check if paths exist
     import os
-    logger.info(f"🔍 DEBUG: Train path exists: {os.path.exists(args.train)}")
-    logger.info(f"🔍 DEBUG: Val path exists: {os.path.exists(args.val)}")
+    logger.info(f"[DEBUG] DEBUG: Train path exists: {os.path.exists(args.train)}")
+    logger.info(f"[DEBUG] DEBUG: Val path exists: {os.path.exists(args.val)}")
     
     # Check if paths have content
     if os.path.exists(args.train):
         try:
             train_contents = os.listdir(args.train)
-            logger.info(f"🔍 DEBUG: Train path has {len(train_contents)} items")
+            logger.info(f"[DEBUG] DEBUG: Train path has {len(train_contents)} items")
             if len(train_contents) > 0:
-                logger.info(f"🔍 DEBUG: First few train items: {train_contents[:3]}")
+                logger.info(f"[DEBUG] DEBUG: First few train items: {train_contents[:3]}")
         except Exception as e:
-            logger.error(f"❌ DEBUG: Error listing train directory: {e}")
+            logger.error(f"[ERROR] DEBUG: Error listing train directory: {e}")
     
     if os.path.exists(args.val):
         try:
             val_contents = os.listdir(args.val)
-            logger.info(f"🔍 DEBUG: Val path has {len(val_contents)} items")
+            logger.info(f"[DEBUG] DEBUG: Val path has {len(val_contents)} items")
             if len(val_contents) > 0:
-                logger.info(f"🔍 DEBUG: First few val items: {val_contents[:3]}")
+                logger.info(f"[DEBUG] DEBUG: First few val items: {val_contents[:3]}")
         except Exception as e:
-            logger.error(f"❌ DEBUG: Error listing val directory: {e}")
+            logger.error(f"[ERROR] DEBUG: Error listing val directory: {e}")
     
     # Setup
     try:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        logger.info(f"🖥️  Using device: {device}")
-        logger.info(f"🔍 DEBUG: CUDA available: {torch.cuda.is_available()}")
+        logger.info(f"[DEVICE]  Using device: {device}")
+        logger.info(f"[DEBUG] DEBUG: CUDA available: {torch.cuda.is_available()}")
         if torch.cuda.is_available():
-            logger.info(f"🔍 DEBUG: CUDA device count: {torch.cuda.device_count()}")
+            logger.info(f"[DEBUG] DEBUG: CUDA device count: {torch.cuda.device_count()}")
     except Exception as e:
-        logger.error(f"❌ DEBUG: Error setting up device: {e}")
+        logger.error(f"[ERROR] DEBUG: Error setting up device: {e}")
         raise
     
     try:
         os.makedirs(args.output, exist_ok=True)
-        logger.info(f"🔍 DEBUG: Output directory created: {args.output}")
+        logger.info(f"[DEBUG] DEBUG: Output directory created: {args.output}")
     except Exception as e:
-        logger.error(f"❌ DEBUG: Error creating output directory: {e}")
+        logger.error(f"[ERROR] DEBUG: Error creating output directory: {e}")
         raise
     
     # Detect dataset format
     #dataset_format = detect_dataset_format(args.data)
-    #logger.info(f"📂 Detected dataset format: {dataset_format.upper()}")
+    #logger.info(f"[DATASET] Detected dataset format: {dataset_format.upper()}")
     
     # Model factory
     def create_model():
-        logger.info("🔍 DEBUG: Creating model...")
+        logger.info("[DEBUG] DEBUG: Creating model...")
         try:
             model = resnet50_imagenet(num_classes=1000, pretrained=False)
-            logger.info("🔍 DEBUG: Model created successfully")
+            logger.info("[DEBUG] DEBUG: Model created successfully")
             return model
         except Exception as e:
-            logger.error(f"❌ DEBUG: Error creating model: {e}")
+            logger.error(f"[ERROR] DEBUG: Error creating model: {e}")
             raise
     
         # STEP 0: Batch Size Detection (if not specified)
-        logger.debug("🚨 DEBUG: Checking batch size")
+        logger.debug("[DEBUG] DEBUG: Checking batch size")
     if args.batch_size is None:
-        logger.debug("🚨 DEBUG: No batch size specified, starting batch size detection")
+        logger.debug("[DEBUG] DEBUG: No batch size specified, starting batch size detection")
         logger.info("="*60)
-        logger.info("🔧 STEP 0: Batch Size Detection")
+        logger.info("[CONFIG] STEP 0: Batch Size Detection")
         logger.info("="*60)
         try:
             # Clear GPU cache if available
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                logger.info(f"🖥️  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
+                logger.info(f"[DEVICE]  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
             # Create a temporary model to test batch sizes
-            logger.info("🔍 DEBUG: About to create temporary model for batch size detection")
+            logger.info("[DEBUG] DEBUG: About to create temporary model for batch size detection")
             temp_model = create_model().to(device)
-            logger.info("🔍 DEBUG: Temporary model created and moved to device")
+            logger.info("[DEBUG] DEBUG: Temporary model created and moved to device")
         except Exception as e:
-            logger.error(f"❌ DEBUG: Error in batch size detection setup: {e}")
+            logger.error(f"[ERROR] DEBUG: Error in batch size detection setup: {e}")
             raise
         max_batch_size = BatchSizeFinder.find_max_batch_size(temp_model, (3, 224, 224), device)
         # Use different safety factors based on mode
         if args.quick_mode:
             safety_factor = 0.25  # Very conservative for quick mode (training uses more memory than inference)
-            logger.info("🚀 Quick mode: Using very conservative batch size for training stability")
+            logger.info("[START] Quick mode: Using very conservative batch size for training stability")
         else:
             safety_factor = 0.5  # Conservative safety factor (training uses ~2x memory of inference)
         initial_batch_size = int(max_batch_size * safety_factor)
         # Ensure it's a power of 2 and at least 1
         initial_batch_size = max(1, 2 ** int(np.log2(initial_batch_size))) if initial_batch_size > 0 else 32
-        logger.info(f"🎯 Optimal batch size: {initial_batch_size} (max: {max_batch_size}, safety: {safety_factor})")
+        logger.info(f"[COMPLETE] Optimal batch size: {initial_batch_size} (max: {max_batch_size}, safety: {safety_factor})")
         # Clean up temporary model
         del temp_model
         torch.cuda.empty_cache()
-        logger.debug(f"🚨 DEBUG: Batch size detection completed, using batch size: {initial_batch_size}")
+        logger.debug(f"[DEBUG] DEBUG: Batch size detection completed, using batch size: {initial_batch_size}")
     else:
         initial_batch_size = args.batch_size
-        logger.info(f"📏 Using specified batch size: {initial_batch_size}")
-        logger.debug(f"🚨 DEBUG: Using specified batch size: {initial_batch_size}")
+        logger.info(f"[SIZE] Using specified batch size: {initial_batch_size}")
+        logger.debug(f"[DEBUG] DEBUG: Using specified batch size: {initial_batch_size}")
     
     # Load data
-    logger.info("📂 Loading ImageNet dataset...")
-    logger.debug("🚨 DEBUG: About to load dataset")
+    logger.info("[DATASET] Loading ImageNet dataset...")
+    logger.debug("[DEBUG] DEBUG: About to load dataset")
     
     # Create progress bar for dataset loading (2 steps: train + val)
     progress_manager.create_progress_bar("Dataset Loading", 2)
@@ -1041,37 +1041,37 @@ def main():
     #        args.data, batch_size=initial_batch_size, num_workers=4)
     #else:
     logger.info("Using standard ImageNet dataset loader")
-    logger.debug(f"🚨 DEBUG: Calling get_imagenet_dataloaders with train={args.train}, val={args.val}")
+    logger.debug(f"[DEBUG] DEBUG: Calling get_imagenet_dataloaders with train={args.train}, val={args.val}")
     try:
         progress_manager.update_progress(1, {'step': 'Loading training dataset'})
         train_loader, val_loader = get_imagenet_dataloaders(
             train=args.train, val=args.val, batch_size=initial_batch_size, num_workers=4)
         progress_manager.update_progress(2, {'step': 'Loading validation dataset'})
-        logger.debug("🚨 DEBUG: Dataset loading completed successfully")
+        logger.debug("[DEBUG] DEBUG: Dataset loading completed successfully")
     except Exception as e:
         progress_manager.close_progress_bar()
-        logger.error(f"🚨 DEBUG: Dataset loading failed with error: {e}")
-        logger.error(f"❌ Dataset loading failed: {e}")
+        logger.error(f"[DEBUG] DEBUG: Dataset loading failed with error: {e}")
+        logger.error(f"[ERROR] Dataset loading failed: {e}")
         raise
     
     progress_manager.close_progress_bar()
-    logger.info(f"📊 Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
-    logger.debug(f"🚨 DEBUG: Dataset sizes - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
+    logger.info(f"[ANALYSIS] Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
+    logger.debug(f"[DEBUG] DEBUG: Dataset sizes - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
     
     # =============================================================================
     # STARTING 7-STEP IMAGENET TRAINING PIPELINE
     # =============================================================================
     logger.debug("\n" + "=" * 80)
-    logger.debug("🎯 STARTING 7-STEP IMAGENET TRAINING PIPELINE")
+    logger.debug("[COMPLETE] STARTING 7-STEP IMAGENET TRAINING PIPELINE")
     logger.debug("=" * 80)
-    logger.debug("📋 Pipeline Steps:")
+    logger.debug("[ARGS] Pipeline Steps:")
     logger.debug("   1️⃣  LR Range Test")
     logger.debug("   2️⃣  Weight Decay Search") 
     logger.debug("   3️⃣  Full Training with OneCycle LR")
-    logger.debug(f"📦 Batch Size: {initial_batch_size}")
-    logger.debug(f"🔄 Total Epochs: {args.epochs}")
+    logger.debug(f"[BATCH] Batch Size: {initial_batch_size}")
+    logger.debug(f"[PROGRESS] Total Epochs: {args.epochs}")
     logger.debug("=" * 80)
-    print("🚀 Starting Step 1: LR Range Test...")
+    print("[START] Starting Step 1: LR Range Test...")
     print("=" * 80)
     sys.stdout.flush()
     
@@ -1079,7 +1079,7 @@ def main():
     lr_config = None
     if not args.skip_lr_test:
         lr_step_key = "lr_range_test"
-        progress_manager.create_status_updater(lr_step_key, "🔍 STEP 1: LR Range Test - Starting...")
+        progress_manager.create_status_updater(lr_step_key, "[DEBUG] STEP 1: LR Range Test - Starting...")
 
         model = create_model().to(device)
         optimizer = optim.SGD(model.parameters(), lr=1e-7, momentum=0.9)
@@ -1089,7 +1089,7 @@ def main():
 
         num_iter = 100 if args.quick_mode else 200
 
-        progress_manager.update_status(lr_step_key, f"🔍 STEP 1: LR Range Test - Running {num_iter} iterations...")
+        progress_manager.update_status(lr_step_key, f"[DEBUG] STEP 1: LR Range Test - Running {num_iter} iterations...")
         lrs, losses = lr_finder.range_test(train_loader, num_iter=num_iter)
 
         # Plot results
@@ -1101,7 +1101,7 @@ def main():
         lr_config = lr_finder.suggest_lr()
 
         progress_manager.update_status(lr_step_key,
-            f"✅ STEP 1: LR Range Test Complete - Min: {lr_config['min_lr']:.2e}, Max: {lr_config['max_lr']:.2e}")
+            f"[OK] STEP 1: LR Range Test Complete - Min: {lr_config['min_lr']:.2e}, Max: {lr_config['max_lr']:.2e}")
         progress_manager.finalize_status(lr_step_key)
 
         # Save results
@@ -1115,24 +1115,24 @@ def main():
         progress_manager.finalize_status(lr_skip_key)
     
     # STEP 2 & 3: Already incorporated in lr_config
-    logger.info(f"✅ LR bounds selected: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
+    logger.info(f"[OK] LR bounds selected: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
     
     # STEP 4: Batch Size Already Optimized
     optimal_batch_size = initial_batch_size
-    logger.info(f"✅ Using optimized batch size: {optimal_batch_size}")
+    logger.info(f"[OK] Using optimized batch size: {optimal_batch_size}")
     
     # STEP 5: Weight Decay Search
     best_weight_decay = 1e-4  # Default
     if not args.skip_wd_search:
         wd_step_key = "weight_decay_search"
-        progress_manager.create_status_updater(wd_step_key, "⚖️ STEP 5: Weight Decay Search - Starting...")
+        progress_manager.create_status_updater(wd_step_key, "[WEIGHT] STEP 5: Weight Decay Search - Starting...")
 
         optimizer = HyperparameterOptimizer(create_model, train_loader, val_loader, device)
 
         wd_values = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3] if not args.quick_mode else [1e-4, 5e-4]
         search_epochs = 3 if args.quick_mode else 5
 
-        progress_manager.update_status(wd_step_key, f"⚖️ STEP 5: Weight Decay Search - Testing {len(wd_values)} values for {search_epochs} epochs each...")
+        progress_manager.update_status(wd_step_key, f"[WEIGHT] STEP 5: Weight Decay Search - Testing {len(wd_values)} values for {search_epochs} epochs each...")
         wd_results, best_weight_decay = optimizer.weight_decay_search(
             lr_config, optimal_batch_size, wd_values, epochs=search_epochs)
 
@@ -1140,7 +1140,7 @@ def main():
         with open(os.path.join(args.output, 'weight_decay_search.json'), 'w') as f:
             json.dump(wd_results, f, indent=2)
 
-        progress_manager.update_status(wd_step_key, f"✅ STEP 5: Weight Decay Search Complete - Best WD: {best_weight_decay:.2e}")
+        progress_manager.update_status(wd_step_key, f"[OK] STEP 5: Weight Decay Search Complete - Best WD: {best_weight_decay:.2e}")
         progress_manager.finalize_status(wd_step_key)
     else:
         wd_skip_key = "wd_skip"
@@ -1152,17 +1152,17 @@ def main():
 
     full_train_key = "full_training"
     progress_manager.create_status_updater(full_train_key,
-        f"🚀 STEP 6: Full OneCycle Training - Starting {training_epochs} epochs...")
+        f"[START] STEP 6: Full OneCycle Training - Starting {training_epochs} epochs...")
 
     logger.info("="*60)
-    logger.info("🚀 STEP 6: Full OneCycle Training")
+    logger.info("[START] STEP 6: Full OneCycle Training")
     logger.info("="*60)
 
     model = create_model().to(device)
     trainer = FullTrainer(model, train_loader, val_loader, device, args.output)
 
     progress_manager.update_status(full_train_key,
-        f"🚀 STEP 6: Full OneCycle Training - LR: {lr_config['min_lr']:.2e}→{lr_config['max_lr']:.2e}, WD: {best_weight_decay:.2e}, Batch: {optimal_batch_size}")
+        f"[START] STEP 6: Full OneCycle Training - LR: {lr_config['min_lr']:.2e}→{lr_config['max_lr']:.2e}, WD: {best_weight_decay:.2e}, Batch: {optimal_batch_size}")
 
     history = trainer.train(
         lr_config=lr_config,
@@ -1173,12 +1173,12 @@ def main():
         early_stopping_patience=15 if not args.quick_mode else 5
     )
 
-    progress_manager.update_status(full_train_key, f"✅ STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")
+    progress_manager.update_status(full_train_key, f"[OK] STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")
     progress_manager.finalize_status(full_train_key)
     
     # STEP 7: Results Analysis and Plotting
     logger.info("="*60)
-    logger.info("📊 STEP 7: Results Analysis")
+    logger.info("[ANALYSIS] STEP 7: Results Analysis")
     logger.info("="*60)
     
     # Create progress bar for results analysis
@@ -1254,18 +1254,18 @@ def main():
     # =============================================================================
     completion_key = "pipeline_complete"
     progress_manager.create_status_updater(completion_key,
-        f"🎉 ImageNet Training Pipeline Completed! Best Val Acc: {final_results['best_val_acc']:.2f}%")
+        f"[SUCCESS] ImageNet Training Pipeline Completed! Best Val Acc: {final_results['best_val_acc']:.2f}%")
     progress_manager.finalize_status(completion_key)
 
-    logger.info("🎉 Pipeline Complete!")
-    logger.info("📊 Final Results:")
+    logger.info("[SUCCESS] Pipeline Complete!")
+    logger.info("[ANALYSIS] Final Results:")
     logger.info(f"   Best Validation Accuracy: {final_results['best_val_acc']:.2f}%")
     logger.info(f"   Final Training Accuracy: {final_results['final_train_acc']:.2f}%")
     logger.info(f"   Final Validation Accuracy: {final_results['final_val_acc']:.2f}%")
     logger.info(f"   Optimal Batch Size: {optimal_batch_size}")
     logger.info(f"   Best Weight Decay: {best_weight_decay:.2e}")
     logger.info(f"   LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
-    logger.info(f"📁 Results saved to: {args.output}")
+    logger.info(f"[DIR] Results saved to: {args.output}")
 
 
 if __name__ == '__main__':
@@ -1277,25 +1277,25 @@ if __name__ == '__main__':
     # SCRIPT EXECUTION CONTEXT LOGGING
     # =============================================================================
     print("=" * 80)
-    print("📄 IMAGENET_TRAINING_PIPELINE.PY SCRIPT CALLED")
+    print("SCRIPT: IMAGENET_TRAINING_PIPELINE.PY CALLED")
     print("=" * 80)
-    print(f"🗂️  Script Path: {__file__}")
-    print(f"💻 Working Directory: {os.getcwd()}")
-    print(f"🐍 Python Executable: {sys.executable}")
-    print(f"📋 Command Line Args: {sys.argv}")
-    print(f"🔢 Number of Args: {len(sys.argv)}")
+    print(f"PATH: Script Path: {__file__}")
+    print(f"DIR:  Working Directory: {os.getcwd()}")
+    print(f"PY:   Python Executable: {sys.executable}")
+    print(f"ARGS: Command Line Args: {sys.argv}")
+    print(f"COUNT: Number of Args: {len(sys.argv)}")
     
     # Show calling context
     frame = inspect.currentframe()
     if frame and frame.f_back:
         caller_frame = frame.f_back
-        print(f"📞 Called From: {caller_frame.f_code.co_filename}:{caller_frame.f_lineno}")
-        print(f"🎯 Caller Function: {caller_frame.f_code.co_name}")
+        print(f"CALLER: Called From: {caller_frame.f_code.co_filename}:{caller_frame.f_lineno}")
+        print(f"FUNC:   Caller Function: {caller_frame.f_code.co_name}")
     else:
-        print("📞 Called From: Direct execution (no caller frame)")
+        print("CALLER: Called From: Direct execution (no caller frame)")
     
     # Environment context
-    print(f"🌐 Environment Variables (SageMaker related):")
+    print(f"[ENV] Environment Variables (SageMaker related):")
     sm_vars = {k: v for k, v in os.environ.items() if 'SM_' in k or 'SAGEMAKER' in k}
     if sm_vars:
         for key, value in list(sm_vars.items())[:10]:  # Show first 10
@@ -1308,17 +1308,17 @@ if __name__ == '__main__':
     print("=" * 80)
     sys.stdout.flush()
     
-    print("🚨 DEBUG: Starting imagenet_training_pipeline.py")
+    print("[DEBUG] DEBUG: Starting imagenet_training_pipeline.py")
     sys.stdout.flush()
     try:
-        print("🚨 DEBUG: About to call main()")
+        print("[DEBUG] DEBUG: About to call main()")
         sys.stdout.flush()
         main()
-        print("🚨 DEBUG: main() completed successfully")
+        print("[DEBUG] DEBUG: main() completed successfully")
         sys.stdout.flush()
     except Exception as e:
         # Setup unified logger for error reporting if main logger fails
-        print(f"🚨 DEBUG: Exception caught in __main__: {e}")
+        print(f"[DEBUG] DEBUG: Exception caught in __main__: {e}")
         sys.stdout.flush()
         try:
             from logger_setup import setup_unified_logger
@@ -1327,16 +1327,16 @@ if __name__ == '__main__':
             import logging
             logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
             logger = logging.getLogger(__name__)
-        logger.error(f"❌ CRITICAL ERROR: Pipeline failed with exception: {e}")
-        logger.error(f"❌ Exception type: {type(e).__name__}")
+        logger.error(f"[ERROR] CRITICAL ERROR: Pipeline failed with exception: {e}")
+        logger.error(f"[ERROR] Exception type: {type(e).__name__}")
         import traceback
-        logger.error(f"❌ Full traceback:")
+        logger.error(f"[ERROR] Full traceback:")
         traceback_lines = traceback.format_exc()
-        print(f"🚨 DEBUG: Full traceback (print): {traceback_lines}")
+        print(f"[DEBUG] DEBUG: Full traceback (print): {traceback_lines}")
         sys.stdout.flush()
         for line in traceback_lines.split('\n'):
             if line.strip():
                 logger.error(f"   {line}")
-        print(f"🚨 DEBUG: About to re-raise exception")
+        print(f"[DEBUG] DEBUG: About to re-raise exception")
         sys.stdout.flush()
         raise

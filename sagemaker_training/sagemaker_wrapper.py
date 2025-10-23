@@ -419,9 +419,11 @@ class ImageNetSageMakerTrainer:
                     if not clean_line:
                         continue
                     
-                    # Suppress tqdm/progress bar output from subprocess
-                    if '|' in clean_line and ('%' in clean_line or 'it/s' in clean_line or 'step' in clean_line or 'Loss:' in clean_line or 'Acc:' in clean_line):
-                        continue  # Skip bar/progress lines
+                    # Suppress tqdm/progress bar output from subprocess, but allow our ASCII progress bars
+                    # Our ASCII progress bars contain "[PROGRESS]" in the message
+                    if ('|' in clean_line and ('%' in clean_line or 'it/s' in clean_line) and
+                        '[PROGRESS]' not in clean_line):
+                        continue  # Skip tqdm progress bars, but keep our ASCII progress bars
 
                     # Log all output to debug file
                     self.subprocess_logger.debug(f"SUBPROCESS_OUTPUT[{line_counter:06d}]: {clean_line}")

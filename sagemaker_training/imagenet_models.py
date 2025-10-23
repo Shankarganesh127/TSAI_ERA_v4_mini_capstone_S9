@@ -25,13 +25,13 @@ try:
         import smdistributed.dataparallel.torch.torch_smddp
         import torch.distributed as dist
         DISTRIBUTED_AVAILABLE = True
-        logger.info(f"🔧 Distributed training detected: {len(eval(sm_hosts))} hosts, world_size={world_size}")
+        logger.info(f"[CONFIG] Distributed training detected: {len(eval(sm_hosts))} hosts, world_size={world_size}")
     else:
         DISTRIBUTED_AVAILABLE = False
-        logger.info(f"🔧 Single-instance training: {len(eval(sm_hosts))} host, world_size={world_size}")
+        logger.info(f"[CONFIG] Single-instance training: {len(eval(sm_hosts))} host, world_size={world_size}")
 except (ImportError, Exception):
     DISTRIBUTED_AVAILABLE = False
-    logger.info("🔧 Distributed training not available or not configured")
+    logger.info("[CONFIG] Distributed training not available or not configured")
 
 class BasicBlock(nn.Module):
     """Basic residual block for ResNet-18/34"""
