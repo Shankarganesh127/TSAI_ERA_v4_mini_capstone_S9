@@ -677,9 +677,11 @@ def main():
     logger.debug("🚨 DEBUG: Parsing arguments")
     parser = argparse.ArgumentParser(description='ImageNet Training Pipeline')
     parser.add_argument('--train', type=str, required=True, help='ImageNet training dataset path')
-    logger.debug(f"🚨 DEBUG: Arguments parsed successfully - train: {args.train}, val: {args.val}")
+    parser.add_argument('--val', type=str, required=True, help='ImageNet validation dataset path')
     parser.add_argument('--output', type=str, default='./imagenet_pipeline_results', help='Output directory')
     parser.add_argument('--batch-size', type=int, default=None, help='Batch size (auto-detect if not specified)')
+    parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
+    parser.add_argument('--quick-mode', action='store_true', help='Enable quick mode for faster testing')
     logger.debug("🚨 DEBUG: Setting up logger")
     parser.add_argument('--skip-lr-test', action='store_true', help='Skip LR range test')
     parser.add_argument('--skip-wd-search', action='store_true', help='Skip weight decay search')
@@ -688,7 +690,7 @@ def main():
     print("🚨 DEBUG: Parsing arguments")
     sys.stdout.flush()
     args = parser.parse_args()
-    print(f"🚨 DEBUG: Arguments parsed successfully - train: {args.train}, val: {args.val}")
+    print(f"🚨 DEBUG: Arguments parsed successfully - train: {args.train}, val: {args.val}, epochs: {args.epochs}")
     sys.stdout.flush()
     
     # Setup logging
