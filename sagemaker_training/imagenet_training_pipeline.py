@@ -81,12 +81,45 @@ class LiveProgressManager:
         progress_str = f"🔄 {desc}: {percentage:5.1f}%|{bar}| {current}/{total} [{elapsed:.1f}s<{eta:.1f}s]"
         
         if metrics:
+            # Standard training metrics
             if 'loss' in metrics:
                 progress_str += f" | Loss: {metrics['loss']:.4f}"
             if 'accuracy' in metrics:
                 progress_str += f" | Acc: {metrics['accuracy']:.2f}%"
             if 'lr' in metrics:
                 progress_str += f" | LR: {metrics['lr']:.6f}"
+            
+            # Batch size detection metrics
+            if 'batch_size' in metrics:
+                progress_str += f" | Batch: {metrics['batch_size']}"
+            if 'status' in metrics:
+                progress_str += f" | Status: {metrics['status']}"
+            
+            # Weight decay search metrics
+            if 'weight_decay' in metrics:
+                progress_str += f" | WD: {metrics['weight_decay']:.2e}"
+            if 'val_acc' in metrics:
+                progress_str += f" | Val Acc: {metrics['val_acc']:.2f}%"
+            if 'best_so_far' in metrics:
+                progress_str += f" | Best: {metrics['best_so_far']:.2f}%"
+            
+            # Full training epoch metrics
+            if 'epoch' in metrics:
+                progress_str += f" | Epoch: {metrics['epoch']}"
+            if 'train_loss' in metrics:
+                progress_str += f" | Train Loss: {metrics['train_loss']:.4f}"
+            if 'train_acc' in metrics:
+                progress_str += f" | Train Acc: {metrics['train_acc']:.2f}%"
+            if 'val_loss' in metrics:
+                progress_str += f" | Val Loss: {metrics['val_loss']:.4f}"
+            if 'val_acc' in metrics:
+                progress_str += f" | Val Acc: {metrics['val_acc']:.2f}%"
+            if 'best_val_acc' in metrics:
+                progress_str += f" | Best Val: {metrics['best_val_acc']:.2f}%"
+            
+            # Results analysis metrics
+            if 'step' in metrics:
+                progress_str += f" | {metrics['step']}"
         
         self.logger.info(progress_str)
     
@@ -310,6 +343,20 @@ class BatchSizeFinder:
         criterion = nn.CrossEntropyLoss()
         
         logger.info("🔍 Finding maximum batch size (training mode)...")
+        
+        # Calculate number of batch size tests needed
+        test_count = 0
+        temp_batch = 1
+        while temp_batch <= max_batch_size:
+            test_count += 1
+            temp_batch *= 2
+        
+        # Create progress bar for batch size testing
+        progress_manager.create_progress_bar("Batch Size Detection", test_count)
+        
+        test_idx = 0
+        batch_size = 1
+        
         while batch_size <= max_batch_size:
             try:
                 # Create dummy input and target
@@ -327,6 +374,14 @@ class BatchSizeFinder:
                 torch.cuda.empty_cache()
                 
                 logger.info(f"✅ Batch size {batch_size} works (train mode)")
+                
+                # Update progress
+                test_idx += 1
+                progress_manager.update_progress(test_idx, {
+                    'batch_size': batch_size,
+                    'status': 'success'
+                })
+                
                 batch_size *= 2
                 
             except RuntimeError as e:
@@ -334,11 +389,29 @@ class BatchSizeFinder:
                     logger.warning(f"❌ Batch size {batch_size} failed (OOM)")
                     max_working_batch_size = batch_size // 2
                     logger.info(f"🎯 Maximum batch size: {max_working_batch_size}")
+                    
+                    # Update final progress
+                    progress_manager.update_progress(test_count, {
+                        'batch_size': max_working_batch_size,
+                        'status': 'complete'
+                    })
+                    progress_manager.close_progress_bar()
+                    
                     return max_working_batch_size
                 else:
+                    progress_manager.close_progress_bar()
                     raise e
-                    
-        return max_batch_size // 2
+        
+        max_working_batch_size = max_batch_size // 2
+        
+        # Update final progress
+        progress_manager.update_progress(test_count, {
+            'batch_size': max_working_batch_size,
+            'status': 'complete'
+        })
+        progress_manager.close_progress_bar()
+        
+        return max_working_batch_size
 
 
 class HyperparameterOptimizer:
@@ -357,8 +430,11 @@ class HyperparameterOptimizer:
         
         results = []
         
-        for wd in wd_values:
-            logger.info(f"📊 Testing Weight Decay: {wd:.2e}")
+        # Create progress bar for weight decay search
+        progress_manager.create_progress_bar("Weight Decay Search", len(wd_values))
+        
+        for idx, wd in enumerate(wd_values):
+            logger.info(f"📊 Testing Weight Decay: {wd:.2e} ({idx+1}/{len(wd_values)})")
             
             # Create fresh model
             model = self.model_fn().to(self.device)
@@ -389,6 +465,15 @@ class HyperparameterOptimizer:
             
             logger.info(f"📈 Results - Val Acc: {result['final_val_acc']:.2f}%, "
                   f"Val Loss: {result['final_val_loss']:.3f}")
+            
+            # Update progress
+            progress_manager.update_progress(idx + 1, {
+                'weight_decay': wd,
+                'val_acc': result['final_val_acc'],
+                'best_so_far': max(r['best_val_acc'] for r in results)
+            })
+        
+        progress_manager.close_progress_bar()
         
         # Find best weight decay
         best_result = max(results, key=lambda x: x['best_val_acc'])
@@ -515,6 +600,9 @@ class FullTrainer:
         best_val_acc = 0.0
         patience_counter = 0
         
+        # Create epoch-level progress bar
+        progress_manager.create_progress_bar("Full Training", epochs)
+        
         for epoch in range(epochs):
             logger.info(f"🔄 Epoch {epoch+1}/{epochs}")
             
@@ -538,6 +626,16 @@ class FullTrainer:
             logger.info(f"📈 LR: {optimizer.param_groups[0]['lr']:.2e}, "
                   f"Momentum: {optimizer.param_groups[0]['momentum']:.3f}")
             
+            # Update epoch progress
+            progress_manager.update_progress(epoch + 1, {
+                'epoch': epoch + 1,
+                'train_loss': train_loss,
+                'train_acc': train_acc,
+                'val_loss': val_loss,
+                'val_acc': val_acc,
+                'best_val_acc': max(self.history['val_acc'])
+            })
+            
             # Save best model
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
@@ -553,6 +651,7 @@ class FullTrainer:
                 logger.info(f"⏰ Early stopping after {patience_counter} epochs without improvement")
                 break
                 
+        progress_manager.close_progress_bar()
         logger.info(f"🎯 Training completed! Best Val Acc: {best_val_acc:.2f}%")
         return self.history
     
@@ -870,6 +969,9 @@ def main():
     logger.info("📂 Loading ImageNet dataset...")
     logger.debug("🚨 DEBUG: About to load dataset")
     
+    # Create progress bar for dataset loading (2 steps: train + val)
+    progress_manager.create_progress_bar("Dataset Loading", 2)
+    
     #if dataset_format == 'ilsvrc':
     #    logger.info("Using ILSVRC dataset loader (handles flat validation directory)")
     #    train_loader, val_loader = get_ilsvrc_dataloaders(
@@ -878,14 +980,18 @@ def main():
     logger.info("Using standard ImageNet dataset loader")
     logger.debug(f"🚨 DEBUG: Calling get_imagenet_dataloaders with train={args.train}, val={args.val}")
     try:
+        progress_manager.update_progress(1, {'step': 'Loading training dataset'})
         train_loader, val_loader = get_imagenet_dataloaders(
             train=args.train, val=args.val, batch_size=initial_batch_size, num_workers=4)
+        progress_manager.update_progress(2, {'step': 'Loading validation dataset'})
         logger.debug("🚨 DEBUG: Dataset loading completed successfully")
     except Exception as e:
+        progress_manager.close_progress_bar()
         logger.error(f"🚨 DEBUG: Dataset loading failed with error: {e}")
         logger.error(f"❌ Dataset loading failed: {e}")
         raise
     
+    progress_manager.close_progress_bar()
     logger.info(f"📊 Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
     logger.debug(f"🚨 DEBUG: Dataset sizes - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
     
@@ -1011,7 +1117,12 @@ def main():
     logger.info("📊 STEP 7: Results Analysis")
     logger.info("="*60)
     
+    # Create progress bar for results analysis
+    analysis_steps = 4  # Plot creation, saving plot, saving JSON, final summary
+    progress_manager.create_progress_bar("Results Analysis", analysis_steps)
+    
     # Plot training curves
+    progress_manager.update_progress(1, {'step': 'Creating plots'})
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
     
     # Loss curves
@@ -1049,10 +1160,14 @@ def main():
     ax4.grid(True, alpha=0.3)
     
     plt.tight_layout()
+    
+    # Save plot
+    progress_manager.update_progress(2, {'step': 'Saving training curves plot'})
     plt.savefig(os.path.join(args.output, 'training_results.png'), dpi=300, bbox_inches='tight')
     plt.close()
     
     # Save final results
+    progress_manager.update_progress(3, {'step': 'Saving final results JSON'})
     final_results = {
         'lr_config': lr_config,
         'batch_size': optimal_batch_size,
@@ -1065,6 +1180,10 @@ def main():
     
     with open(os.path.join(args.output, 'final_results.json'), 'w') as f:
         json.dump(final_results, f, indent=2)
+    
+    # Final summary
+    progress_manager.update_progress(4, {'step': 'Generating final summary'})
+    progress_manager.close_progress_bar()
     
     # =============================================================================
     # TRAINING PIPELINE COMPLETED!
