@@ -8,6 +8,7 @@ Complete ImageNet Training Pipeline
 
 import os
 import json
+import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -42,6 +43,14 @@ class LiveProgressManager:
         if os.environ.get('TQDM_DISABLE', '0') == '1' or disable_tqdm:
             self.current_bar = None
             self.logger.info(f"🔄 Starting {desc} (progress via logs)")
+            # Initialize progress tracking for log-based progress
+            self._log_progress_desc = desc
+            self._log_progress_total = total
+            self._log_progress_current = 0
+            self._log_progress_start_time = time.time()
+            self._last_log_time = 0
+            self._last_log_step = 0
+            self._draw_ascii_progress_bar(0, total, desc)
             return None
         else:
             self.current_bar = tqdm(
@@ -55,6 +64,31 @@ class LiveProgressManager:
                 bar_format='{desc}: {percentage:3.0f}%|{bar}| {n}/{total} [{elapsed}<{remaining}, {rate_fmt}]'
             )
             return self.current_bar
+    
+    def _draw_ascii_progress_bar(self, current, total, desc, metrics=None):
+        """Draw an ASCII progress bar for log environments"""
+        if total == 0:
+            return
+            
+        percentage = (current / total) * 100
+        bar_width = 30
+        filled_width = int(bar_width * current / total)
+        bar = '█' * filled_width + '░' * (bar_width - filled_width)
+        
+        elapsed = time.time() - self._log_progress_start_time
+        eta = (elapsed / current * (total - current)) if current > 0 else 0
+        
+        progress_str = f"🔄 {desc}: {percentage:5.1f}%|{bar}| {current}/{total} [{elapsed:.1f}s<{eta:.1f}s]"
+        
+        if metrics:
+            if 'loss' in metrics:
+                progress_str += f" | Loss: {metrics['loss']:.4f}"
+            if 'accuracy' in metrics:
+                progress_str += f" | Acc: {metrics['accuracy']:.2f}%"
+            if 'lr' in metrics:
+                progress_str += f" | LR: {metrics['lr']:.6f}"
+        
+        self.logger.info(progress_str)
     
     def update_progress(self, step, metrics=None):
         """Update progress bar with metrics"""
@@ -79,15 +113,44 @@ class LiveProgressManager:
             log_interval = min(max(1, total // 5), 50)
             if step % log_interval == 0:
                 self.logger.info(f"📊 Progress: {percentage:.1f}% ({step}/{total})")
+    def update_progress(self, step, metrics=None):
+        """Update progress bar with metrics"""
+        if self.current_bar:
+            self.current_bar.n = step
+            if metrics:
+                desc = self.current_bar.desc.split('|')[0].strip()  # Keep base description
+                if 'loss' in metrics:
+                    desc += f" | Loss: {metrics['loss']:.4f}"
+                if 'accuracy' in metrics:
+                    desc += f" | Acc: {metrics['accuracy']:.2f}%"
+                if 'lr' in metrics:
+                    desc += f" | LR: {metrics['lr']:.6f}"
+                self.current_bar.set_description(desc)
+            self.current_bar.refresh()
+        
         elif not self.current_bar:
-            # If no progress bar, log more frequently
-            self.logger.info(f"📊 Step {step} completed")
+            # Live ASCII progress bar for log environments
+            current_time = time.time()
+            
+            # Update every 0.5 seconds OR every 2 steps, whichever is more frequent for smooth progress
+            time_since_last_update = current_time - self._last_log_time
+            steps_since_last_update = step - self._last_log_step
+            
+            if time_since_last_update >= 0.5 or steps_since_last_update >= 2 or step == self._log_progress_total:
+                self._log_progress_current = step
+                self._draw_ascii_progress_bar(step, self._log_progress_total, self._log_progress_desc, metrics)
+                self._last_log_time = current_time
+                self._last_log_step = step
     
     def close_progress_bar(self):
         """Close current progress bar"""
         if self.current_bar:
             self.current_bar.close()
             self.current_bar = None
+        elif hasattr(self, '_log_progress_total'):
+            # Show final completion for ASCII progress bar
+            self._draw_ascii_progress_bar(self._log_progress_total, self._log_progress_total, self._log_progress_desc)
+            self.logger.info(f"✅ {self._log_progress_desc} completed!")
 
 # Global progress manager instance
 progress_manager = LiveProgressManager()
