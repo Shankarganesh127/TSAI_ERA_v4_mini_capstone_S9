@@ -628,7 +628,7 @@ class FullTrainer:
         }
         
     def train(self, lr_config, epochs, batch_size, weight_decay=1e-4, 
-              save_checkpoints=True, early_stopping_patience=10):
+              save_checkpoints=True, early_stopping_patience=10, args=None):
         """Full training with OneCycle LR and cyclical momentum"""
         
         logger = get_unified_logger()
@@ -656,6 +656,25 @@ class FullTrainer:
         
         criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
         
+        # Enable torch.compile for additional speedup (PyTorch 2.0+)
+        if not args.no_compile and hasattr(torch, 'compile') and torch.cuda.is_available():
+            try:
+                self.model = torch.compile(self.model)
+                logger.info("[SPEED] torch.compile enabled - additional performance boost")
+            except Exception as e:
+                logger.warning(f"[SPEED] torch.compile failed: {e}, continuing without it")
+        
+        # Enable mixed precision training for massive speedup
+        scaler = None
+        if torch.cuda.is_available() and not args.no_amp:
+            scaler = torch.cuda.amp.GradScaler()
+            logger.info("[SPEED] Mixed precision training enabled (AMP) - expect 2-3x speedup")
+        
+        # Enable cuDNN benchmark for faster convolutions
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            logger.info("[SPEED] cuDNN benchmark enabled for faster convolutions")
+        
         # Training loop
         best_val_acc = 0.0
         patience_counter = 0
@@ -669,7 +688,7 @@ class FullTrainer:
             progress_manager.create_status_updater(epoch_status_key, f"[PROGRESS] Epoch {epoch+1}/{epochs} - Training...")
 
             # Training
-            train_loss, train_acc = self._train_epoch(optimizer, criterion, scheduler)
+            train_loss, train_acc = self._train_epoch(optimizer, criterion, scheduler, scaler)
 
             # Update status to validation phase
             progress_manager.update_status(epoch_status_key, f"[PROGRESS] Epoch {epoch+1}/{epochs} - Validating...")
@@ -718,8 +737,8 @@ class FullTrainer:
         progress_manager.finalize_status(completion_key)
         return self.history
     
-    def _train_epoch(self, optimizer, criterion, scheduler):
-        """Train one epoch"""
+    def _train_epoch(self, optimizer, criterion, scheduler, scaler=None):
+        """Train one epoch with optional mixed precision"""
         self.model.train()
         running_loss = 0.0
         correct = 0
@@ -732,14 +751,34 @@ class FullTrainer:
             inputs, targets = inputs.to(self.device), targets.to(self.device)
             
             optimizer.zero_grad()
-            outputs = self.model(inputs)
-            loss = criterion(outputs, targets)
-            loss.backward()
             
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            # Mixed precision training
+            if scaler:
+                with torch.cuda.amp.autocast():
+                    outputs = self.model(inputs)
+                    loss = criterion(outputs, targets)
+                
+                # Scale loss and backpropagate
+                scaler.scale(loss).backward()
+                
+                # Gradient clipping with scaler
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                
+                # Optimizer step with scaler
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                # Standard precision training
+                outputs = self.model(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                
+                optimizer.step()
             
-            optimizer.step()
             scheduler.step()
             
             running_loss += loss.item()
@@ -907,6 +946,9 @@ def main():
     parser.add_argument('--batch-size', type=int, default=None, help='Batch size (auto-detect if not specified)')
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--quick-mode', action='store_true', help='Enable quick mode for faster testing')
+    parser.add_argument('--no-amp', action='store_true', help='Disable mixed precision training')
+    parser.add_argument('--no-compile', action='store_true', help='Disable torch.compile optimization')
+    parser.add_argument('--lightweight-augs', action='store_true', help='Use lightweight augmentations for maximum speed')
     logger.debug("[DEBUG] DEBUG: Setting up logger")
     parser.add_argument('--skip-lr-test', action='store_true', help='Skip LR range test')
     parser.add_argument('--skip-wd-search', action='store_true', help='Skip weight decay search')
@@ -1009,8 +1051,11 @@ def main():
             logger.error(f"[ERROR] DEBUG: Error in batch size detection setup: {e}")
             raise
         max_batch_size = BatchSizeFinder.find_max_batch_size(temp_model, (3, 224, 224), device)
-        # Use different safety factors based on mode
-        if args.quick_mode:
+        # Use different safety factors based on mode and GPU availability
+        if torch.cuda.is_available():
+            safety_factor = 1.0  # No safety factor for CUDA GPUs (use full detected capacity)
+            logger.info("[GPU] CUDA GPU detected: Using full batch size capacity (no safety factor)")
+        elif args.quick_mode:
             safety_factor = 0.25  # Very conservative for quick mode (training uses more memory than inference)
             logger.info("[START] Quick mode: Using very conservative batch size for training stability")
         else:
@@ -1045,7 +1090,8 @@ def main():
     try:
         progress_manager.update_progress(1, {'step': 'Loading training dataset'})
         train_loader, val_loader = get_imagenet_dataloaders(
-            train=args.train, val=args.val, batch_size=initial_batch_size, num_workers=4)
+            train=args.train, val=args.val, batch_size=initial_batch_size, num_workers=8, 
+            lightweight_augs=args.lightweight_augs)
         progress_manager.update_progress(2, {'step': 'Loading validation dataset'})
         logger.debug("[DEBUG] DEBUG: Dataset loading completed successfully")
     except Exception as e:
@@ -1170,7 +1216,8 @@ def main():
         batch_size=optimal_batch_size,
         weight_decay=best_weight_decay,
         save_checkpoints=True,
-        early_stopping_patience=15 if not args.quick_mode else 5
+        early_stopping_patience=15 if not args.quick_mode else 5,
+        args=args
     )
 
     progress_manager.update_status(full_train_key, f"[OK] STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")

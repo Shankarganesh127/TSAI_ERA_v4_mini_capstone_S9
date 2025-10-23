@@ -12,23 +12,79 @@ from PIL import Image
 from logger_setup import get_unified_logger
 
 
-def get_imagenet_transforms(input_size=224):
+def get_imagenet_transforms(input_size=224, lightweight=False):
     """
-    Get standard ImageNet data transforms
+    Get ImageNet data transforms with optional lightweight mode
     
     Args:
-        input_size: Input image size (default: 224)
+        input_size: Input image size (default: 224 for ResNet)
+        lightweight: If True, use faster but less aggressive augmentations
+    
+    Returns:
+        train_transform, val_transform
     """
     
-    # Training transforms with data augmentation
-    train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(input_size),
-        transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225])
-    ])
+    if lightweight:
+        # Lightweight version for maximum speed
+        train_transform = transforms.Compose([
+            transforms.RandomResizedCrop(input_size, scale=(0.08, 1.0)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                               std=[0.229, 0.224, 0.225])
+        ])
+    else:
+        # Full advanced augmentations
+        train_transform = transforms.Compose([
+            # Scale-aware random cropping (8%-100% of image, aspect ratio 3:4 to 4:3)
+            transforms.RandomResizedCrop(input_size, scale=(0.08, 1.0), ratio=(0.75, 1.333)),
+            
+            # Horizontal flip with 50% probability
+            transforms.RandomHorizontalFlip(p=0.5),
+            
+            # Advanced color augmentations for lighting/illumination robustness
+            transforms.ColorJitter(
+                brightness=0.4,  # ±40% brightness change
+                contrast=0.4,    # ±40% contrast change  
+                saturation=0.4,  # ±40% saturation change
+                hue=0.1          # ±10% hue change
+            ),
+            
+            # Geometric augmentations for spatial robustness
+            transforms.RandomAffine(
+                degrees=0,       # No rotation to preserve object orientation
+                translate=(0.1, 0.1),  # ±10% translation
+                scale=(0.9, 1.1),      # ±10% scaling
+                shear=0.1,             # ±10% shearing
+                fill=0
+            ),
+            
+            # Random Erasing (Cutout) for occlusion robustness - applied before normalization
+            transforms.RandomErasing(
+                p=0.25,           # 25% probability
+                scale=(0.02, 0.33),  # Erase 2-33% of image area
+                ratio=(0.3, 3.3),    # Aspect ratio range
+                value='random'       # Fill with random pixel values
+            ),
+            
+            # Gaussian blur for noise and focus robustness
+            transforms.GaussianBlur(
+                kernel_size=(3, 3), 
+                sigma=(0.1, 2.0)     # Blur strength range
+            ),
+            
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                               std=[0.229, 0.224, 0.225]),
+            
+            # Additional random erasing after normalization for final regularization
+            transforms.RandomErasing(
+                p=0.25,           # 25% probability
+                scale=(0.02, 0.2),   # Smaller erasures after normalization
+                ratio=(0.3, 3.3),
+                value=0             # Erase to zero (black) after normalization
+            )
+        ])
     
     # Validation transforms (no augmentation)
     val_transform = transforms.Compose([
@@ -41,7 +97,47 @@ def get_imagenet_transforms(input_size=224):
     
     return train_transform, val_transform
 
-def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memory=True):
+
+def get_test_time_augmentation_transforms(input_size=224, num_augmentations=10):
+    """
+    Get test-time augmentation transforms for improved validation accuracy
+    
+    NOTE: Currently unused in training pipeline. Available for future enhancement
+    to boost validation accuracy by 1-2% at the cost of ~5x slower validation.
+    
+    Args:
+        input_size: Input image size
+        num_augmentations: Number of augmentations per image
+    
+    Returns:
+        List of transforms for test-time augmentation
+    """
+    base_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                           std=[0.229, 0.224, 0.225])
+    ])
+    
+    # Create multiple augmentation strategies
+    augmentation_transforms = []
+    
+    for _ in range(num_augmentations):
+        # Random crop positions and sizes
+        crop_transforms = transforms.Compose([
+            transforms.Resize(256),
+            transforms.RandomCrop(input_size, padding=4, padding_mode='reflect'),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                               std=[0.229, 0.224, 0.225])
+        ])
+        augmentation_transforms.append(crop_transforms)
+    
+    return augmentation_transforms
+
+
+def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memory=True, lightweight_augs=False):
     """
     Create ImageNet-1K data loaders
     
@@ -51,6 +147,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         batch_size: Batch size for training
         num_workers: Number of worker processes for data loading
         pin_memory: Whether to pin memory for faster GPU transfer
+        lightweight_augs: Use lightweight augmentations for maximum speed
     
     Returns:
         train_loader, val_loader
@@ -59,7 +156,11 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     logger = get_unified_logger("imagenet_dataset")
     logger.info(f"get_imagenet_dataloaders called with train={train}, val={val}")
 
-    train_transform, val_transform = get_imagenet_transforms()
+    train_transform, val_transform = get_imagenet_transforms(lightweight=lightweight_augs)
+    if lightweight_augs:
+        logger.info("Using lightweight augmentations for maximum training speed")
+    else:
+        logger.info("Using advanced augmentations for better accuracy")
     logger.info("Transforms created")
 
     # Use the provided paths directly
@@ -98,7 +199,8 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     try:
         logger.info(f"Training samples: {len(train_dataset)}")
         logger.info(f"Validation samples: {len(val_dataset)}")
-        logger.info(f"Number of classes: {len(train_dataset.classes)}")
+        logger.info(f"Number of training classes: {len(train_dataset.classes)}")
+        logger.info(f"Number of validation classes: {len(val_dataset.classes)}")
     except Exception:
         # Fallback for when logger is not available
         pass
@@ -113,7 +215,8 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
             shuffle=True,
             num_workers=num_workers,
             pin_memory=pin_memory,
-            persistent_workers=True if num_workers > 0 else False
+            persistent_workers=True if num_workers > 0 else False,
+            prefetch_factor=2 if num_workers > 0 else None
         )
         logger.info("Training data loader created successfully")
     except Exception as e:
@@ -128,7 +231,8 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
             shuffle=False,
             num_workers=num_workers,
             pin_memory=pin_memory,
-            persistent_workers=True if num_workers > 0 else False
+            persistent_workers=True if num_workers > 0 else False,
+            prefetch_factor=2 if num_workers > 0 else None
         )
         logger.info("Validation data loader created successfully")
     except Exception as e:
