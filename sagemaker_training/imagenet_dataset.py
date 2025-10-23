@@ -59,14 +59,6 @@ def get_imagenet_transforms(input_size=224, lightweight=False):
                 fill=0
             ),
             
-            # Random Erasing (Cutout) for occlusion robustness - applied before normalization
-            transforms.RandomErasing(
-                p=0.25,           # 25% probability
-                scale=(0.02, 0.33),  # Erase 2-33% of image area
-                ratio=(0.3, 3.3),    # Aspect ratio range
-                value='random'       # Fill with random pixel values
-            ),
-            
             # Gaussian blur for noise and focus robustness
             transforms.GaussianBlur(
                 kernel_size=(3, 3), 
@@ -74,16 +66,25 @@ def get_imagenet_transforms(input_size=224, lightweight=False):
             ),
             
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                               std=[0.229, 0.224, 0.225]),
             
-            # Additional random erasing after normalization for final regularization
+            # Random Erasing (Cutout) for occlusion robustness - applied after ToTensor on [0,1] range
             transforms.RandomErasing(
                 p=0.25,           # 25% probability
-                scale=(0.02, 0.2),   # Smaller erasures after normalization
-                ratio=(0.3, 3.3),
-                value=0             # Erase to zero (black) after normalization
-            )
+                scale=(0.02, 0.33),  # Erase 2-33% of image area
+                ratio=(0.3, 3.3),    # Aspect ratio range
+                value='random'       # Fill with random pixel values in [0,1] range
+            ),
+            
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                               std=[0.229, 0.224, 0.225])
+            
+            # Note: RandomErasing after normalization removed - causes issues with normalized tensors
+            # transforms.RandomErasing(
+            #     p=0.25,           # 25% probability
+            #     scale=(0.02, 0.2),   # Smaller erasures after normalization
+            #     ratio=(0.3, 3.3),
+            #     value=0             # Erase to zero (black) after normalization
+            # )
         ])
     
     # Validation transforms (no augmentation)
