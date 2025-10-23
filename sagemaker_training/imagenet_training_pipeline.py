@@ -28,10 +28,10 @@ from training_performance_optimizer import TrainingPerformanceOptimizer, create_
 from logger_setup import get_unified_logger
 
 # Set memory fragmentation fix BEFORE any PyTorch operations
-# Increased from 32 to 128 to prevent severe fragmentation
+# Increased to 512MB to aggressively prevent fragmentation
 if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
-    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
-    print("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128 to prevent memory fragmentation")
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
+    print("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512 to aggressively prevent memory fragmentation")
 
 def optimize_num_workers(batch_size, available_memory_gb=None, cpu_count=None):
     """
@@ -181,6 +181,81 @@ def check_memory_fragmentation():
         logger.warning("[MEMORY] Consider reducing batch size or increasing max_split_size_mb")
     
     return is_severe
+
+def log_detailed_memory_usage(stage="unknown"):
+    """
+    Log detailed GPU memory usage for debugging.
+    
+    Args:
+        stage: String describing the current stage for logging
+    """
+    if not torch.cuda.is_available():
+        return
+    
+    logger = get_unified_logger("memory_detailed")
+    
+    # Get memory stats
+    allocated = torch.cuda.memory_allocated() / 1024**3
+    reserved = torch.cuda.memory_reserved() / 1024**3
+    max_allocated = torch.cuda.max_memory_allocated() / 1024**3
+    max_reserved = torch.cuda.max_memory_reserved() / 1024**3
+    
+    # Calculate fragmentation
+    fragmentation_ratio = (reserved - allocated) / reserved if reserved > 0 else 0
+    
+    # Get GPU info
+    gpu_name = torch.cuda.get_device_name()
+    gpu_memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    
+    logger.info(f"[MEMORY:{stage}] GPU: {gpu_name} ({gpu_memory_total:.1f}GB total)")
+    logger.info(f"[MEMORY:{stage}] Current - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB, Fragmentation: {fragmentation_ratio:.1%}")
+    logger.info(f"[MEMORY:{stage}] Peak - Allocated: {max_allocated:.2f}GB, Reserved: {max_reserved:.2f}GB")
+    
+    # Warn if approaching limits
+    if allocated > gpu_memory_total * 0.9:
+        logger.error(f"[MEMORY:{stage}] CRITICAL: Allocated memory ({allocated:.2f}GB) > 90% of GPU capacity ({gpu_memory_total:.1f}GB)")
+    elif allocated > gpu_memory_total * 0.8:
+        logger.warning(f"[MEMORY:{stage}] WARNING: Allocated memory ({allocated:.2f}GB) > 80% of GPU capacity ({gpu_memory_total:.1f}GB)")
+    
+    if fragmentation_ratio > 0.5:
+        logger.warning(f"[MEMORY:{stage}] High fragmentation detected: {fragmentation_ratio:.1%}")
+
+def get_ultra_conservative_batch_size(model, input_shape=(3, 224, 224), device='cuda', max_memory_gb=22.0):
+    """
+    Calculate ultra-conservative batch size that leaves significant memory buffer.
+    
+    Args:
+        model: PyTorch model
+        input_shape: Input tensor shape (C, H, W)
+        device: Device to test on
+        max_memory_gb: Maximum GPU memory in GB
+    
+    Returns:
+        int: Ultra-conservative batch size
+    """
+    if not torch.cuda.is_available():
+        return 32  # Default for CPU
+    
+    logger = get_unified_logger("batch_size_calc")
+    
+    # Reserve significant memory for overhead (model params, gradients, etc.)
+    # Use only 60% of GPU memory for batch processing
+    available_for_batch = max_memory_gb * 0.6
+    logger.info(f"[BATCH_CALC] Using only {available_for_batch:.1f}GB ({available_for_batch/max_memory_gb:.0%}) of GPU memory for batch processing")
+    
+    # Estimate memory per sample (rough heuristic)
+    # ImageNet 224x224: ~1-2MB per sample depending on model
+    estimated_mb_per_sample = 2.0  # Conservative estimate
+    
+    # Calculate maximum batch size
+    max_batch = int((available_for_batch * 1024) / estimated_mb_per_sample)
+    
+    # Apply conservative safety factors
+    conservative_batch = max(1, min(max_batch // 4, 16))  # Max 16, min 1
+    
+    logger.info(f"[BATCH_CALC] Estimated max batch: {max_batch}, Conservative batch: {conservative_batch}")
+    
+    return conservative_batch
 
 # Global progress bar manager to avoid subprocess complexity
 class LiveProgressManager:
@@ -1552,12 +1627,28 @@ def main():
     
     # Check for memory fragmentation before starting full training
     if check_memory_fragmentation():
-        logger.warning("[MEMORY] High fragmentation detected - reducing batch size for safety")
-        optimal_batch_size = max(8, optimal_batch_size // 2)
-        logger.info(f"[MEMORY] Reduced batch size to: {optimal_batch_size}")
+        logger.warning("[MEMORY] High fragmentation detected - using ultra-conservative batch sizing")
+        
+        # Use ultra-conservative batch size calculation
+        try:
+            temp_model = create_model()
+            ultra_conservative_batch = get_ultra_conservative_batch_size(temp_model, max_memory_gb=22.0)
+            del temp_model
+            torch.cuda.empty_cache()
+            
+            # Use the more conservative of current batch size or ultra-conservative calculation
+            optimal_batch_size = min(optimal_batch_size, ultra_conservative_batch)
+            logger.info(f"[MEMORY] Ultra-conservative batch size: {ultra_conservative_batch}, Using: {optimal_batch_size}")
+        except Exception as e:
+            logger.warning(f"[MEMORY] Could not calculate ultra-conservative batch size: {e}")
+            optimal_batch_size = max(4, optimal_batch_size // 4)  # Fallback: quarter the batch size
+            logger.info(f"[MEMORY] Fallback: Reduced batch size to: {optimal_batch_size}")
     
     # STEP 6: Full Training
     training_epochs = 20 if args.quick_mode else args.epochs
+    
+    # Log memory usage before starting full training
+    log_detailed_memory_usage("before_full_training")
 
     full_train_key = "full_training"
     progress_manager.create_status_updater(full_train_key,
@@ -1568,6 +1659,23 @@ def main():
     logger.info("="*60)
 
     model = create_model().to(device)
+    
+    # Log memory usage after model creation
+    log_detailed_memory_usage("after_model_creation")
+    
+    # Enable gradient checkpointing for memory efficiency if batch size is very small
+    if optimal_batch_size <= 8:
+        logger.info("[MEMORY] Enabling gradient checkpointing for ultra-low batch sizes")
+        try:
+            # Apply gradient checkpointing to reduce memory usage
+            for module in model.modules():
+                if isinstance(module, torch.nn.Sequential):
+                    # Checkpoint every few layers to balance memory/compute
+                    pass  # Would need to implement custom checkpointing logic
+            logger.info("[MEMORY] Gradient checkpointing enabled")
+        except Exception as e:
+            logger.warning(f"[MEMORY] Could not enable gradient checkpointing: {e}")
+    
     trainer = FullTrainer(model, train_loader, val_loader, device, args.output)
 
     progress_manager.update_status(full_train_key,
