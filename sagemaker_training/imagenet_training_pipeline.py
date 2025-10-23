@@ -24,6 +24,7 @@ import logging
 from imagenet_models import resnet50_imagenet
 from imagenet_dataset import get_imagenet_dataloaders
 from ilsvrc_dataset import get_ilsvrc_dataloaders
+from training_performance_optimizer import TrainingPerformanceOptimizer, create_optimized_trainer
 from logger_setup import get_unified_logger
 
 # Global progress bar manager to avoid subprocess complexity
@@ -520,6 +521,13 @@ class HyperparameterOptimizer:
                 'val_acc': result['final_val_acc'],
                 'best_so_far': max(r['best_val_acc'] for r in results)
             })
+            
+            # Clean up GPU memory to prevent OOM
+            del model, optimizer, criterion, scheduler
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
         
         progress_manager.close_progress_bar()
         
@@ -628,7 +636,7 @@ class FullTrainer:
         }
         
     def train(self, lr_config, epochs, batch_size, weight_decay=1e-4, 
-              save_checkpoints=True, early_stopping_patience=10, args=None):
+              save_checkpoints=True, early_stopping_patience=10, args=None, performance_optimizer=None):
         """Full training with OneCycle LR and cyclical momentum"""
         
         logger = get_unified_logger()
@@ -638,13 +646,37 @@ class FullTrainer:
         logger.info(f"   [WEIGHT]  Weight Decay: {weight_decay:.2e}")
         logger.info(f"   [BATCH] Batch Size: {batch_size}")
         
-        # Setup optimizer and scheduler
-        optimizer = optim.SGD(self.model.parameters(), lr=lr_config['min_lr'],
+        # Scale learning rate based on batch size using TrainingPerformanceOptimizer
+        base_min_lr = lr_config['min_lr']
+        base_max_lr = lr_config['max_lr']
+        
+        if performance_optimizer:
+            logger.info("[OPTIMIZER] Scaling learning rates for batch size...")
+            scaled_min_lr = performance_optimizer.scale_learning_rate_for_batch_size(
+                base_lr=base_min_lr,
+                base_batch_size=32,  # Standard batch size used for LR range test
+                current_batch_size=batch_size,
+                scaling_factor=1.0
+            )
+            scaled_max_lr = performance_optimizer.scale_learning_rate_for_batch_size(
+                base_lr=base_max_lr,
+                base_batch_size=32,  # Standard batch size used for LR range test
+                current_batch_size=batch_size,
+                scaling_factor=1.0
+            )
+            logger.info(f"[OPTIMIZER] LR scaled: {base_min_lr:.2e}→{scaled_min_lr:.2e}, {base_max_lr:.2e}→{scaled_max_lr:.2e}")
+        else:
+            scaled_min_lr = base_min_lr
+            scaled_max_lr = base_max_lr
+            logger.info("[OPTIMIZER] No performance optimizer provided, using original LRs")
+        
+        # Setup optimizer and scheduler with scaled LRs
+        optimizer = optim.SGD(self.model.parameters(), lr=scaled_min_lr,
                             momentum=0.85, weight_decay=weight_decay, nesterov=True)
         
         scheduler = OneCycleLR(
             optimizer, 
-            max_lr=lr_config['max_lr'],
+            max_lr=scaled_max_lr,
             epochs=epochs,
             steps_per_epoch=len(self.train_loader),
             pct_start=0.3,
@@ -688,7 +720,7 @@ class FullTrainer:
             progress_manager.create_status_updater(epoch_status_key, f"[PROGRESS] Epoch {epoch+1}/{epochs} - Training...")
 
             # Training
-            train_loss, train_acc = self._train_epoch(optimizer, criterion, scheduler, scaler)
+            train_loss, train_acc = self._train_epoch(optimizer, criterion, scheduler, scaler, performance_optimizer)
 
             # Update status to validation phase
             progress_manager.update_status(epoch_status_key, f"[PROGRESS] Epoch {epoch+1}/{epochs} - Validating...")
@@ -710,6 +742,12 @@ class FullTrainer:
 
             # Finalize the epoch status
             progress_manager.finalize_status(epoch_status_key)
+            
+            # Clean up GPU memory at end of each epoch to prevent accumulation across epochs
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
             
             # Save best model
             if val_acc > best_val_acc:
@@ -737,8 +775,8 @@ class FullTrainer:
         progress_manager.finalize_status(completion_key)
         return self.history
     
-    def _train_epoch(self, optimizer, criterion, scheduler, scaler=None):
-        """Train one epoch with optional mixed precision"""
+    def _train_epoch(self, optimizer, criterion, scheduler, scaler=None, performance_optimizer=None):
+        """Train one epoch with optional mixed precision and performance optimization"""
         self.model.train()
         running_loss = 0.0
         correct = 0
@@ -747,42 +785,57 @@ class FullTrainer:
         # Use progress manager for clean progress tracking
         progress_manager.create_progress_bar("Training", len(self.train_loader))
         
-        for batch_idx, (inputs, targets) in enumerate(self.train_loader):
+        for batch_idx, batch_data in enumerate(self.train_loader):
+            inputs, targets = batch_data
             inputs, targets = inputs.to(self.device), targets.to(self.device)
             
-            optimizer.zero_grad()
-            
-            # Mixed precision training
-            if scaler:
-                with torch.cuda.amp.autocast():
+            # Use TrainingPerformanceOptimizer for optimized training step if available
+            if performance_optimizer:
+                step_metrics = performance_optimizer.optimize_training_step((inputs, targets), step_type='train')
+                loss = step_metrics['loss']
+                
+                # Update optimizer and scheduler manually since optimizer is managed by performance_optimizer
+                scheduler.step()
+                
+                # Get predictions for accuracy calculation
+                with torch.no_grad():
+                    outputs = self.model(inputs)
+                    _, predicted = outputs.max(1)
+            else:
+                # Original training step logic
+                optimizer.zero_grad()
+                
+                # Mixed precision training
+                if scaler:
+                    with torch.cuda.amp.autocast():
+                        outputs = self.model(inputs)
+                        loss = criterion(outputs, targets)
+                    
+                    # Scale loss and backpropagate
+                    scaler.scale(loss).backward()
+                    
+                    # Gradient clipping with scaler
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    
+                    # Optimizer step with scaler
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    # Standard precision training
                     outputs = self.model(inputs)
                     loss = criterion(outputs, targets)
+                    loss.backward()
+                    
+                    # Gradient clipping
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    
+                    optimizer.step()
                 
-                # Scale loss and backpropagate
-                scaler.scale(loss).backward()
-                
-                # Gradient clipping with scaler
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                
-                # Optimizer step with scaler
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                # Standard precision training
-                outputs = self.model(inputs)
-                loss = criterion(outputs, targets)
-                loss.backward()
-                
-                # Gradient clipping
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                
-                optimizer.step()
+                scheduler.step()
+                _, predicted = outputs.max(1)
             
-            scheduler.step()
-            
-            running_loss += loss.item()
-            _, predicted = outputs.max(1)
+            running_loss += loss
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
             
@@ -792,6 +845,11 @@ class FullTrainer:
                 'accuracy': 100.*correct/total,
                 'lr': optimizer.param_groups[0]["lr"]
             })
+            
+            # Clean up GPU memory after each batch to prevent accumulation
+            del inputs, targets, outputs, loss, predicted
+            if torch.cuda.is_available() and (batch_idx + 1) % 100 == 0:  # Clean every 100 batches
+                torch.cuda.empty_cache()
         
         progress_manager.close_progress_bar()
         return running_loss / len(self.train_loader), 100. * correct / total
@@ -822,6 +880,11 @@ class FullTrainer:
                     'loss': running_loss/(batch_idx + 1),
                     'accuracy': 100.*correct/total
                 })
+                
+                # Clean up GPU memory after each validation batch
+                del inputs, targets, outputs, loss, predicted
+                if torch.cuda.is_available() and (batch_idx + 1) % 50 == 0:  # Clean every 50 batches (validation usually smaller)
+                    torch.cuda.empty_cache()
             
             progress_manager.close_progress_bar()
         
@@ -907,7 +970,7 @@ def main():
     import os
     
     # Set up unified logging first thing
-    logger = get_unified_logger("imagenet_pipeline")
+    logger = get_unified_logger("imagenet_training_pipeline")
     
     # =============================================================================
     # SAGEMAKER TRAINING STARTED - SIMPLE STATUS LOG
@@ -1043,31 +1106,52 @@ def main():
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 logger.info(f"[DEVICE]  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
-            # Create a temporary model to test batch sizes
+            
+            # Create temporary model and optimizer for batch size detection using TrainingPerformanceOptimizer
             logger.info("[DEBUG] DEBUG: About to create temporary model for batch size detection")
             temp_model = create_model().to(device)
-            logger.info("[DEBUG] DEBUG: Temporary model created and moved to device")
+            temp_optimizer = optim.SGD(temp_model.parameters(), lr=1e-3, momentum=0.9)
+            temp_criterion = nn.CrossEntropyLoss()
+            
+            # Create temporary optimizer instance for batch size detection
+            temp_performance_optimizer = TrainingPerformanceOptimizer(
+                model=temp_model,
+                optimizer=temp_optimizer,
+                criterion=temp_criterion,
+                train_loader=None,  # Not needed for batch size detection
+                val_loader=None,
+                device=device,
+                enable_amp=not args.no_amp,
+                enable_profiling=False  # Disable profiling for batch size detection
+            )
+            
+            # Use optimizer's batch size detection method
+            max_memory_gb = 14.0 if torch.cuda.is_available() else 4.0  # Adjust based on GPU availability
+            optimal_batch_size = temp_performance_optimizer.get_optimal_batch_size(max_memory_gb=max_memory_gb)
+            
+            # Apply safety factors based on mode
+            if args.quick_mode:
+                safety_factor = 0.5  # Conservative for quick mode
+                logger.info("[QUICK] Quick mode: Using conservative batch size for training stability")
+            else:
+                safety_factor = 0.8  # Less conservative for full training
+                logger.info("[FULL] Full training: Using optimized batch size")
+            
+            initial_batch_size = int(optimal_batch_size * safety_factor)
+            # Ensure it's a power of 2 and at least 1
+            initial_batch_size = max(1, 2 ** int(np.log2(initial_batch_size))) if initial_batch_size > 0 else 32
+            
+            logger.info(f"[COMPLETE] Optimal batch size: {initial_batch_size} (optimizer: {optimal_batch_size}, safety: {safety_factor})")
+            
+            # Clean up temporary resources
+            del temp_model, temp_optimizer, temp_criterion, temp_performance_optimizer
+            torch.cuda.empty_cache()
+            
         except Exception as e:
-            logger.error(f"[ERROR] DEBUG: Error in batch size detection setup: {e}")
-            raise
-        max_batch_size = BatchSizeFinder.find_max_batch_size(temp_model, (3, 224, 224), device)
-        # Use different safety factors based on mode and GPU availability
-        if torch.cuda.is_available():
-            safety_factor = 1.0  # No safety factor for CUDA GPUs (use full detected capacity)
-            logger.info("[GPU] CUDA GPU detected: Using full batch size capacity (no safety factor)")
-        elif args.quick_mode:
-            safety_factor = 0.25  # Very conservative for quick mode (training uses more memory than inference)
-            logger.info("[START] Quick mode: Using very conservative batch size for training stability")
-        else:
-            safety_factor = 0.5  # Conservative safety factor (training uses ~2x memory of inference)
-        initial_batch_size = int(max_batch_size * safety_factor)
-        # Ensure it's a power of 2 and at least 1
-        initial_batch_size = max(1, 2 ** int(np.log2(initial_batch_size))) if initial_batch_size > 0 else 32
-        logger.info(f"[COMPLETE] Optimal batch size: {initial_batch_size} (max: {max_batch_size}, safety: {safety_factor})")
-        # Clean up temporary model
-        del temp_model
-        torch.cuda.empty_cache()
-        logger.debug(f"[DEBUG] DEBUG: Batch size detection completed, using batch size: {initial_batch_size}")
+            logger.error(f"[ERROR] DEBUG: Error in batch size detection: {e}")
+            # Fallback to default batch size
+            initial_batch_size = 32
+            logger.warning(f"[FALLBACK] Using default batch size: {initial_batch_size}")
     else:
         initial_batch_size = args.batch_size
         logger.info(f"[SIZE] Using specified batch size: {initial_batch_size}")
@@ -1103,6 +1187,44 @@ def main():
     progress_manager.close_progress_bar()
     logger.info(f"[ANALYSIS] Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
     logger.debug(f"[DEBUG] DEBUG: Dataset sizes - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
+    
+    # Initialize Training Performance Optimizer for data loading optimization
+    logger.info("[OPTIMIZER] Initializing TrainingPerformanceOptimizer for data loading optimization...")
+    try:
+        # Create temporary model and optimizer for optimizer initialization
+        temp_model = create_model().to(device)
+        temp_optimizer = optim.SGD(temp_model.parameters(), lr=1e-3, momentum=0.9)
+        temp_criterion = nn.CrossEntropyLoss()
+        
+        # Create optimizer instance
+        performance_optimizer = TrainingPerformanceOptimizer(
+            model=temp_model,
+            optimizer=temp_optimizer,
+            criterion=temp_criterion,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            device=device,
+            enable_amp=not args.no_amp,
+            enable_profiling=True
+        )
+        
+        # Optimize data loading
+        logger.info("[OPTIMIZER] Optimizing data loading pipeline...")
+        optimized_train_loader, optimized_val_loader = performance_optimizer.optimize_data_loading(target_workers=16)
+        
+        # Replace original loaders with optimized ones
+        train_loader = optimized_train_loader
+        if optimized_val_loader is not None:
+            val_loader = optimized_val_loader
+        logger.info("[OPTIMIZER] ✅ Data loading optimization complete")
+        
+        # Clean up temporary resources
+        del temp_model, temp_optimizer, temp_criterion
+        
+    except Exception as e:
+        logger.warning(f"[OPTIMIZER] ⚠️ Failed to initialize performance optimizer: {e}")
+        logger.warning("[OPTIMIZER] Continuing with standard data loading...")
+        performance_optimizer = None
     
     # =============================================================================
     # STARTING 7-STEP IMAGENET TRAINING PIPELINE
@@ -1217,11 +1339,29 @@ def main():
         weight_decay=best_weight_decay,
         save_checkpoints=True,
         early_stopping_patience=15 if not args.quick_mode else 5,
-        args=args
+        args=args,
+        performance_optimizer=performance_optimizer
     )
 
     progress_manager.update_status(full_train_key, f"[OK] STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")
     progress_manager.finalize_status(full_train_key)
+    
+    # Performance Optimization Summary
+    if performance_optimizer:
+        logger.info("="*60)
+        logger.info("[OPTIMIZER] Performance Optimization Summary")
+        logger.info("="*60)
+        try:
+            optimization_summary = performance_optimizer.get_optimization_summary()
+            logger.info(optimization_summary)
+            
+            # Save optimization summary to file
+            summary_file = os.path.join(args.output, 'optimization_summary.txt')
+            with open(summary_file, 'w') as f:
+                f.write(optimization_summary)
+            logger.info(f"[SAVE] Optimization summary saved to: {summary_file}")
+        except Exception as e:
+            logger.warning(f"[OPTIMIZER] Failed to generate optimization summary: {e}")
     
     # STEP 7: Results Analysis and Plotting
     logger.info("="*60)
