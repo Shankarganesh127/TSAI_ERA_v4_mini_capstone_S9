@@ -1048,6 +1048,7 @@ def main():
     parser.add_argument('--output', type=str, default='./imagenet_pipeline_results', help='Output directory')
     parser.add_argument('--batch-size', type=int, default=None, help='Batch size (auto-detect if not specified)')
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
+    parser.add_argument('--num-workers', type=int, default=8, help='Number of data loading workers')
     parser.add_argument('--quick-mode', action='store_true', help='Enable quick mode for faster testing')
     parser.add_argument('--no-amp', action='store_true', help='Disable mixed precision training')
     parser.add_argument('--no-compile', action='store_true', help='Disable torch.compile optimization')
@@ -1214,7 +1215,7 @@ def main():
     try:
         progress_manager.update_progress(1, {'step': 'Loading training dataset'})
         train_loader, val_loader = get_imagenet_dataloaders(
-            train=args.train, val=args.val, batch_size=initial_batch_size, num_workers=8, 
+            train=args.train, val=args.val, batch_size=initial_batch_size, num_workers=args.num_workers, 
             lightweight_augs=args.lightweight_augs)
         progress_manager.update_progress(2, {'step': 'Loading validation dataset'})
         logger.debug("[DEBUG] DEBUG: Dataset loading completed successfully")
