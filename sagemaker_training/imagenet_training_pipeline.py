@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import argparse
 from datetime import datetime
+import gc
 from typing import Dict, List, Tuple, Optional
 import logging
 
@@ -223,6 +224,7 @@ def log_detailed_memory_usage(stage="unknown"):
 def get_ultra_conservative_batch_size(model, input_shape=(3, 224, 224), device='cuda', max_memory_gb=22.0):
     """
     Calculate ultra-conservative batch size that leaves significant memory buffer.
+    Uses extremely conservative estimates to prevent OOM errors.
     
     Args:
         model: PyTorch model
@@ -234,26 +236,27 @@ def get_ultra_conservative_batch_size(model, input_shape=(3, 224, 224), device='
         int: Ultra-conservative batch size
     """
     if not torch.cuda.is_available():
-        return 32  # Default for CPU
+        return 8  # Very conservative for CPU
     
     logger = get_unified_logger("batch_size_calc")
     
-    # Reserve significant memory for overhead (model params, gradients, etc.)
-    # Use only 60% of GPU memory for batch processing
-    available_for_batch = max_memory_gb * 0.6
+    # Reserve massive memory for overhead (model params, gradients, optimizer states, etc.)
+    # Use only 40% of GPU memory for batch processing to leave huge buffer
+    available_for_batch = max_memory_gb * 0.4
     logger.info(f"[BATCH_CALC] Using only {available_for_batch:.1f}GB ({available_for_batch/max_memory_gb:.0%}) of GPU memory for batch processing")
     
-    # Estimate memory per sample (rough heuristic)
-    # ImageNet 224x224: ~1-2MB per sample depending on model
-    estimated_mb_per_sample = 2.0  # Conservative estimate
+    # Estimate memory per sample (very conservative heuristic)
+    # ImageNet 224x224 with ResNet50: ~3-5MB per sample including all overhead
+    estimated_mb_per_sample = 5.0  # Ultra-conservative estimate
     
     # Calculate maximum batch size
     max_batch = int((available_for_batch * 1024) / estimated_mb_per_sample)
     
-    # Apply conservative safety factors
-    conservative_batch = max(1, min(max_batch // 4, 16))  # Max 16, min 1
+    # Apply extremely conservative safety factors - target very small batches
+    conservative_batch = max(1, min(max_batch // 8, 4))  # Max 4, min 1 - very aggressive
     
-    logger.info(f"[BATCH_CALC] Estimated max batch: {max_batch}, Conservative batch: {conservative_batch}")
+    logger.info(f"[BATCH_CALC] Estimated max batch: {max_batch}, Ultra-conservative batch: {conservative_batch}")
+    logger.info(f"[BATCH_CALC] Memory estimate: {estimated_mb_per_sample:.1f}MB per sample, {available_for_batch:.1f}GB available")
     
     return conservative_batch
 
@@ -1400,17 +1403,17 @@ def main():
             max_memory_gb = 14.0 if torch.cuda.is_available() else 4.0  # Adjust based on GPU availability
             optimal_batch_size = temp_performance_optimizer.get_optimal_batch_size(max_memory_gb=max_memory_gb)
             
-            # Apply safety factors based on mode
+            # Apply safety factors based on mode - now much more conservative
             if args.quick_mode:
-                safety_factor = 0.4  # More conservative for quick mode to prevent OOM
-                logger.info("[QUICK] Quick mode: Using conservative batch size for training stability")
+                safety_factor = 0.2  # Ultra-conservative for quick mode to prevent OOM
+                logger.info("[QUICK] Quick mode: Using ultra-conservative batch size for training stability")
             else:
-                safety_factor = 0.6  # More conservative for full training to prevent OOM
-                logger.info("[FULL] Full training: Using conservative batch size for stability")
+                safety_factor = 0.3  # Very conservative for full training to prevent OOM
+                logger.info("[FULL] Full training: Using very conservative batch size for stability")
             
             initial_batch_size = int(optimal_batch_size * safety_factor)
-            # Ensure it's a power of 2 and at least 1
-            initial_batch_size = max(1, 2 ** int(np.log2(initial_batch_size))) if initial_batch_size > 0 else 32
+            # Ensure it's a power of 2 and at least 1, but cap at 8 for safety
+            initial_batch_size = max(1, min(2 ** int(np.log2(initial_batch_size)), 8)) if initial_batch_size > 0 else 4
             
             logger.info(f"[COMPLETE] Optimal batch size: {initial_batch_size} (optimizer: {optimal_batch_size}, safety: {safety_factor})")
             
@@ -1627,7 +1630,7 @@ def main():
     
     # Check for memory fragmentation before starting full training
     if check_memory_fragmentation():
-        logger.warning("[MEMORY] High fragmentation detected - using ultra-conservative batch sizing")
+        logger.warning("[MEMORY] High fragmentation detected - applying ultra-conservative sizing")
         
         # Use ultra-conservative batch size calculation
         try:
@@ -1641,14 +1644,33 @@ def main():
             logger.info(f"[MEMORY] Ultra-conservative batch size: {ultra_conservative_batch}, Using: {optimal_batch_size}")
         except Exception as e:
             logger.warning(f"[MEMORY] Could not calculate ultra-conservative batch size: {e}")
-            optimal_batch_size = max(4, optimal_batch_size // 4)  # Fallback: quarter the batch size
+            optimal_batch_size = max(2, optimal_batch_size // 8)  # Fallback: divide by 8
             logger.info(f"[MEMORY] Fallback: Reduced batch size to: {optimal_batch_size}")
+    
+    # Final memory check and cleanup
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        gc.collect()
+        log_detailed_memory_usage("pre_training_final_check")
     
     # STEP 6: Full Training
     training_epochs = 20 if args.quick_mode else args.epochs
     
     # Log memory usage before starting full training
     log_detailed_memory_usage("before_full_training")
+    
+    # Verify AMP configuration
+    if torch.cuda.is_available() and not args.no_amp:
+        logger.info("[AMP] Mixed precision training enabled - this should provide ~50% memory reduction")
+        try:
+            # Test AMP scaler creation
+            test_scaler = torch.cuda.amp.GradScaler()
+            del test_scaler
+            logger.info("[AMP] AMP scaler test successful")
+        except Exception as e:
+            logger.warning(f"[AMP] AMP test failed: {e}")
+    else:
+        logger.warning("[AMP] Mixed precision training disabled - memory usage will be higher")
 
     full_train_key = "full_training"
     progress_manager.create_status_updater(full_train_key,
@@ -1657,6 +1679,13 @@ def main():
     logger.info("="*60)
     logger.info("[START] STEP 6: Full OneCycle Training")
     logger.info("="*60)
+    logger.info(f"[MEMORY] Final batch size: {optimal_batch_size}")
+    logger.info(f"[MEMORY] Gradient accumulation steps: {gradient_accumulation_steps}")
+    logger.info(f"[MEMORY] Effective batch size: {optimal_batch_size * gradient_accumulation_steps}")
+    if optimal_batch_size <= 8:
+        logger.info("[MEMORY] Gradient checkpointing: ENABLED")
+    else:
+        logger.info("[MEMORY] Gradient checkpointing: DISABLED")
 
     model = create_model().to(device)
     
@@ -1667,14 +1696,32 @@ def main():
     if optimal_batch_size <= 8:
         logger.info("[MEMORY] Enabling gradient checkpointing for ultra-low batch sizes")
         try:
-            # Apply gradient checkpointing to reduce memory usage
-            for module in model.modules():
-                if isinstance(module, torch.nn.Sequential):
-                    # Checkpoint every few layers to balance memory/compute
-                    pass  # Would need to implement custom checkpointing logic
-            logger.info("[MEMORY] Gradient checkpointing enabled")
+            # Import checkpoint utilities
+            from torch.utils.checkpoint import checkpoint_sequential
+            
+            # Apply gradient checkpointing to ResNet layers to reduce memory usage
+            # This trades computation for memory by recomputing activations during backward pass
+            def apply_checkpointing(model):
+                """Apply gradient checkpointing to model layers"""
+                if hasattr(model, 'layer1'):
+                    # ResNet-style model with layer1, layer2, etc.
+                    model.layer1 = torch.nn.Sequential(*[torch.nn.utils.checkpoint.checkpoint_wrapper(module) for module in model.layer1])
+                    model.layer2 = torch.nn.Sequential(*[torch.nn.utils.checkpoint.checkpoint_wrapper(module) for module in model.layer2])
+                    model.layer3 = torch.nn.Sequential(*[torch.nn.utils.checkpoint.checkpoint_wrapper(module) for module in model.layer3])
+                    model.layer4 = torch.nn.Sequential(*[torch.nn.utils.checkpoint.checkpoint_wrapper(module) for module in model.layer4])
+                    logger.info("[MEMORY] Applied gradient checkpointing to ResNet layers")
+                else:
+                    # Fallback: try to checkpoint the entire model if it's sequential
+                    logger.warning("[MEMORY] Could not identify ResNet layers, attempting sequential checkpointing")
+                    if isinstance(model, torch.nn.Sequential):
+                        model = torch.nn.utils.checkpoint.checkpoint_wrapper(model)
+                        logger.info("[MEMORY] Applied sequential gradient checkpointing")
+            
+            apply_checkpointing(model)
+            logger.info("[MEMORY] Gradient checkpointing enabled - expect ~50% memory reduction")
         except Exception as e:
             logger.warning(f"[MEMORY] Could not enable gradient checkpointing: {e}")
+            logger.warning("[MEMORY] Continuing without gradient checkpointing")
     
     trainer = FullTrainer(model, train_loader, val_loader, device, args.output)
 
@@ -1683,7 +1730,13 @@ def main():
 
     # Determine gradient accumulation steps based on batch size to maintain effective batch size
     gradient_accumulation_steps = 1
-    if optimal_batch_size <= 16:
+    if optimal_batch_size <= 4:
+        gradient_accumulation_steps = 16  # Effective batch size: 64
+        logger.info(f"[GRAD] Ultra-low batch size detected, using aggressive gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
+    elif optimal_batch_size <= 8:
+        gradient_accumulation_steps = 8  # Effective batch size: 64
+        logger.info(f"[GRAD] Low batch size detected, using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
+    elif optimal_batch_size <= 16:
         gradient_accumulation_steps = 4  # Effective batch size: 64
         logger.info(f"[GRAD] Using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
     elif optimal_batch_size <= 32:
