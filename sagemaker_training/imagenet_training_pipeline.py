@@ -32,6 +32,103 @@ if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32'
     print("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32 to prevent memory fragmentation")
 
+def optimize_num_workers(batch_size, available_memory_gb=None, cpu_count=None):
+    """
+    Optimize num_workers for DataLoader based on system resources and batch size.
+
+    Strategy:
+    1. Start with CPU cores - 1 as baseline
+    2. Adjust based on available memory to prevent excessive RAM usage
+    3. Consider batch size impact on memory footprint
+    4. Cap at reasonable maximum (8) to avoid diminishing returns
+
+    Args:
+        batch_size: Current batch size being used
+        available_memory_gb: Available system RAM in GB (auto-detected if None)
+        cpu_count: Number of CPU cores (auto-detected if None)
+
+    Returns:
+        int: Optimal num_workers value
+    """
+    import psutil
+    import multiprocessing as mp
+
+    # Auto-detect system resources
+    if cpu_count is None:
+        cpu_count = mp.cpu_count()
+    if available_memory_gb is None:
+        available_memory_gb = psutil.virtual_memory().available / (1024**3)
+
+    # Base calculation: CPU cores - 1 (leave one core for main process)
+    base_workers = max(1, cpu_count - 1)
+
+    # Memory-based adjustment (rough heuristic)
+    # Assume ~500MB per worker for typical ImageNet preprocessing
+    memory_per_worker_mb = 500
+    max_workers_by_memory = int(available_memory_gb * 1024 / memory_per_worker_mb)
+
+    # Batch size adjustment (larger batches need fewer workers to avoid memory pressure)
+    if batch_size >= 128:
+        batch_factor = 0.7  # Reduce workers for large batches
+    elif batch_size >= 64:
+        batch_factor = 0.8
+    elif batch_size >= 32:
+        batch_factor = 0.9
+    else:
+        batch_factor = 1.0  # Small batches can use more workers
+
+    # Calculate optimal workers
+    optimal_workers = min(base_workers, max_workers_by_memory)
+    optimal_workers = int(optimal_workers * batch_factor)
+    optimal_workers = max(1, min(optimal_workers, 8))  # Cap between 1-8
+
+    return optimal_workers
+
+def monitor_gpu_utilization(duration_seconds=5):
+    """
+    Monitor GPU utilization over a period to determine if data loading is bottleneck.
+
+    Returns:
+        dict: GPU utilization statistics
+    """
+    if not torch.cuda.is_available():
+        return {'avg_utilization': 0, 'is_bottleneck': False}
+    
+    try:
+        import subprocess
+        import time
+        
+        # Run nvidia-smi monitoring for the specified duration
+        cmd = ['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits', '--loop-ms=1000']
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        
+        utilizations = []
+        start_time = time.time()
+        
+        while time.time() - start_time < duration_seconds:
+            line = process.stdout.readline().strip()
+            if line and line.isdigit():
+                utilizations.append(int(line))
+            time.sleep(0.1)
+        
+        process.terminate()
+        
+        if utilizations:
+            avg_utilization = sum(utilizations) / len(utilizations)
+            # Consider GPU bottleneck if utilization is below 80%
+            is_bottleneck = avg_utilization < 80
+            return {
+                'avg_utilization': avg_utilization,
+                'is_bottleneck': is_bottleneck,
+                'samples': len(utilizations)
+            }
+        else:
+            return {'avg_utilization': 0, 'is_bottleneck': True, 'samples': 0}
+            
+    except Exception as e:
+        # Fallback if nvidia-smi monitoring fails
+        return {'avg_utilization': 50, 'is_bottleneck': False, 'error': str(e)}
+
 # Global progress bar manager to avoid subprocess complexity
 class LiveProgressManager:
     """Manages live updating progress bars and status messages to avoid subprocess issues"""
@@ -311,6 +408,11 @@ class LRFinder:
             # Backward pass
             loss.backward()
             self.optimizer.step()
+            
+            # Memory cleanup to prevent OOM
+            del outputs, loss
+            if i % 10 == 0:  # Clean cache every 10 iterations
+                torch.cuda.empty_cache()
             
             # Update learning rate
             for param_group in self.optimizer.param_groups:
@@ -1198,6 +1300,22 @@ def main():
         logger.info(f"[SIZE] Using specified batch size: {initial_batch_size}")
         logger.debug(f"[DEBUG] DEBUG: Using specified batch size: {initial_batch_size}")
     
+    # Optimize num_workers for balanced CPU/GPU utilization and memory usage
+    logger.info("[OPTIMIZE] Optimizing num_workers for DataLoader...")
+    original_num_workers = args.num_workers
+    optimized_num_workers = optimize_num_workers(initial_batch_size)
+    logger.info(f"[OPTIMIZE] Using optimized num_workers: {optimized_num_workers} (batch_size: {initial_batch_size}, original: {original_num_workers})")
+    
+    # Monitor GPU utilization to validate optimization
+    if torch.cuda.is_available():
+        gpu_stats = monitor_gpu_utilization(duration_seconds=2)
+        logger.info(f"[GPU] Initial GPU utilization: {gpu_stats['avg_utilization']:.1f}% (bottleneck: {gpu_stats['is_bottleneck']})")
+        if gpu_stats['is_bottleneck']:
+            logger.warning("[GPU] GPU utilization low - data loading may be bottleneck, num_workers optimization should help")
+    
+    # Override args.num_workers with optimized value
+    args.num_workers = optimized_num_workers
+    
     # Load data
     logger.info("[DATASET] Loading ImageNet dataset...")
     logger.debug("[DEBUG] DEBUG: About to load dataset")
@@ -1211,23 +1329,19 @@ def main():
     #        args.data, batch_size=initial_batch_size, num_workers=4)
     #else:
     logger.info("Using standard ImageNet dataset loader")
-    logger.debug(f"[DEBUG] DEBUG: Calling get_imagenet_dataloaders with train={args.train}, val={args.val}")
     try:
         progress_manager.update_progress(1, {'step': 'Loading training dataset'})
         train_loader, val_loader = get_imagenet_dataloaders(
             train=args.train, val=args.val, batch_size=initial_batch_size, num_workers=args.num_workers, 
             lightweight_augs=args.lightweight_augs)
         progress_manager.update_progress(2, {'step': 'Loading validation dataset'})
-        logger.debug("[DEBUG] DEBUG: Dataset loading completed successfully")
     except Exception as e:
         progress_manager.close_progress_bar()
-        logger.error(f"[DEBUG] DEBUG: Dataset loading failed with error: {e}")
-        logger.error(f"[ERROR] Dataset loading failed: {e}")
+        logger.error(f"Dataset loading failed: {e}")
         raise
     
     progress_manager.close_progress_bar()
-    logger.info(f"[ANALYSIS] Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
-    logger.debug(f"[DEBUG] DEBUG: Dataset sizes - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
+    logger.info(f"Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
     
     # Initialize Training Performance Optimizer for data loading optimization
     logger.info("[OPTIMIZER] Initializing TrainingPerformanceOptimizer for data loading optimization...")
@@ -1296,10 +1410,25 @@ def main():
 
         lr_finder = LRFinder(model, optimizer, criterion, device)
 
+        # Create a small batch size dataloader specifically for LR range test to prevent OOM
+        lr_test_batch_size = min(16, initial_batch_size // 4)  # Use much smaller batch size for LR test
+        lr_test_batch_size = max(8, lr_test_batch_size)  # Minimum batch size of 8
+        
+        # Optimize num_workers for LR test based on smaller batch size
+        lr_test_num_workers = optimize_num_workers(lr_test_batch_size)
+        lr_test_num_workers = min(lr_test_num_workers, 4)  # Cap at 4 for LR test to avoid overhead
+        
+        logger.info(f"[MEMORY] Creating LR range test dataloader with batch_size: {lr_test_batch_size}, num_workers: {lr_test_num_workers}")
+
+        lr_test_loader = get_imagenet_dataloaders(
+            train=args.train, val=args.val, batch_size=lr_test_batch_size,
+            num_workers=lr_test_num_workers, lightweight_augs=True  # Use lightweight augs for speed
+        )[0]  # Only need train loader
+
         num_iter = 100 if args.quick_mode else 200
 
         progress_manager.update_status(lr_step_key, f"[DEBUG] STEP 1: LR Range Test - Running {num_iter} iterations...")
-        lrs, losses = lr_finder.range_test(train_loader, num_iter=num_iter)
+        lrs, losses = lr_finder.range_test(lr_test_loader, num_iter=num_iter)
 
         # Plot results
         fig, min_lr = lr_finder.plot()
@@ -1318,7 +1447,7 @@ def main():
             json.dump({k: float(v) for k, v in lr_config.items()}, f, indent=2)
             
         # Clean up GPU memory to prevent OOM
-        del model, optimizer, criterion, lr_finder
+        del model, optimizer, criterion, lr_finder, lr_test_loader
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             import gc
