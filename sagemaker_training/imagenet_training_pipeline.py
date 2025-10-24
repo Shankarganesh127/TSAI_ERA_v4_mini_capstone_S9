@@ -1712,9 +1712,8 @@ def main():
             raise
     
         # STEP 0: Batch Size Detection (if not specified)
-        logger.debug("[DEBUG] DEBUG: Checking batch size")
     if args.batch_size is None:
-        logger.debug("[DEBUG] DEBUG: No batch size specified, starting batch size detection")
+        logger.info("[DEBUG] DEBUG: No batch size specified, starting batch size detection")
         logger.info("="*60)
         logger.info("[CONFIG] STEP 0: Batch Size Detection")
         logger.info("="*60)
@@ -1772,6 +1771,17 @@ def main():
             initial_batch_size = int(optimal_batch_size * safety_factor)
             # Ensure it's a power of 2 and at least 1, but cap at 8 for safety
             initial_batch_size = max(1, min(2 ** int(np.log2(initial_batch_size)), 8)) if initial_batch_size > 0 else 4
+            
+            # Check for multi-GPU scenario and adjust batch size per GPU if needed
+            if torch.cuda.is_available():
+                num_gpus = torch.cuda.device_count()
+                if num_gpus > 1:
+                    # For multi-GPU distributed training, batch size should be per GPU
+                    per_gpu_batch_size = max(1, initial_batch_size // (num_gpus))
+                    logger.warning(f"[MULTI-GPU] Specified batch size {initial_batch_size} detected with {num_gpus} GPUs")
+                    logger.warning(f"[MULTI-GPU] Adjusting to {per_gpu_batch_size} per GPU (total effective: {per_gpu_batch_size * num_gpus})")
+                    logger.warning(f"[MULTI-GPU] This ensures proper memory distribution across GPUs")
+                    initial_batch_size = per_gpu_batch_size
             
             logger.info(f"[COMPLETE] Optimal batch size: {initial_batch_size} (optimizer: {optimal_batch_size}, safety: {safety_factor})")
             
