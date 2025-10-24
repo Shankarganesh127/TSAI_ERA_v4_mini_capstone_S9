@@ -1788,6 +1788,17 @@ def main():
         initial_batch_size = args.batch_size
         logger.info(f"[SIZE] Using specified batch size: {initial_batch_size}")
         logger.debug(f"[DEBUG] DEBUG: Using specified batch size: {initial_batch_size}")
+        
+        # Check for multi-GPU scenario and adjust batch size per GPU if needed
+        if torch.cuda.is_available():
+            num_gpus = torch.cuda.device_count()
+            if num_gpus > 1:
+                # For multi-GPU distributed training, batch size should be per GPU
+                per_gpu_batch_size = max(1, initial_batch_size // (num_gpus))
+                logger.warning(f"[MULTI-GPU] Specified batch size {initial_batch_size} detected with {num_gpus} GPUs")
+                logger.warning(f"[MULTI-GPU] Adjusting to {per_gpu_batch_size} per GPU (total effective: {per_gpu_batch_size * num_gpus})")
+                logger.warning(f"[MULTI-GPU] This ensures proper memory distribution across GPUs")
+                initial_batch_size = per_gpu_batch_size
     
     # Optimize num_workers for balanced CPU/GPU utilization and memory usage
     logger.info("[OPTIMIZE] Optimizing num_workers for DataLoader...")
