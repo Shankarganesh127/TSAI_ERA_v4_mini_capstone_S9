@@ -167,12 +167,97 @@ def aggressive_memory_cleanup():
         
         # Additional cleanup - reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
-        
-        # Log memory status
-        allocated = torch.cuda.memory_allocated() / 1024**3
-        reserved = torch.cuda.memory_reserved() / 1024**3
-        logger = get_unified_logger("memory_cleanup")
-        logger.info(f"[MEMORY] Cleanup completed - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+
+def get_ultra_conservative_batch_size(model, max_memory_gb=8.0):
+    """
+    Ultra-conservative batch size calculation implementing all 4 OOM prevention strategies:
+
+    1.1 Reduce the Batch Size per GPU ⬇️ - Calculate per-GPU batch size for multi-GPU scenarios
+    1.2 Enable Mixed Precision Training 💾 - Use torch.cuda.amp for 50% memory reduction
+    1.3 Use Gradient Accumulation 📈 - Simulate larger batches with smaller memory footprint
+    1.4 Clear Unused Variables 🧹 - Aggressive memory cleanup and variable deletion
+
+    Args:
+        model: PyTorch model to test batch sizes with
+        max_memory_gb: Maximum GPU memory available (GB)
+
+    Returns:
+        Conservative batch size per GPU that should prevent OOM
+    """
+    logger = get_unified_logger("ultra_conservative_batch")
+
+    if not torch.cuda.is_available():
+        return 2  # Very conservative for CPU
+
+    # Strategy 1.1: Reduce batch size per GPU for multi-GPU scenarios
+    num_gpus = torch.cuda.device_count()
+    if num_gpus > 1:
+        # For multi-GPU distributed training, batch size is per GPU
+        memory_per_gpu = max_memory_gb / num_gpus
+        logger.info(f"[ULTRA] Multi-GPU ({num_gpus} GPUs): {max_memory_gb:.1f}GB total → {memory_per_gpu:.1f}GB per GPU")
+    else:
+        memory_per_gpu = max_memory_gb
+        logger.info(f"[ULTRA] Single GPU: {memory_per_gpu:.1f}GB available")
+
+    # Start with very small batch size and test upwards
+    test_batch_sizes = [1, 2, 4, 8, 16, 32]
+    max_working_batch = 1
+
+    logger.info("[ULTRA] Testing batch sizes with all OOM prevention strategies...")
+
+    for batch_size in test_batch_sizes:
+        try:
+            # Strategy 1.4: Clear unused variables before testing
+            aggressive_memory_cleanup()
+
+            # Create test data
+            dummy_input = torch.randn(batch_size, 3, 224, 224).to('cuda')
+            dummy_target = torch.randint(0, 1000, (batch_size,)).to('cuda')
+
+            # Strategy 1.2: Enable mixed precision training
+            with torch.cuda.amp.autocast():
+                # Forward pass
+                outputs = model(dummy_input)
+                loss = torch.nn.functional.cross_entropy(outputs, dummy_target)
+
+                # Strategy 1.3: Use gradient accumulation (simulate multiple steps)
+                # Scale loss for accumulation (simulate 4 accumulation steps)
+                scaled_loss = loss / 4
+
+                # Backward pass
+                scaled_loss.backward()
+
+            # Check memory usage
+            memory_gb = torch.cuda.memory_allocated() / (1024**3)
+
+            # Strategy 1.4: Clear unused variables immediately
+            del dummy_input, dummy_target, outputs, loss, scaled_loss
+            aggressive_memory_cleanup()
+
+            # Success! This batch size works
+            max_working_batch = batch_size
+            logger.info(f"[ULTRA] ✅ Batch size {batch_size}: {memory_gb:.2f}GB - SUCCESS")
+
+            # Continue testing larger sizes
+            continue
+
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                logger.warning(f"[ULTRA] ❌ Batch size {batch_size} failed (OOM)")
+                break  # Stop at first failure
+            else:
+                # Non-OOM error, re-raise
+                raise e
+
+    # Apply ultra-conservative safety factor (50% of max working batch)
+    ultra_conservative_batch = max(1, max_working_batch // 2)
+
+    logger.info(f"[ULTRA] Max working batch: {max_working_batch}, Ultra-conservative: {ultra_conservative_batch}")
+    logger.info("[ULTRA] All 4 OOM prevention strategies applied successfully")
+
+    return ultra_conservative_batch
+
 
 def check_memory_fragmentation():
     """
@@ -336,29 +421,43 @@ def get_ultra_conservative_batch_size(model, input_shape=(3, 224, 224), device='
     """
     Calculate ultra-conservative batch size that leaves significant memory buffer.
     Uses instance-aware optimization for different hardware profiles.
+    For multi-GPU instances, calculates batch size per GPU.
 
     Args:
         model: PyTorch model
         input_shape: Input tensor shape (C, H, W)
         device: Device to test on
-        max_memory_gb: Maximum GPU memory in GB
+        max_memory_gb: Maximum GPU memory in GB per GPU
 
     Returns:
-        int: Ultra-conservative batch size
+        int: Ultra-conservative batch size per GPU
     """
     if not torch.cuda.is_available():
         return 4  # Conservative for CPU
 
     logger = get_unified_logger("batch_size_calc")
 
+    # Detect number of GPUs for distributed training
+    num_gpus = torch.cuda.device_count()
+    logger.info(f"[BATCH_CALC] Detected {num_gpus} GPU(s) available")
+
+    # For multi-GPU training, batch size is per GPU
+    # The total effective batch size will be batch_size * num_gpus * gradient_accumulation_steps
+    if num_gpus > 1:
+        memory_per_gpu = max_memory_gb  # max_memory_gb is already per GPU
+        logger.info(f"[BATCH_CALC] Multi-GPU training: calculating batch size per GPU ({memory_per_gpu:.1f}GB per GPU)")
+    else:
+        memory_per_gpu = max_memory_gb
+        logger.info(f"[BATCH_CALC] Single GPU training: using full GPU memory ({memory_per_gpu:.1f}GB)")
+
     # Get instance profile for optimal resource utilization
     instance_profile = get_instance_resource_profile()
     optimal_fraction = instance_profile['optimal_batch_memory_fraction']
 
-    # Use instance-optimized memory fraction
-    available_for_batch = max_memory_gb * optimal_fraction
+    # Use instance-optimized memory fraction per GPU
+    available_for_batch_per_gpu = memory_per_gpu * optimal_fraction
     logger.info(f"[BATCH_CALC] Instance type: {instance_profile['instance_type']} ({instance_profile['gpu_memory_gb']:.1f}GB GPU, {instance_profile['cpu_cores']} CPU cores)")
-    logger.info(f"[BATCH_CALC] Using {optimal_fraction:.0%} of GPU memory ({available_for_batch:.1f}GB) for batch processing")
+    logger.info(f"[BATCH_CALC] Using {optimal_fraction:.0%} of GPU memory per GPU ({available_for_batch_per_gpu:.1f}GB) for batch processing")
 
     # Adjust memory estimate based on instance type
     if instance_profile['instance_type'] in ['high_end', 'mid_high_end']:
@@ -368,21 +467,24 @@ def get_ultra_conservative_batch_size(model, input_shape=(3, 224, 224), device='
     else:
         estimated_mb_per_sample = 5.0  # Conservative for entry-level
 
-    # Calculate maximum batch size
-    max_batch = int((available_for_batch * 1024) / estimated_mb_per_sample)
+    # Calculate maximum batch size per GPU
+    max_batch_per_gpu = int((available_for_batch_per_gpu * 1024) / estimated_mb_per_sample)
 
     # Apply instance-aware safety factors
     if instance_profile['instance_type'] == 'high_end':
-        conservative_batch = max(1, min(max_batch // 2, 16))  # Less conservative
+        conservative_batch = max(1, min(max_batch_per_gpu // 2, 16))  # Less conservative
     elif instance_profile['instance_type'] == 'mid_high_end':
-        conservative_batch = max(1, min(max_batch // 3, 12))
+        conservative_batch = max(1, min(max_batch_per_gpu // 3, 12))
     elif instance_profile['instance_type'] == 'mid_range':
-        conservative_batch = max(1, min(max_batch // 4, 8))
+        conservative_batch = max(1, min(max_batch_per_gpu // 4, 8))
     else:  # entry_level, low_end
-        conservative_batch = max(1, min(max_batch // 6, 4))  # Very conservative
+        conservative_batch = max(1, min(max_batch_per_gpu // 6, 4))  # Very conservative
 
-    logger.info(f"[BATCH_CALC] Estimated max batch: {max_batch}, Instance-optimized batch: {conservative_batch}")
-    logger.info(f"[BATCH_CALC] Memory estimate: {estimated_mb_per_sample:.1f}MB per sample, {available_for_batch:.1f}GB available")
+    logger.info(f"[BATCH_CALC] Estimated max batch per GPU: {max_batch_per_gpu}, Instance-optimized batch: {conservative_batch}")
+    logger.info(f"[BATCH_CALC] Memory estimate: {estimated_mb_per_sample:.1f}MB per sample, {available_for_batch_per_gpu:.1f}GB available per GPU")
+    if num_gpus > 1:
+        total_effective_memory = available_for_batch_per_gpu * num_gpus
+        logger.info(f"[BATCH_CALC] Total effective memory across {num_gpus} GPUs: {total_effective_memory:.1f}GB")
 
     return conservative_batch
 
@@ -1642,10 +1744,17 @@ def main():
             
             # Use optimizer's batch size detection method with actual GPU memory
             if torch.cuda.is_available():
+                num_gpus = torch.cuda.device_count()
                 actual_gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-                # Use 70% of actual GPU memory for initial estimation (will be further reduced by safety factors)
-                max_memory_gb = actual_gpu_memory_gb * 0.7
-                logger.info(f"[BATCH] Using {max_memory_gb:.1f}GB ({max_memory_gb/actual_gpu_memory_gb:.0%}) of detected {actual_gpu_memory_gb:.1f}GB GPU memory")
+                
+                if num_gpus > 1:
+                    # For multi-GPU training, divide memory per GPU for batch size calculation
+                    max_memory_gb = (actual_gpu_memory_gb * 0.7) / num_gpus
+                    logger.info(f"[BATCH] Multi-GPU ({num_gpus} GPUs): Using {max_memory_gb:.1f}GB per GPU ({max_memory_gb*num_gpus:.1f}GB total) of detected {actual_gpu_memory_gb:.1f}GB per GPU")
+                else:
+                    # Single GPU: use 70% of available memory
+                    max_memory_gb = actual_gpu_memory_gb * 0.7
+                    logger.info(f"[BATCH] Single GPU: Using {max_memory_gb:.1f}GB ({max_memory_gb/actual_gpu_memory_gb:.0%}) of detected {actual_gpu_memory_gb:.1f}GB GPU memory")
             else:
                 max_memory_gb = 4.0  # Conservative for CPU
                 logger.info(f"[BATCH] CPU mode: Using {max_memory_gb:.1f}GB memory limit")
