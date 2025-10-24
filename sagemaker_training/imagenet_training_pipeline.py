@@ -2064,8 +2064,7 @@ def main():
     logger.info("[START] STEP 6: Full OneCycle Training")
     logger.info("="*60)
     logger.info(f"[MEMORY] Final batch size: {optimal_batch_size}")
-    logger.info(f"[MEMORY] Gradient accumulation steps: {gradient_accumulation_steps}")
-    logger.info(f"[MEMORY] Effective batch size: {optimal_batch_size * gradient_accumulation_steps}")
+    # Note: gradient_accumulation_steps and effective batch size will be logged after determination
     if optimal_batch_size <= 8:
         logger.info("[MEMORY] Gradient checkpointing: ENABLED")
     else:
@@ -2138,7 +2137,13 @@ def main():
     else:
         logger.info(f"[GRAD] No gradient accumulation needed (batch size: {optimal_batch_size})")
 
-    history = trainer.train(
+    # Now log the gradient accumulation information
+    logger.info(f"[MEMORY] Gradient accumulation steps: {gradient_accumulation_steps}")
+    logger.info(f"[MEMORY] Effective batch size: {optimal_batch_size * gradient_accumulation_steps}")
+    if optimal_batch_size <= 8:
+        logger.info("[MEMORY] Gradient checkpointing: ENABLED")
+    else:
+        logger.info("[MEMORY] Gradient checkpointing: DISABLED")
         lr_config=lr_config,
         epochs=training_epochs,
         batch_size=optimal_batch_size,

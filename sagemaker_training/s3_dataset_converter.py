@@ -60,8 +60,6 @@ class S3DatasetConverter:
         except Exception as e:
             self.logger.warning(f"Error checking folder existence {s3_prefix}: {e}")
             return False
-        
-        self.logger.info(f"🔧 Initialized S3 converter for bucket: {bucket_name}")
 
     def convert_ilsvrc_to_sagemaker(self, source_prefix, target_prefix):
         """Convert existing S3 ILSVRC structure to SageMaker-compatible format"""

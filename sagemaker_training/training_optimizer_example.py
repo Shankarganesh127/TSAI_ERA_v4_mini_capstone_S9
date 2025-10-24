@@ -13,6 +13,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import torch.distributed as dist
 import torch.multiprocessing as mp
+import os
 
 from training_performance_optimizer import TrainingPerformanceOptimizer, create_optimized_trainer
 from imagenet_dataset import get_imagenet_dataloaders
