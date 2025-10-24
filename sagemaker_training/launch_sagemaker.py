@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple SageMaker Job Launcher for 7-Step ImageNet Training
+Simple SageMaker Job Launcher for 7-Step Model Training
 
 Usage Examples:
     # Full automated pipeline
@@ -129,30 +129,7 @@ def calculate_optimal_hyperparameters(instance_type, is_quick_mode=False):
     gpu_memory_gb = specs['gpu_memory_gb']
     cpu_count = specs['cpus']
     
-    # Calculate optimal batch size per GPU
-    # Base batch size scales with GPU memory, adjusted for multi-GPU setups
-    base_batch_per_gpu = min(64, max(16, int(gpu_memory_gb * 2)))
-    
-    # For multi-GPU, we can use larger effective batch size
-    if gpu_count > 1:
-        total_batch_size = base_batch_per_gpu * gpu_count * 2  # Effective batch size across GPUs
-    else:
-        total_batch_size = base_batch_per_gpu
-    
-    # Calculate optimal number of workers
-    # Rule of thumb: 2-4 workers per GPU, but not more than CPU cores
-    workers_per_gpu = 4 if gpu_memory_gb >= 24 else 2
-    optimal_workers = min(cpu_count // 2, gpu_count * workers_per_gpu)
-    optimal_workers = max(2, min(optimal_workers, 16))  # Clamp between 2 and 16
-    
-    # Adjust for quick mode
-    if is_quick_mode:
-        total_batch_size = max(32, total_batch_size // 2)
-        optimal_workers = max(2, optimal_workers // 2)
-    
     return {
-        'batch_size': total_batch_size,
-        'num_workers': optimal_workers,
         'gpu_count': gpu_count,
         'gpu_memory_gb': gpu_memory_gb,
         'cpu_count': cpu_count
@@ -169,31 +146,12 @@ def create_sagemaker_estimator(args, hyperparameters):
                 }
             }
         }
-        estimator = PyTorch(
-            entry_point='sagemaker_wrapper.py',
-            source_dir=str(current_dir),
-            role=args.role_arn,
-            framework_version='2.0.0',
-            py_version='py310',
-            instance_count=args.instance_count,
-            instance_type=args.instance_type,
-            hyperparameters=hyperparameters,
-            distribution=distribution,
-            use_spot_instances=args.spot_training,
-            max_wait=43200 if args.spot_training else None,
-            max_run=36000,
-            checkpoint_s3_uri=f"{args.s3_bucket}/checkpoints/{args.job_name}",
-            output_path=f"{args.s3_bucket}/output/{args.job_name}",
-            volume_size=args.volume_size,
-            enable_sagemaker_metrics=True,
-            tags=[
-                {'Key': 'Project', 'Value': 'ImageNet-7Step'},
-                {'Key': 'QuickMode', 'Value': str(args.quick_mode)},
-                {'Key': 'LRFinder', 'Value': str(not args.skip_lr_finder)},
-                {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)}
-            ]
-        )
-        return estimator
+        tags=[
+            {'Key': 'Project', 'Value': 'Model-7Step'},
+            {'Key': 'QuickMode', 'Value': str(args.quick_mode)},
+            {'Key': 'LRFinder', 'Value': str(not args.skip_lr_finder)},
+            {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)}
+        ]
     else:
         # Single-node training - enable DDP only for multi-GPU instances
         distribution = None
@@ -207,46 +165,40 @@ def create_sagemaker_estimator(args, hyperparameters):
         else:
             logger.info(f"[DISTRIBUTION] Single GPU/CPU instance ({args.instance_type}) - using standard training")
 
-        estimator = PyTorch(
-            entry_point='sagemaker_wrapper.py',  # Direct file in sagemaker_training directory
-            source_dir=str(current_dir),  # Use current sagemaker_training directory
-            role=args.role_arn,
-            framework_version='2.0.0',
-            py_version='py310',
-            instance_count=1,
-            instance_type=args.instance_type,
-            hyperparameters=hyperparameters,
-            distribution=distribution,  # Enable PyTorch DDP only for multi-GPU instances
-            use_spot_instances=args.spot_training,
-            max_wait=43200 if args.spot_training else None,  # 12 hours (must be >= max_run)
-            max_run=36000,  # 10 hours
-            checkpoint_s3_uri=f"{args.s3_bucket}/checkpoints/{args.job_name}",
-            output_path=f"{args.s3_bucket}/output/{args.job_name}",
-            volume_size=args.volume_size,
-            enable_sagemaker_metrics=True,
-            tags=[
-                {'Key': 'Project', 'Value': 'ImageNet-7Step'},
-                {'Key': 'QuickMode', 'Value': str(args.quick_mode)},
-                {'Key': 'LRFinder', 'Value': str(not args.skip_lr_finder)},
-                {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)},
-                {'Key': 'MultiGPU', 'Value': str(is_multi_gpu_instance(args.instance_type))}
-            ]
-        )
-        return estimator
+        tags=[
+            {'Key': 'Project', 'Value': 'Model-7Step'},
+            {'Key': 'QuickMode', 'Value': str(args.quick_mode)},
+            {'Key': 'LRFinder', 'Value': str(not args.skip_lr_finder)},
+            {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)},
+            {'Key': 'MultiGPU', 'Value': str(is_multi_gpu_instance(args.instance_type))}
+        ]
+    estimator = PyTorch(
+        entry_point='sagemaker_wrapper.py',
+        source_dir=str(current_dir),
+        role=args.role_arn,
+        framework_version='2.0.0',
+        py_version='py310',
+        instance_count=args.instance_count,
+        instance_type=args.instance_type,
+        hyperparameters=hyperparameters,
+        distribution=distribution,
+        use_spot_instances=args.spot_training,
+        max_wait=43200 if args.spot_training else None,
+        max_run=36000,
+        checkpoint_s3_uri=f"{args.s3_bucket}/checkpoints/{args.job_name}",
+        output_path=f"{args.s3_bucket}/output/{args.job_name}",
+        volume_size=args.volume_size,
+        enable_sagemaker_metrics=True,
+        tags=tags
+    )
+    return estimator
     
 def main():
     # Setup unified logging
     setup_unified_logger()
     logger = get_unified_logger("sagemaker_launcher")
     
-    # Default S3 paths configuration - modify these for your datasets
-    DEFAULT_CONFIG = {
-        'train_data_path': None,  # Set to "Datasets/imagenet1k/ILSVRC/Data/CLS-LOC/train/" for your setup
-        'val_data_path': None,    # Set to "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker/val/" for your setup
-        'bucket': None            # Set to your S3 bucket name
-    }
-    
-    parser = argparse.ArgumentParser(description='Launch SageMaker ImageNet Training')
+    parser = argparse.ArgumentParser(description='Launch SageMaker Model Training')
     
     # Required arguments
     parser.add_argument('--job-name', required=True, help='SageMaker training job name')
@@ -256,36 +208,29 @@ def main():
     # Data configuration
     parser.add_argument('--train-data-s3', type=str, help='S3 path to training data (overrides default)')
     parser.add_argument('--val-data-s3', type=str, help='S3 path to validation data (separate channel)')
-    parser.add_argument('--data-prefix', type=str, default='imagenet-data', 
-                       help='Data prefix in S3 bucket (default: imagenet-data)')
+    parser.add_argument('--data-prefix', type=str, default='Model-data', 
+                       help='Data prefix in S3 bucket (default: Model-data)')
     parser.add_argument('--distribution-mode', choices=['FastFile', 'File', 'Pipe'], default='FastFile',
                        help='Data distribution mode (default: FastFile for better performance)')
     
     # Instance configuration
-    parser.add_argument('--instance-type', default='ml.p3.2xlarge', help='Instance type')
+    parser.add_argument('--instance-type', default='ml.g6.12xlarge', help='Instance type')
     parser.add_argument('--instance-count', type=int, default=1, help='Number of instances')
     parser.add_argument('--spot-training', action='store_true', help='Use spot instances')
     parser.add_argument('--volume-size', type=int, default=100, help='EBS volume size (GB)')
     
     # Training configuration
     parser.add_argument('--epochs', type=int, default=30, help='Training epochs')
-    parser.add_argument('--batch-size', type=int, help='Batch size (auto-detect if not set)')
-    parser.add_argument('--num-workers', type=int, default=4, help='Data loader workers')
     
     # 7-Step pipeline control
     parser.add_argument('--skip-lr-finder', action='store_true', help='Skip LR range test (Step 1)')
     parser.add_argument('--skip-wd-search', action='store_true', help='Skip weight decay search (Step 5)')
     parser.add_argument('--quick-mode', action='store_true', help='Quick mode for development')
-    parser.add_argument('--auto-confirm', action='store_true', help='Skip user confirmation prompt and launch immediately')
     
-    # Manual hyperparameter overrides
-    parser.add_argument('--lr-min', type=float, help='Manual minimum LR')
-    parser.add_argument('--lr-max', type=float, help='Manual maximum LR')
-    parser.add_argument('--weight-decay', type=float, help='Manual weight decay')
     
     args = parser.parse_args()
-    
-    logger.info("🚀 Starting SageMaker 7-Step ImageNet Training Job Launch")
+
+    logger.info("🚀 Starting SageMaker 7-Step Model Training Job Launch")
     logger.info("=" * 60)
     
     # Check SageMaker availability
@@ -308,18 +253,23 @@ def main():
         data_s3_path = f"s3://{args.s3_bucket.replace('s3://', '')}/{data_s3_path}"
     
     logger.info(f"📂 Final S3 training data path: {data_s3_path}")
-    
+
+    if (args.instance_count) > 1:
+        distribution_instance = 'ShardedByS3Key'
+    else:
+        distribution_instance = 'FullyReplicated'  # Default distribution strategy
+
     # Configure training data input with optimal settings
     train_input = TrainingInput(
         s3_data=data_s3_path,
-        distribution='FullyReplicated',  # Replicate data to all instances
+        distribution=distribution_instance,
         s3_data_type='S3Prefix',        # Treat as directory prefix
         input_mode=args.distribution_mode,  # Keep original case: FastFile, File, or Pipe
         compression=None                 # No compression for images
     )
     
     # Configure data inputs - support both single and multi-channel setups
-    data_inputs = {'imagenet': train_input}  # Default: single channel with train/val subdirectories
+    data_inputs = {'train': train_input}  # Default: single channel with train/val subdirectories
     
     # Add separate validation channel if specified
     if args.val_data_s3:
@@ -332,7 +282,7 @@ def main():
         
         val_input = TrainingInput(
             s3_data=val_s3_path,
-            distribution='FullyReplicated',
+            distribution=distribution_instance,
             s3_data_type='S3Prefix',
             input_mode=args.distribution_mode,
             compression=None
@@ -340,14 +290,14 @@ def main():
         data_inputs['validation'] = val_input
         
         logger.info(f"✅ S3 data inputs configured:")
-        logger.info(f"   - imagenet (train): {data_s3_path}")
-        logger.info(f"   - validation: {val_s3_path}")
+        logger.info(f"   - (train data): {data_s3_path}")
+        logger.info(f"   - (validation data): {val_s3_path}")
         logger.info(f"   - Distribution: FullyReplicated") 
         logger.info(f"   - Input Mode: {args.distribution_mode}")
         logger.info(f"   - Data Type: S3Prefix")
     else:
         logger.info(f"✅ S3 data inputs configured:")
-        logger.info(f"   - imagenet: {data_s3_path}")
+        logger.info(f"   - (train data): {data_s3_path}")
         logger.info(f"   - Distribution: FullyReplicated") 
         logger.info(f"   - Input Mode: {args.distribution_mode}")
         logger.info(f"   - Data Type: S3Prefix")
@@ -366,34 +316,16 @@ def main():
     # Prepare hyperparameters for 7-step training
     hyperparameters = {
         'epochs': str(args.epochs),
-        'num_workers': str(optimal_params['num_workers']),  # Use calculated optimal workers
         'run_lr_finder': str(not args.skip_lr_finder).lower(),
         'run_wd_search': str(not args.skip_wd_search).lower(),
         'quick_mode': str(args.quick_mode).lower(),
     }
-    
-    # Use calculated batch size unless manually overridden
-    if not args.batch_size:
-        hyperparameters['batch_size'] = str(optimal_params['batch_size'])
-        logger.info(f"   - Batch Size: {optimal_params['batch_size']} (auto-calculated)")
-    else:
-        hyperparameters['batch_size'] = str(args.batch_size)
-        logger.info(f"   - Batch Size: {args.batch_size} (manually set)")
-    
-    # Add optional hyperparameters
-    if args.lr_min:
-        hyperparameters['lr_min'] = str(args.lr_min)
-    if args.lr_max:
-        hyperparameters['lr_max'] = str(args.lr_max)
-    if args.weight_decay:
-        hyperparameters['weight_decay'] = str(args.weight_decay)
     
     logger.info("🔧 7-Step Training Configuration:")
     logger.info(f"   - LR Finder: {'Enabled' if not args.skip_lr_finder else 'Disabled'}")
     logger.info(f"   - Weight Decay Search: {'Enabled' if not args.skip_wd_search else 'Disabled'}")
     logger.info(f"   - Quick Mode: {'Enabled' if args.quick_mode else 'Disabled'}")
     logger.info(f"   - Epochs: {args.epochs}")
-    logger.info(f"   - Workers: {optimal_params['num_workers']} (optimized for {args.instance_type})")
     
     logger.info(f"🔧 Hyperparameters:")
     for key, value in hyperparameters.items():
@@ -401,22 +333,8 @@ def main():
     
     logger.info("=" * 60)
     
-    # Confirm launch (skip if auto-confirm is enabled)
-    if args.auto_confirm:
-        logger.info("✅ Auto-confirm enabled - proceeding with job launch...")
-    else:
-        logger.info("⚠️  Awaiting user confirmation to launch SageMaker job...")
-        response = input("\n🚀 Launch SageMaker job? (y/N): ")
-        if response.lower() != 'y':
-            logger.info("❌ Job launch cancelled by user")
-            return
-    
     # Create estimator
     logger.info("🔧 Creating SageMaker PyTorch estimator...")
-    
-    # Create optimized source directory to avoid uploading large files
-    import tempfile
-    import shutil
     
     # Use current sagemaker_training directory directly as source
     # All necessary files are already here - no need to copy
@@ -534,4 +452,5 @@ def main():
         raise
 
 if __name__ == "__main__":
-    main()
+    if (int(os.environ.get('LOCAL_RANK', 0)) == 0):
+        main()

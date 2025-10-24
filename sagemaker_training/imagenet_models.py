@@ -8,30 +8,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from logger_setup import get_unified_logger
 import os
+import torch.distributed as dist
 
 # Only import distributed modules if we're in a multi-instance distributed job
 logger = get_unified_logger()
-try:
-    # Check for SageMaker distributed training environment variables
-    # SM_HOSTS contains all hosts in distributed training
-    # WORLD_SIZE > 1 indicates distributed training across multiple processes
-    sm_hosts = os.environ.get('SM_HOSTS', '[]')
-    world_size = int(os.environ.get('WORLD_SIZE', 1))
-    
-    # Only enable distributed if we have multiple hosts OR world_size > 1
-    is_distributed_job = (len(eval(sm_hosts)) > 1 or world_size > 1)
-    
-    if is_distributed_job:
-        import smdistributed.dataparallel.torch.torch_smddp
-        import torch.distributed as dist
-        DISTRIBUTED_AVAILABLE = True
-        logger.info(f"[CONFIG] Distributed training detected: {len(eval(sm_hosts))} hosts, world_size={world_size}")
-    else:
-        DISTRIBUTED_AVAILABLE = False
-        logger.info(f"[CONFIG] Single-instance training: {len(eval(sm_hosts))} host, world_size={world_size}")
-except (ImportError, Exception):
-    DISTRIBUTED_AVAILABLE = False
-    logger.info("[CONFIG] Distributed training not available or not configured")
 
 class BasicBlock(nn.Module):
     """Basic residual block for ResNet-18/34"""
@@ -178,65 +158,67 @@ class ResNetImageNet(nn.Module):
 
 def model_device_setup_for_ddp(model):
     """
-    Setup device and optionally configure for DistributedDataParallel (DDP)
-    based on environment variables and distributed availability.
-    
-    Returns:
-        model: The model, optionally wrapped in DDP
+    Setup device and optionally configure for DistributedDataParallel (DDP).
     """
+    logger = get_unified_logger()
+    num_gpus_available = torch.cuda.device_count()
     
-    # Check if we should use distributed training
-    # Use the same logic as the import detection
-    sm_hosts = os.environ.get('SM_HOSTS', '[]')
+    # CRITICAL FIX: Check for PyTorch DDP environment variables (set by 'torchrun')
+    # and WORLD_SIZE > 1 (set by most launchers) to confirm distributed run.
+    # Note: SM_HOSTS check is kept for backward compatibility with SageMaker.
     world_size = int(os.environ.get('WORLD_SIZE', 1))
+    is_ddp_launch = world_size > 1 or 'RANK' in os.environ or 'LOCAL_RANK' in os.environ
+    sm_hosts_present = len(eval(os.environ.get('SM_HOSTS', '[]'))) > 1
     
-    is_distributed = (DISTRIBUTED_AVAILABLE and 
-                     (len(eval(sm_hosts)) > 1 or world_size > 1) and 
-                     'LOCAL_RANK' in os.environ)
-    
-    if is_distributed:
-        logger.info("🔧 Setting up model for distributed training")
-        # Get the local rank from the environment
+    # We only initialize DDP if a distributed launcher has started the process AND we have GPUs.
+    if (is_ddp_launch or sm_hosts_present) and num_gpus_available > 0:
+        
+        logger.info("🔧 Setting up model for distributed (multi-process) training")
+        
+        # Determine local rank based on standard DDP env vars
         try:
-            local_rank = int(os.environ['LOCAL_RANK'])
-        except KeyError:
-            local_rank = 0
-        logger.info(f"Process is running on local GPU rank: {local_rank}")
-        # Set the device for the current process
-        if torch.cuda.is_available():
-            torch.cuda.set_device(local_rank)
-            current_device = torch.device('cuda', local_rank)
-            device_ids = [local_rank]
-        else:
-            current_device = torch.device('cpu')
-            device_ids = None
-        logger.info(f"DDP device_ids parameter: {device_ids}")
-        # Initialize distributed process group only if not already initialized
-        import torch.distributed as dist
+            local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', 0)))
+        except (ValueError):
+             local_rank = 0
+             
+        # Initialize DDP and set device for the current process
+        torch.cuda.set_device(local_rank)
+        current_device = torch.device('cuda', local_rank)
+        device_ids = [local_rank]
+
+        # Determine backend and initialize process group
+        try:
+            import smdistributed.dataparallel.torch.torch_smddp
+            backend_name = 'smddp'
+        except ImportError:
+            backend_name = os.environ.get('BACKEND', 'nccl') # Use environment BACKEND if available
+            
         if not dist.is_initialized():
-            logger.info("🔧 Initializing distributed process group...")
-            dist.init_process_group(backend='smddp')
+            logger.info(f"🔧 Initializing distributed process group with backend: {backend_name}...")
+            # dist.init_process_group relies on environment variables (MASTER_ADDR, MASTER_PORT, etc.)
+            dist.init_process_group(backend=backend_name)
             logger.info("✅ Distributed process group initialized")
-        else:
-            logger.info("✅ Distributed process group already initialized")
+            
         # Wrap model in DDP
-        model = torch.nn.parallel.DistributedDataParallel(
+        from torch.nn.parallel import DistributedDataParallel
+        model = DistributedDataParallel(
             model.to(current_device), 
-            device_ids=device_ids
+            device_ids=device_ids,
+            output_device=local_rank
         )
-        logger.info("✅ Model configured for distributed training")
+        logger.info("✅ Model configured for DDP")
+        
     else:
-        logger.info("🔧 Setting up model for single-instance training")
-        # Single instance setup - just move to available device
-        if torch.cuda.is_available():
-            device = torch.device('cuda')
+        # Single process setup - just move to available device
+        if num_gpus_available > 0:
+            device = torch.device('cuda:0')
             model = model.to(device)
             logger.info(f"✅ Model moved to GPU: {device}")
         else:
             device = torch.device('cpu')
             model = model.to(device)
             logger.info(f"✅ Model moved to CPU: {device}")
-    
+            
     return model
 
 def resnet50_imagenet(num_classes=1000, pretrained=False):

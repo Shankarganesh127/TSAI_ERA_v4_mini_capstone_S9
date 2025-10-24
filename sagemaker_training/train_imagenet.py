@@ -9,7 +9,7 @@ import torch.optim as optim
 import argparse
 import os
 import time
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from imagenet_models import resnet50_imagenet
 from imagenet_dataset import get_imagenet_dataloaders

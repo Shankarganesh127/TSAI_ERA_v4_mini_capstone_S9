@@ -108,7 +108,7 @@
     ]
   },
   "debug": {
-    "enable_realtime_output": false,
+    "enable_realtime_output": true,
     "log_subprocess_details": true,
     "verbose_error_reporting": true,
     "save_command_history": true

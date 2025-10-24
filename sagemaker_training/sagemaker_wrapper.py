@@ -19,28 +19,6 @@ import argparse
 import shutil
 from pathlib import Path
 
-# All files are now in the same directory - no parent directory needed
-current_dir = Path(__file__).parent
-sys.path.append(str(current_dir))
-
-from logger_setup import get_unified_logger
-logger = get_unified_logger("sagemaker_wrapper_startup")
-logger.info(f"🔍 Current working directory: {os.getcwd()}")
-logger.info(f"🔍 Wrapper script location: {__file__}")
-logger.info(f"🔍 SageMaker training directory: {current_dir}")
-logger.info(f"🔄 Working from: {os.getcwd()}")
-pipeline_script = Path("/opt/ml/code/imagenet_training_pipeline.py")
-logger.info(f"🔍 Pipeline script path: {pipeline_script}")
-logger.info(f"🔍 Pipeline script exists: {pipeline_script.exists()}")
-sagemaker_code_dir = Path("/opt/ml/code")
-if sagemaker_code_dir.exists():
-    logger.info(f"🔍 Files in /opt/ml/code/:")
-    for f in sorted(sagemaker_code_dir.iterdir()):
-        if f.is_file() and f.suffix == '.py':
-            logger.info(f"    {f.name}")
-else:
-    logger.info(f"🔍 /opt/ml/code/ directory does not exist")
-
 # Import unified logger - all files are in same directory now
 try:
     from logger_setup import setup_unified_logger, get_unified_logger
@@ -103,7 +81,6 @@ class ImageNetSageMakerTrainer:
         parser.add_argument('--output_dir', type=str, 
                            default=os.environ.get('SM_MODEL_DIR', '/opt/ml/model'))
         parser.add_argument('--epochs', type=int, default=30)
-        parser.add_argument('--batch_size', type=int, help='Override auto-detected batch size')
         
         # 7-Step pipeline control
         parser.add_argument('--run_lr_finder', type=str, default='true', help='Step 1: Run LR range test')
@@ -192,11 +169,11 @@ class ImageNetSageMakerTrainer:
         #cmd.extend(["--model-saver-config", str(Path(args.output_dir) / "model_save_config.json")])
         
         # Batch size control (Step 4)
-        if args.batch_size:
-            cmd.extend(["--batch-size", str(args.batch_size)])
-            self.logger.info(f"🔧 Batch Size Override: {args.batch_size}")
-        else:
-            self.logger.info("🔄 Using automatic batch size detection (Step 4)")
+        #if args.batch_size:
+        #    cmd.extend(["--batch-size", str(args.batch_size)])
+        #    self.logger.info(f"🔧 Batch Size Override: {args.batch_size}")
+        #else:
+        #    self.logger.info("🔄 Using automatic batch size detection (Step 4)")
         
         # LR finder control (Step 1)
         if not args.run_lr_finder:
@@ -220,10 +197,6 @@ class ImageNetSageMakerTrainer:
         if args.quick_mode:
             cmd.append("--quick-mode")
             self.logger.info("🚀 Quick mode enabled")
-        
-        # Data loading configuration
-        cmd.extend(["--num-workers", str(args.num_workers)])
-        self.logger.info(f"🔧 DataLoader workers: {args.num_workers}")
         
         return cmd
     
@@ -329,8 +302,6 @@ class ImageNetSageMakerTrainer:
         self.logger.info(f"   val_dir: {args.val_dir}")
         self.logger.info(f"   output_dir: {args.output_dir}")
         self.logger.info(f"   epochs: {args.epochs}")
-        self.logger.info(f"   batch_size: {args.batch_size}")
-        self.logger.info(f"   num_workers: {args.num_workers}")
         self.logger.info(f"   run_lr_finder: {args.run_lr_finder}")
         self.logger.info(f"   run_wd_search: {args.run_wd_search}")
         self.logger.info(f"   quick_mode: {args.quick_mode}")
@@ -432,7 +403,7 @@ class ImageNetSageMakerTrainer:
             # Stream subprocess output in real-time instead of capturing
             # Set environment to disable tqdm in subprocess to prevent progress bar spam
             subprocess_env = os.environ.copy()
-            subprocess_env['TQDM_DISABLE'] = '1'  # Disable tqdm in subprocess
+            subprocess_env['TQDM_DISABLE'] = '0'  # 0 for Enable tqdm in subprocess
             subprocess_env['PYTHONUNBUFFERED'] = '1'  # Ensure immediate output
             
             process = subprocess.Popen(
@@ -454,39 +425,6 @@ class ImageNetSageMakerTrainer:
             # Stream output line by line - simplified without progress bar parsing
             last_progress_line = ""
             line_counter = 0
-            
-            while True:
-                output = process.stdout.readline()
-                if output == '' and process.poll() is not None:
-                    break
-                    
-                if output:
-                    line = output.strip()
-                    line_counter += 1
-                    
-                    # Clean up control characters
-                    clean_line = line.replace('\r', '').replace('\x15', '').strip()
-                    if not clean_line:
-                        continue
-                    
-                    # Suppress tqdm/progress bar output from subprocess, but allow our ASCII progress bars
-                    # Our ASCII progress bars contain "[PROGRESS]" in the message
-                    if ('|' in clean_line and ('%' in clean_line or 'it/s' in clean_line) and
-                        '[PROGRESS]' not in clean_line):
-                        continue  # Skip tqdm progress bars, but keep our ASCII progress bars
-
-                    # Log all output to debug file
-                    self.subprocess_logger.debug(f"SUBPROCESS_OUTPUT[{line_counter:06d}]: {clean_line}")
-
-                    # Log all lines except progress bars to unified logger
-                    self.logger.info(f"SUBPROCESS_OUTPUT: {clean_line}")
-
-                    # Log important lines to main log, but avoid duplicate log lines
-                    if not clean_line.startswith("INFO - [") and not clean_line.startswith("WARNING - [") and not clean_line.startswith("ERROR - ["):
-                        if any(keyword in clean_line.lower() for keyword in ['error', 'warning', 'step', 'epoch', 'starting', 'completed', 'failed', 'success', 'progress']):
-                            self.logger.info(f"SUBPROCESS: {clean_line}")
-                    
-                    last_progress_line = clean_line
             
             # Wait for process to complete and get return code
             return_code = process.wait()
@@ -698,4 +636,5 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    if (int(os.environ.get('LOCAL_RANK', 0)) == 0):
+        main()

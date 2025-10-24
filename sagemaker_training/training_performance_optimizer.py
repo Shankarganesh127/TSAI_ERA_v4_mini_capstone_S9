@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -86,6 +86,8 @@ class TrainingPerformanceOptimizer:
         self.rank = rank
         self.enable_amp = enable_amp and torch.cuda.is_available()
         self.enable_profiling = enable_profiling
+        self.batch_size = 32
+        self.num_workers = 4
 
         # Performance tracking
         self.performance_stats = {
@@ -98,12 +100,14 @@ class TrainingPerformanceOptimizer:
         }
 
         # Setup mixed precision
-        self.scaler = GradScaler() if self.enable_amp else None
+        if self.enable_amp:
+            self.scaler = GradScaler('cuda')
+        else:
+            self.scaler = GradScaler('cpu')
 
+        
         # Setup distributed training
-        self.is_distributed = world_size > 1
-        if self.is_distributed:
-            self._setup_distributed_training()
+        self.is_distributed = torch.cuda.device_count() > 1 or world_size > 1
 
         logger.info(f"🚀 Training Optimizer initialized:")
         logger.info(f"   - Device: {device}")
@@ -112,15 +116,6 @@ class TrainingPerformanceOptimizer:
         logger.info(f"   - AMP: {self.enable_amp}")
         logger.info(f"   - Distributed: {self.is_distributed}")
         logger.info(f"   - Profiling: {enable_profiling}")
-
-    def _setup_distributed_training(self):
-        """Setup DistributedDataParallel training."""
-        # Find unused parameters for efficiency
-        self.model = DDP(self.model, device_ids=[self.rank],
-                        output_device=self.rank,
-                        find_unused_parameters=False)
-
-        logger.info(f"✅ Distributed training setup complete for rank {self.rank}")
 
     def optimize_data_loading(self, target_workers: int = 32) -> Tuple[DataLoader, Optional[DataLoader]]:
         """
@@ -143,6 +138,7 @@ class TrainingPerformanceOptimizer:
         # Optimize training loader
         train_current_workers = self.train_loader.num_workers
         logger.info(f"   Training loader: {train_current_workers} → {target_workers} workers")
+        target_workers = min(train_current_workers,target_workers)
 
         # Check if shuffle is enabled by examining the sampler type
         from torch.utils.data import RandomSampler
@@ -165,6 +161,7 @@ class TrainingPerformanceOptimizer:
         if self.val_loader is not None:
             val_current_workers = self.val_loader.num_workers
             logger.info(f"   Validation loader: {val_current_workers} → {min(target_workers, 8)} workers")
+            target_workers = min(val_current_workers,target_workers,8)
 
             # Check if shuffle is enabled by examining the sampler type
             val_shuffle = isinstance(self.val_loader.sampler, RandomSampler)
@@ -174,7 +171,7 @@ class TrainingPerformanceOptimizer:
                 batch_size=self.val_loader.batch_size,
                 shuffle=val_shuffle,
                 sampler=self.val_loader.sampler,
-                num_workers=min(target_workers, 8),  # Use fewer workers for validation (typically smaller)
+                num_workers=target_workers,  # Use fewer workers for validation (typically smaller)
                 pin_memory=self.val_loader.pin_memory,
                 drop_last=self.val_loader.drop_last,
                 prefetch_factor=2,
@@ -196,17 +193,17 @@ class TrainingPerformanceOptimizer:
         """
         base_batch_size = 32
         max_batch_size = 1024
-
         logger.info(f"🔍 Finding optimal batch size (max {max_memory_gb}GB GPU memory)")
-
         # Test different batch sizes
         optimal_batch = base_batch_size
         for batch_size in [32, 64, 128, 256, 512, 1024]:
             try:
+                # Clear gradients and cache
+                self.optimizer.zero_grad()
+                torch.cuda.empty_cache()
                 # Test memory usage with dummy batch
                 dummy_input = torch.randn(batch_size, 3, 224, 224).to(self.device)
                 dummy_target = torch.randint(0, 1000, (batch_size,)).to(self.device)
-
                 with autocast(enabled=self.enable_amp):
                     output = self.model(dummy_input)
                     loss = self.criterion(output, dummy_target)
@@ -214,24 +211,24 @@ class TrainingPerformanceOptimizer:
                         self.scaler.scale(loss).backward()
                     else:
                         loss.backward()
-
                 # Check memory usage
                 memory_gb = torch.cuda.memory_allocated() / (1024**3)
-                if memory_gb > max_memory_gb:
-                    break
-
                 optimal_batch = batch_size
                 logger.info(f"   ✅ Batch size {batch_size}: {memory_gb:.1f}GB")
-
-                # Clear gradients and cache
-                self.optimizer.zero_grad()
-                torch.cuda.empty_cache()
-
             except RuntimeError as e:
-                logger.warning(f"   ❌ Batch size {batch_size} failed: {e}")
-                break
-
+                # 3. Rely on the OOM exception to break the loop
+                if "out of memory" in str(e):
+                    logger.warning(f"  ❌ Batch size {batch_size} failed: CUDA Out of Memory.")
+                    # This is CRITICAL: free memory right after an OOM error
+                    del dummy_input, dummy_target, output, loss
+                    torch.cuda.empty_cache() 
+                    break
+                else:
+                    # Handle other RuntimeErrors
+                    logger.warning(f"  ❌ Batch size {batch_size} failed with non-OOM error: {e}")
+                    break
         logger.info(f"🎯 Optimal batch size: {optimal_batch}")
+        self.batch_size = optimal_batch
         return optimal_batch
 
     def scale_learning_rate_for_batch_size(self,
