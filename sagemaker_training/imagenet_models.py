@@ -163,67 +163,59 @@ def model_device_setup_for_ddp(model):
     logger = get_unified_logger()
     num_gpus_available = torch.cuda.device_count()
     
-    # CRITICAL FIX: Check for PyTorch DDP environment variables (set by 'torchrun')
-    # and WORLD_SIZE > 1 (set by most launchers) to confirm distributed run.
-    # Note: SM_HOSTS check is kept for backward compatibility with SageMaker.
+    # ----------------------------------------------------------------------
+    # CRITICAL FIX 1: DEFINE is_distributed
+    # Check for DDP environment variables (set by PyTorch DDP or SMDDP launcher)
     world_size = int(os.environ.get('WORLD_SIZE', 1))
-    is_ddp_launch = world_size > 1 or 'RANK' in os.environ or 'LOCAL_RANK' in os.environ
-    sm_hosts_present = len(eval(os.environ.get('SM_HOSTS', '[]'))) > 1
+    is_distributed = world_size > 1 or 'RANK' in os.environ or 'LOCAL_RANK' in os.environ
+    # ----------------------------------------------------------------------
     
-    # We only initialize DDP if a distributed launcher has started the process AND we have GPUs.
-    if (is_ddp_launch or sm_hosts_present) and num_gpus_available > 0:
-        
+    if is_distributed and num_gpus_available > 0:
         logger.info("🔧 Setting up model for distributed (multi-process) training")
-        
-        # Determine local rank based on standard DDP env vars
+    
+        # 1. Determine local rank based on standard DDP env vars (set by PyTorch DDP or SMDDP launcher)
         try:
             local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', 0)))
-        except (ValueError):
-             local_rank = 0
-             
-        # Initialize DDP and set device for the current process
+        except ValueError:
+            local_rank = 0
+
+        # 2. Initialize DDP and set device for the current process
         torch.cuda.set_device(local_rank)
         current_device = torch.device('cuda', local_rank)
         device_ids = [local_rank]
-
-        # Determine backend and initialize process group
-        try:
-            import smdistributed.dataparallel.torch.torch_smddp
-            backend_name = 'smddp'
-        except ImportError:
-            backend_name = 'nccl' # Use environment BACKEND if available
-            
-        if not dist.is_initialized():
-            #logger.info(f"🔧 Initializing distributed process group with backend: {backend_name}...")
-            ## dist.init_process_group relies on environment variables (MASTER_ADDR, MASTER_PORT, etc.)
-            #dist.init_process_group(backend=backend_name)
-            #logger.info("✅ Distributed process group initialized")
+    
+        # 3. CRITICAL FIX: Determine backend based on the SageMaker launcher environment variable.
+        backend_name = 'nccl' # Default to standard PyTorch DDP backend
+        sm_framework_name = os.environ.get('SM_FRAMEWORK_NAME', '').lower()
+    
+        # Check if the SageMaker Distributed Data Parallel (SMDDP) framework is signaled
+        if 'sagemaker-distributed' in sm_framework_name:
             try:
-                logger.info(f"🔧 Initializing distributed process group with backend: {backend_name}...")
-                # CRITICAL: This is the failure point. Wrap it!
+                # Only attempt to import/use smddp if the launcher is set up for it
+                import smdistributed.dataparallel.torch.torch_smddp
+                backend_name = 'smddp'
+                logger.info("✅ SMDDP launcher detected and library imported.")
+            except ImportError:
+                # If the SMDDP launcher is used but the library is missing, log a warning
+                logger.warning("⚠️ WARNING: SMDDP launcher detected, but smdistributed package is missing or failed to import. Falling back to NCCL.")
+
+        logger.info(f"🔧 Final DDP Backend selected: {backend_name}")
+    
+        # 4. Initialize the process group with robust error handling
+        if not dist.is_initialized():
+            logger.info(f"🔧 Attempting to initialize DDP process group with backend: {backend_name}...")
+            try:
                 dist.init_process_group(backend=backend_name)
-                logger.info("✅ Distributed process group initialized")
+                logger.info("✅ Distributed process group initialized.")
             except Exception as e:
-                # Log the environment for debugging
+                # Include environment variables in the error log to help debug Exit Code 1
                 logger.error(f"❌ CRITICAL DDP INIT FAILURE for rank {local_rank}: {e}")
-                logger.error("❌ Environment variables related to DDP:")
-                logger.error(f"  WORLD_SIZE: {os.environ.get('WORLD_SIZE')}")
-                logger.error(f"  MASTER_ADDR: {os.environ.get('MASTER_ADDR')}")
-                logger.error(f"  MASTER_PORT: {os.environ.get('MASTER_PORT')}")
-                logger.error(f"  RANK: {os.environ.get('RANK')}")
-                
-                # Re-raise the exception so the process exits, but now we have diagnostics
+                logger.error(f"❌ Env (WORLD_SIZE, MASTER_ADDR, RANK): {os.environ.get('WORLD_SIZE')}, {os.environ.get('MASTER_ADDR')}, {os.environ.get('RANK')}")
+                # Re-raise the exception to force the log flush before mpirun terminates
                 raise
-            
-        # Wrap model in DDP
-        from torch.nn.parallel import DistributedDataParallel
-        model = DistributedDataParallel(
-            model.to(current_device), 
-            device_ids=device_ids,
-            output_device=local_rank
-        )
-        logger.info("✅ Model configured for DDP")
-        pass
+
+        # 5. Wrap the model in DistributedDataParallel
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=device_ids)
     else:
         # Single process setup - just move to available device
         if num_gpus_available > 0:
