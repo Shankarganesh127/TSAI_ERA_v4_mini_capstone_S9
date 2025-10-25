@@ -394,128 +394,128 @@ class ImageNetSageMakerTrainer:
             self.logger.info("=" * 80)
             sys.stdout.flush()
             
-            # Detailed logging to unified log file
-            self.logger.info("="*60)
-            self.logger.info("� SUBPROCESS: Launching imagenet_training_pipeline.py")
-            self.logger.info("="*60)
-            self.logger.info(f"📞 Caller script: {__file__}")
-            self.logger.info(f"🎯 Target script: {cmd[1]}")
-            self.logger.info(f"🐍 Python executable: {cmd[0]}")
-            self.logger.info(f"🎯 Full command: {' '.join(cmd)}")
-            self.logger.info(f"💻 Working directory: {run_cwd}")
-            if len(cmd) > 2:
-                self.logger.info(f"⚙️  Script arguments: {' '.join(map(str, cmd[2:]))}")
+        # Detailed logging to unified log file
+        self.logger.info("="*60)
+        self.logger.info("� SUBPROCESS: Launching imagenet_training_pipeline.py")
+        self.logger.info("="*60)
+        self.logger.info(f"📞 Caller script: {__file__}")
+        self.logger.info(f"🎯 Target script: {cmd[1]}")
+        self.logger.info(f"🐍 Python executable: {cmd[0]}")
+        self.logger.info(f"🎯 Full command: {' '.join(cmd)}")
+        self.logger.info(f"💻 Working directory: {run_cwd}")
+        if len(cmd) > 2:
+            self.logger.info(f"⚙️  Script arguments: {' '.join(map(str, cmd[2:]))}")
             
-            # Log environment variables that might affect execution
-            self.subprocess_logger.info("🌍 Subprocess environment variables:")
-            for key in ['PYTHONPATH', 'PATH', 'CUDA_VISIBLE_DEVICES', 'SM_MODEL_DIR', 'SM_CHANNEL_TRAINING']:
-                value = os.environ.get(key, 'Not set')
-                self.subprocess_logger.info(f"   {key}={value}")
+        # Log environment variables that might affect execution
+        self.subprocess_logger.info("🌍 Subprocess environment variables:")
+        for key in ['PYTHONPATH', 'PATH', 'CUDA_VISIBLE_DEVICES', 'SM_MODEL_DIR', 'SM_CHANNEL_TRAINING']:
+            value = os.environ.get(key, 'Not set')
+            self.subprocess_logger.info(f"   {key}={value}")
             
-            # Log process startup details
-            start_time = datetime.now()
-            self.subprocess_logger.info(f"⏰ Subprocess start time: {start_time}")
-            self.logger.info("🔥 Starting subprocess execution...")
+        # Log process startup details
+        start_time = datetime.now()
+        self.subprocess_logger.info(f"⏰ Subprocess start time: {start_time}")
+        self.logger.info("🔥 Starting subprocess execution...")
 
-            # Stream subprocess output in real-time instead of capturing
-            # Set environment to disable tqdm in subprocess to prevent progress bar spam
-            subprocess_env = os.environ.copy()
-            subprocess_env['TQDM_DISABLE'] = '0'  # 0 for Enable tqdm in subprocess
-            subprocess_env['PYTHONUNBUFFERED'] = '1'  # Ensure immediate output
+        # Stream subprocess output in real-time instead of capturing
+        # Set environment to disable tqdm in subprocess to prevent progress bar spam
+        subprocess_env = os.environ.copy()
+        subprocess_env['TQDM_DISABLE'] = '0'  # 0 for Enable tqdm in subprocess
+        subprocess_env['PYTHONUNBUFFERED'] = '1'  # Ensure immediate output
             
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,  # Merge stderr with stdout
-                text=True,
-                cwd=str(run_cwd),
-                bufsize=1,  # Line buffered
-                env=subprocess_env,  # Use modified environment
-                universal_newlines=True
-            )
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # Merge stderr with stdout
+            text=True,
+            cwd=str(run_cwd),
+            bufsize=1,  # Line buffered
+            env=subprocess_env,  # Use modified environment
+            universal_newlines=True
+        )
             
-            # Log process creation details
-            self.subprocess_logger.info(f"🆔 Process ID: {process.pid}")
-            self.subprocess_logger.info(f"📝 Process created successfully")
-            self.logger.info(f"🚀 Subprocess started with PID: {process.pid}")
+        # Log process creation details
+        self.subprocess_logger.info(f"🆔 Process ID: {process.pid}")
+        self.subprocess_logger.info(f"📝 Process created successfully")
+        self.logger.info(f"🚀 Subprocess started with PID: {process.pid}")
             
-            # Stream output line by line - simplified without progress bar parsing
-            last_progress_line = ""
-            line_counter = 0
+        # Stream output line by line - simplified without progress bar parsing
+        last_progress_line = ""
+        line_counter = 0
             
-            # Log process creation details
-            self.subprocess_logger.info(f"🆔 Process ID: {process.pid}")
-            self.subprocess_logger.info(f"📝 Process created successfully")
-            self.logger.info(f"🚀 Subprocess started with PID: {process.pid}")
+        # Log process creation details
+        self.subprocess_logger.info(f"🆔 Process ID: {process.pid}")
+        self.subprocess_logger.info(f"📝 Process created successfully")
+        self.logger.info(f"🚀 Subprocess started with PID: {process.pid}")
 
-            # Stream output line by line and log to both loggers
-            line_counter = 0
+        # Stream output line by line and log to both loggers
+        line_counter = 0
+        try:
+            for line in process.stdout:
+                line_counter += 1
+                line = line.rstrip()
+                # Log every line to both loggers
+                self.logger.info(f"[PIPELINE] {line}")
+                self.subprocess_logger.info(f"[PIPELINE] {line}")
+        except Exception as stream_exc:
+            self.logger.error(f"❌ Error streaming subprocess output: {stream_exc}")
+            self.subprocess_logger.error(f"❌ Error streaming subprocess output: {stream_exc}")
+        finally:
             try:
-                for line in process.stdout:
-                    line_counter += 1
-                    line = line.rstrip()
-                    # Log every line to both loggers
-                    self.logger.info(f"[PIPELINE] {line}")
-                    self.subprocess_logger.info(f"[PIPELINE] {line}")
-            except Exception as stream_exc:
-                self.logger.error(f"❌ Error streaming subprocess output: {stream_exc}")
-                self.subprocess_logger.error(f"❌ Error streaming subprocess output: {stream_exc}")
-            finally:
-                try:
-                    return_code = process.wait()
-                    end_time = datetime.now()
-                    duration = end_time - start_time
-                except Exception as wait_exc:
-                    self.logger.error(f"❌ Error waiting for subprocess: {wait_exc}")
-                    self.subprocess_logger.error(f"❌ Error waiting for subprocess: {wait_exc}")
+                return_code = process.wait()
+                end_time = datetime.now()
+                duration = end_time - start_time
+            except Exception as wait_exc:
+                self.logger.error(f"❌ Error waiting for subprocess: {wait_exc}")
+                self.subprocess_logger.error(f"❌ Error waiting for subprocess: {wait_exc}")
 
-            # =============================================================================
-            # SUBPROCESS COMPLETED
-            # =============================================================================
-            self.logger.info("=" * 80)
-            self.logger.info("✅ IMAGENET_TRAINING_PIPELINE.PY SUBPROCESS COMPLETED")
-            self.logger.info("=" * 80)
-            self.logger.info(f"📊 Return Code: {return_code}")
-            self.logger.info(f"⏰ Completion Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            self.logger.info(f"⌛ Total Duration: {duration}")
-            self.logger.info(f"📝 Total output lines: {line_counter}")
-            self.logger.info("=" * 80)
+        # =============================================================================
+        # SUBPROCESS COMPLETED
+        # =============================================================================
+        self.logger.info("=" * 80)
+        self.logger.info("✅ IMAGENET_TRAINING_PIPELINE.PY SUBPROCESS COMPLETED")
+        self.logger.info("=" * 80)
+        self.logger.info(f"📊 Return Code: {return_code}")
+        self.logger.info(f"⏰ Completion Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        self.logger.info(f"⌛ Total Duration: {duration}")
+        self.logger.info(f"📝 Total output lines: {line_counter}")
+        self.logger.info("=" * 80)
 
-            # Comprehensive subprocess completion logging
-            self.subprocess_logger.info("="*60)
-            self.subprocess_logger.info("🏁 SUBPROCESS EXECUTION COMPLETED")
-            self.subprocess_logger.info("="*60)
-            self.subprocess_logger.info(f"🆔 Process ID: {process.pid}")
-            self.subprocess_logger.info(f"📊 Exit code: {return_code}")
-            self.subprocess_logger.info(f"⏰ Start time: {start_time}")
-            self.subprocess_logger.info(f"⏰ End time: {end_time}")
-            self.subprocess_logger.info(f"⌛ Total duration: {duration}")
-            self.subprocess_logger.info(f"📝 Total output lines captured: {line_counter}")
+        # Comprehensive subprocess completion logging
+        self.subprocess_logger.info("="*60)
+        self.subprocess_logger.info("🏁 SUBPROCESS EXECUTION COMPLETED")
+        self.subprocess_logger.info("="*60)
+        self.subprocess_logger.info(f"🆔 Process ID: {process.pid}")
+        self.subprocess_logger.info(f"📊 Exit code: {return_code}")
+        self.subprocess_logger.info(f"⏰ Start time: {start_time}")
+        self.subprocess_logger.info(f"⏰ End time: {end_time}")
+        self.subprocess_logger.info(f"⌛ Total duration: {duration}")
+        self.subprocess_logger.info(f"📝 Total output lines captured: {line_counter}")
 
-            if return_code == 0:
-                self.logger.info("✅ Subprocess completed successfully")
-                self.subprocess_logger.info("✅ Process exited normally")
-            else:
-                self.logger.error(f"❌ Subprocess failed with return code: {return_code}")
-                self.subprocess_logger.error(f"❌ Process failed with exit code: {return_code}")
+        if return_code == 0:
+            self.logger.info("✅ Subprocess completed successfully")
+            self.subprocess_logger.info("✅ Process exited normally")
+        else:
+            self.logger.error(f"❌ Subprocess failed with return code: {return_code}")
+            self.subprocess_logger.error(f"❌ Process failed with exit code: {return_code}")
 
-            # Check if subprocess failed
-            if return_code != 0:
-                self.logger.error(f"❌ Pipeline failed with return code: {return_code}")
-                raise subprocess.CalledProcessError(return_code, cmd)
+        # Check if subprocess failed
+        if return_code != 0:
+            self.logger.error(f"❌ Pipeline failed with return code: {return_code}")
+            raise subprocess.CalledProcessError(return_code, cmd)
 
-            self.logger.info("✅ 7-Step Pipeline completed successfully!")
+        self.logger.info("✅ 7-Step Pipeline completed successfully!")
 
-            # Create a mock result object for compatibility with _process_results
-            class MockResult:
-                def __init__(self, returncode):
-                    self.returncode = returncode
-                    self.stdout = ""  # Output was already streamed
-                    self.stderr = ""
+        # Create a mock result object for compatibility with _process_results
+        class MockResult:
+            def __init__(self, returncode):
+                self.returncode = returncode
+                self.stdout = ""  # Output was already streamed
+                self.stderr = ""
 
-            self._process_results(MockResult(return_code), args)
-            # Clean up model monitoring (progress bars now handled in pipeline)
-            self._cleanup_model_monitoring()
+        self._process_results(MockResult(return_code), args)
+        # Clean up model monitoring (progress bars now handled in pipeline)
+        self._cleanup_model_monitoring()
     
         # Save comprehensive results summary  
         results_file = os.path.join(args.output_dir, 'training_summary.json')
