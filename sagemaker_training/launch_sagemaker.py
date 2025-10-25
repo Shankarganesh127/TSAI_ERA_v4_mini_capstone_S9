@@ -200,8 +200,8 @@ def main():
     # Data configuration
     parser.add_argument('--train-data-s3', type=str, help='S3 path to training data (overrides default)')
     parser.add_argument('--val-data-s3', type=str, help='S3 path to validation data (separate channel)')
-    parser.add_argument('--data-prefix', type=str, default='Model-data', 
-                       help='Data prefix in S3 bucket (default: Model-data)')
+    parser.add_argument('--data-prefix', type=str, default='imagenet-data', 
+                       help='Data prefix in S3 bucket (default: imagenet-data)')
     parser.add_argument('--distribution-mode', choices=['FastFile', 'File', 'Pipe'], default='FastFile',
                        help='Data distribution mode (default: FastFile for better performance)')
     
