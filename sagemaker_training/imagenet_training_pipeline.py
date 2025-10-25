@@ -48,6 +48,8 @@ if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
         # Fallback to conservative setting
         os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256'
         print("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256 (fallback)")
+os.environ['SMDATAPARALLEL_OPTIMIZE_SDP'] = 'true'
+os.environ['PYTHONUNBUFFERED'] = '1'
 
 def is_main_process():
     """Checks if the current process is the main (rank 0) process."""
@@ -1415,8 +1417,8 @@ def main():
     
     # Optimize num_workers for balanced CPU/GPU utilization and memory usage
     logger.info("[OPTIMIZE] Optimizing num_workers for DataLoader...")
-    optimized_num_workers = optimize_num_workers(initial_batch_size)
-    logger.info(f"[OPTIMIZE] Using optimized num_workers: {optimized_num_workers} (batch_size: {initial_batch_size})")
+    optimized_num_workers_i = optimize_num_workers(initial_batch_size)
+    logger.info(f"[OPTIMIZE] Using optimized num_workers: {optimized_num_workers_i} (batch_size: {initial_batch_size})")
     
     # Monitor GPU utilization to validate optimization
     if torch.cuda.is_available():
@@ -1426,7 +1428,7 @@ def main():
             logger.warning("[GPU] GPU utilization low - data loading may be bottleneck, num_workers optimization should help")
     
     # Override args.num_workers with optimized value
-    args.num_workers = optimized_num_workers
+    args.num_workers = optimized_num_workers_i
     
     # Load data
     logger.info("[DATASET] Loading ImageNet dataset...")

@@ -160,7 +160,9 @@ def create_sagemaker_estimator(args, hyperparameters):
         'ACCELERATE_DYNAMO_USE_FULLGRAPH': 'False',
         'ACCELERATE_DYNAMO_USE_DYNAMIC': 'False',
         'ACCELERATE_SAGEMAKER_DISTRIBUTED_TYPE': 'DATA_PARALLEL',
-        'SMDATAPARALLEL_OPTIMIZE_SDP': 'true'
+        'SMDATAPARALLEL_OPTIMIZE_SDP': 'true',
+        'PYTHONUNBUFFERED': '1',
+        'SMDATAPARALLEL_USE_SINGLENODE': '1'
         }
     else:
         # Single-node training - enable DDP only for multi-GPU instances
@@ -188,7 +190,10 @@ def create_sagemaker_estimator(args, hyperparameters):
         'ACCELERATE_DYNAMO_BACKEND': 'NO',
         'ACCELERATE_DYNAMO_MODE': 'default',
         'ACCELERATE_DYNAMO_USE_FULLGRAPH': 'False',
-        'ACCELERATE_DYNAMO_USE_DYNAMIC': 'False'
+        'ACCELERATE_DYNAMO_USE_DYNAMIC': 'False',
+        'SMDATAPARALLEL_OPTIMIZE_SDP': 'true',
+        'PYTHONUNBUFFERED': '1',
+        'SMDATAPARALLEL_USE_SINGLENODE': '1'
         }
     estimator = PyTorch(
         entry_point='sagemaker_wrapper.py',
