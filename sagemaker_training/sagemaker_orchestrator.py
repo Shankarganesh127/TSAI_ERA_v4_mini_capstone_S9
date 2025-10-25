@@ -333,15 +333,14 @@ class SageMakerPipelineOrchestrator:
                 "--val-data-s3", val_data_path,     # Converted validation data
                 "--instance-type", training_args.get("instance_type", "ml.g5.12xlarge"),
                 "--instance-count", str(training_args.get("instance_count", 1)),
-                "--epochs", str(training_args.get("epochs")),  # Fixed: no hardcoded default
-                "--auto-confirm"  # Skip user confirmation for automated pipeline
+                "--epochs", str(training_args.get("epochs"))  # Fixed: no hardcoded default
             ]
             
             # Add optional arguments
             if training_args.get("use_spot"):  # Fixed: use_spot instead of spot_training
                 cmd_args.append("--spot-training")
-            if training_args.get("batch_size"):
-                cmd_args.extend(["--batch-size", str(training_args.get("batch_size"))])
+            #if training_args.get("batch_size"):
+            #    cmd_args.extend(["--batch-size", str(training_args.get("batch_size"))])
                 
             try:
                 # Calculate dynamic timeout based on instance type and configuration
