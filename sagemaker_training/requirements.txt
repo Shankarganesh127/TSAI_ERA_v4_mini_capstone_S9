@@ -1,6 +1,9 @@
 # Additional dependencies for sagemaker_training
 GPUtil>=1.4.0
 torchsummary>=1.5.1
+accelerate==0.33.0
+smdistributed-dataparallel==1.8.0
+webdataset==0.2.100
 # SageMaker Training Pipeline - Complete Requirements
 
 # Core AWS and SageMaker
