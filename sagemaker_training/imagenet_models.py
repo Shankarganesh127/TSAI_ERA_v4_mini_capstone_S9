@@ -169,9 +169,9 @@ def model_device_setup_for_ddp(model):
     is_distributed = world_size > 1 or 'RANK' in os.environ or 'LOCAL_RANK' in os.environ
     
     if is_distributed and num_gpus_available > 0:
-        logger.info("🔧 Setting up model for distributed (multi-process) training via NCCL backend.")
+        logger.info("🔧 Setting up model for distributed (multi-process) training.")
 
-        # 1. Determine local rank based on standard DDP env vars
+        # 1. Determine local rank
         try:
             local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', 0)))
         except ValueError:
@@ -182,8 +182,19 @@ def model_device_setup_for_ddp(model):
         current_device = torch.device('cuda', local_rank)
         device_ids = [local_rank]
 
-        # 3. Use the standard NCCL backend (the primary alternative to SMDDP)
-        backend_name = 'nccl'
+        # 3. CRITICAL: Determine backend (SMDDP or NCCL fallback)
+        backend_name = 'nccl' # Default to standard PyTorch DDP backend
+        sm_framework_name = os.environ.get('SM_FRAMEWORK_NAME', '').lower()
+
+        # Check if the SageMaker Distributed Data Parallel (SMDDP) framework is signaled
+        if 'sagemaker-distributed' in sm_framework_name:
+            try:
+                import smdistributed.dataparallel.torch.torch_smddp
+                backend_name = 'smddp'
+                logger.info("✅ SMDDP launcher detected and library imported. Using 'smddp' backend.")
+            except ImportError:
+                logger.warning("⚠️ WARNING: SMDDP library missing. Falling back to NCCL.")
+
         logger.info(f"🔧 Final DDP Backend selected: {backend_name}")
 
         # 4. Initialize the process group
@@ -193,14 +204,15 @@ def model_device_setup_for_ddp(model):
                 dist.init_process_group(backend=backend_name)
                 logger.info("✅ Distributed process group initialized.")
             except Exception as e:
-                logger.error(f"❌ CRITICAL DDP INIT FAILURE for rank {local_rank}: {e}")
+                logger.error(f"❌ CRITICAL DDP INIT FAILURE for rank {local_rank} with backend {backend_name}: {e}")
                 raise
 
-        # 5. Move model to correct device before DDP wrapping
+        # 5. Move model to correct device before DDP wrapping (Fix for ValueError)
         model = model.to(current_device)
-        # 6. Wrap the model in DistributedDataParallel (only set device_ids for CUDA)
+
+        # 6. Wrap the model in DistributedDataParallel
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=device_ids)
-        logger.info(f"✅ Model wrapped with DDP on device {current_device} (device_ids={device_ids})")
+        logger.info(f"✅ Model wrapped with DDP on device {current_device} (backend={backend_name})")
 
     else:
         # Single process setup - just move to available device, no DDP

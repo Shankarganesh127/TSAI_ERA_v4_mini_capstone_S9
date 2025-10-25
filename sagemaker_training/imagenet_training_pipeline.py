@@ -575,6 +575,29 @@ class BatchSizeFinder:
 # ----------------------------------------------------------------------
 
 class LRFinder:
+    def plot(self):
+        """
+        Plot LR vs Loss curve and return matplotlib figure and min_lr suggestion.
+        Does NOT call plt.show(), so it is non-blocking.
+        """
+        import matplotlib.pyplot as plt
+        lrs = self.history.get('lr', [])
+        losses = self.history.get('loss', [])
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(lrs, losses, label='LR Range Test')
+        ax.set_xscale('log')
+        ax.set_xlabel('Learning Rate')
+        ax.set_ylabel('Smoothed Loss')
+        ax.set_title('LR Range Test: LR vs Loss')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        # Suggest min_lr as LR with lowest loss
+        if losses:
+            min_idx = int(np.argmin(losses))
+            min_lr = lrs[min_idx] if min_idx < len(lrs) else None
+        else:
+            min_lr = None
+        return fig, min_lr
     """Learning Rate Range Test Implementation with state restoration."""
     
     def __init__(self, model, optimizer, criterion, device):

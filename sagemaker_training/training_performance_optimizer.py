@@ -60,7 +60,9 @@ class TrainingPerformanceOptimizer:
                  world_size: int = 1,
                  rank: int = 0,
                  enable_amp: bool = True,
-                 enable_profiling: bool = True):
+                 enable_profiling: bool = True,
+                 batch_size: int = 32,
+                 num_workers: int = 4):
         """
         Initialize the training optimizer.
 
@@ -86,8 +88,8 @@ class TrainingPerformanceOptimizer:
         self.rank = rank
         self.enable_amp = enable_amp and torch.cuda.is_available()
         self.enable_profiling = enable_profiling
-        self.batch_size = 32
-        self.num_workers = 4
+        self.batch_size = batch_size
+        self.num_workers = num_workers
 
         # Performance tracking
         self.performance_stats = {
