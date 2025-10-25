@@ -1,7 +1,6 @@
 # Additional dependencies for sagemaker_training
 GPUtil>=1.4.0
 torchsummary>=1.5.1
-smdistributed==1.4.0
 # SageMaker Training Pipeline - Complete Requirements
 
 # Core AWS and SageMaker
