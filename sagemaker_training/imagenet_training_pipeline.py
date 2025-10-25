@@ -52,66 +52,6 @@ if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
 os.environ['SMDATAPARALLEL_OPTIMIZE_SDP'] = 'true'
 os.environ['PYTHONUNBUFFERED'] = '1'
 
-def optimize_num_workers(batch_size, available_memory_gb=None, cpu_count=None):
-    """
-    Optimize num_workers for DataLoader based on system resources and batch size,
-    prioritizing full resource utilization without a restrictive cap.
-    """
-    import psutil
-    import multiprocessing as mp
-    import math
-
-    # --- 1. Auto-detect System Resources ---
-    if cpu_count is None:
-        cpu_count = mp.cpu_count()
-    # Available memory is what the OS reports as currently free
-    if available_memory_gb is None:
-        available_memory_gb = psutil.virtual_memory().available / (1024**3)
-
-    # --- 2. CPU-Based Worker Limit (Base) ---
-    # Common starting point: use all but one core to keep the main process free.
-    # This maximizes the potential workers based on CPU.
-    base_workers = max(1, cpu_count - 1)
-
-    # --- 3. Memory-Based Limit (Constraint) ---
-    # Heuristic: Estimate memory consumption per worker. 
-    # This is highly dependent on data loading (e.g., image size).
-    # Using 500MB (0.5GB) per worker is a conservative, general estimate.
-    MEMORY_PER_WORKER_GB = 0.5 
-    
-    # Calculate the max number of workers we can afford based on available RAM
-    max_workers_by_memory = math.floor(available_memory_gb / MEMORY_PER_WORKER_GB)
-    max_workers_by_memory = max(1, max_workers_by_memory)
-
-    # --- 4. Batch Size Adjustment (Refinement) ---
-    # Apply a penalty to the worker count if the batch size is very large, 
-    # assuming larger batches mean larger memory footprint *per* worker.
-    if batch_size >= 256:
-        batch_factor = 0.5
-    elif batch_size >= 128:
-        batch_factor = 0.7
-    elif batch_size >= 64:
-        batch_factor = 0.9
-    else:
-        batch_factor = 1.0
-
-    # --- 5. Final Calculation ---
-    # The optimal worker count is the minimum of the CPU potential and the memory limit,
-    # then adjusted by the batch size factor.
-    optimal_workers = min(base_workers, max_workers_by_memory)
-    optimal_workers = int(optimal_workers * batch_factor)
-    
-    # Final check to ensure we return at least 1 worker.
-    final_workers = max(1, optimal_workers)
-    
-    # Log the decision for transparency
-    print(f"CPU Cores: {cpu_count}, Available RAM: {available_memory_gb:.2f}GB")
-    print(f"Base (CPU-based) workers: {base_workers}")
-    print(f"Max (Memory-based) workers: {max_workers_by_memory} (at {MEMORY_PER_WORKER_GB}GB/worker)")
-    print(f"Final optimal num_workers: {final_workers}")
-
-    return final_workers
-
 def monitor_gpu_utilization(duration_seconds=5):
     """
     Monitor GPU utilization over a period to determine if data loading is bottleneck.
@@ -476,6 +416,8 @@ def optimize_num_workers(batch_size: int, available_memory_gb: float = None, cpu
     Optimizes num_workers for DataLoader based on system resources and batch size.
     Removes arbitrary caps and unknown instance profile dependencies.
     """
+    logger = get_unified_logger("num_workers_optimizer")
+    
     if cpu_count is None:
         cpu_count = mp.cpu_count()
     if available_memory_gb is None:
@@ -922,7 +864,7 @@ class FullTrainer:
         and internal OOM trainers, focusing on standard PyTorch best practices.
         """
         
-        logger = get_unified_logger()
+        logger = get_unified_logger("FullTrainer")
         
         # --- 1. Resource and Hyperparameter Setup ---
         # Calculate adaptive gradient accumulation if not specified (uses dummy if not defined)

@@ -471,14 +471,6 @@ class ImageNetSageMakerTrainer:
 
         self.logger.info("✅ 7-Step Pipeline completed successfully!")
 
-        # Create a mock result object for compatibility with _process_results
-        class MockResult:
-            def __init__(self, returncode):
-                self.returncode = returncode
-                self.stdout = ""  # Output was already streamed
-                self.stderr = ""
-
-        self._process_results(MockResult(return_code), args)
         # Clean up model monitoring (progress bars now handled in pipeline)
         self._cleanup_model_monitoring()
     
@@ -516,7 +508,7 @@ class ImageNetSageMakerTrainer:
             self._verify_model_saving(args.output_dir)
         except Exception as e:
             self.logger.warning(f"⚠️ Could not save results summary or logs: {e}")
-
+            
     def _verify_model_saving(self, output_dir):
         """Verify that model saving worked correctly"""
         try:
