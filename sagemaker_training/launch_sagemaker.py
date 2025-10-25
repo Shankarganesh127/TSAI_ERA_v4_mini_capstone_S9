@@ -146,18 +146,7 @@ def create_sagemaker_estimator(args, hyperparameters):
             {'Key': 'LRFinder', 'Value': str(not args.skip_lr_finder)},
             {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)}
         ]
-        environment={
-        'ACCELERATE_USE_SAGEMAKER': 'true',
-        'ACCELERATE_MIXED_PRECISION': 'fp16',
-        'ACCELERATE_DYNAMO_BACKEND': 'NO',
-        'ACCELERATE_DYNAMO_MODE': 'default',
-        'ACCELERATE_DYNAMO_USE_FULLGRAPH': 'False',
-        'ACCELERATE_DYNAMO_USE_DYNAMIC': 'False',
-        'ACCELERATE_SAGEMAKER_DISTRIBUTED_TYPE': 'DATA_PARALLEL',
-        'SMDATAPARALLEL_OPTIMIZE_SDP': 'true',
-        'PYTHONUNBUFFERED': '1',
-        'SMDATAPARALLEL_USE_SINGLENODE': '1'
-        }
+        
     else:
         # Single-node training - enable DDP only for multi-GPU instances
         distribution = None
@@ -174,17 +163,7 @@ def create_sagemaker_estimator(args, hyperparameters):
             {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)},
             {'Key': 'MultiGPU', 'Value': str(is_multi_gpu_instance(args.instance_type))}
         ]
-        environment={
-        'ACCELERATE_USE_SAGEMAKER': 'true',
-        'ACCELERATE_MIXED_PRECISION': 'fp16',
-        'ACCELERATE_DYNAMO_BACKEND': 'NO',
-        'ACCELERATE_DYNAMO_MODE': 'default',
-        'ACCELERATE_DYNAMO_USE_FULLGRAPH': 'False',
-        'ACCELERATE_DYNAMO_USE_DYNAMIC': 'False',
-        'SMDATAPARALLEL_OPTIMIZE_SDP': 'true',
-        'PYTHONUNBUFFERED': '1',
-        'SMDATAPARALLEL_USE_SINGLENODE': '1'
-        }
+        
     estimator = PyTorch(
         entry_point='sagemaker_wrapper.py',
         source_dir=str(current_dir),
@@ -202,8 +181,7 @@ def create_sagemaker_estimator(args, hyperparameters):
         output_path=f"{args.s3_bucket}/output/{args.job_name}",
         volume_size=args.volume_size,
         enable_sagemaker_metrics=True,
-        tags=tags,
-        environment=environment
+        tags=tags
     )
     return estimator
     

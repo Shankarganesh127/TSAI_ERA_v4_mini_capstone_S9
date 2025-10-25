@@ -25,6 +25,7 @@ from torch.amp import autocast, GradScaler
 import psutil
 import multiprocessing as mp
 import math
+from utils import is_main_process
 
 from imagenet_models import resnet50_imagenet
 from imagenet_dataset import get_imagenet_dataloaders
