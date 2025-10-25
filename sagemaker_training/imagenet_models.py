@@ -170,22 +170,22 @@ def model_device_setup_for_ddp(model):
     
     if is_distributed and num_gpus_available > 0:
         logger.info("🔧 Setting up model for distributed (multi-process) training via NCCL backend.")
-    
+
         # 1. Determine local rank based on standard DDP env vars
         try:
             local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', 0)))
         except ValueError:
             local_rank = 0
-            
+
         # 2. Set device for the current process
         torch.cuda.set_device(local_rank)
         current_device = torch.device('cuda', local_rank)
         device_ids = [local_rank]
-    
+
         # 3. Use the standard NCCL backend (the primary alternative to SMDDP)
-        backend_name = 'nccl' 
+        backend_name = 'nccl'
         logger.info(f"🔧 Final DDP Backend selected: {backend_name}")
-    
+
         # 4. Initialize the process group
         if not dist.is_initialized():
             logger.info(f"🔧 Attempting to initialize DDP process group with backend: {backend_name}...")
@@ -196,15 +196,18 @@ def model_device_setup_for_ddp(model):
                 logger.error(f"❌ CRITICAL DDP INIT FAILURE for rank {local_rank}: {e}")
                 raise
 
-        # 5. Wrap the model in DistributedDataParallel
+        # 5. Move model to correct device before DDP wrapping
+        model = model.to(current_device)
+        # 6. Wrap the model in DistributedDataParallel (only set device_ids for CUDA)
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=device_ids)
-    
+        logger.info(f"✅ Model wrapped with DDP on device {current_device} (device_ids={device_ids})")
+
     else:
-        # Single process setup - just move to available device
+        # Single process setup - just move to available device, no DDP
         device = torch.device('cuda:0') if num_gpus_available > 0 else torch.device('cpu')
         model = model.to(device)
-        logger.info(f"✅ Model moved to {device}")
-            
+        logger.info(f"✅ Model moved to {device} (no DDP)")
+
     return model
 
 def resnet50_imagenet(num_classes=1000, pretrained=False):
