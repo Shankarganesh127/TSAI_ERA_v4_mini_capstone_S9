@@ -52,12 +52,6 @@ if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
 os.environ['SMDATAPARALLEL_OPTIMIZE_SDP'] = 'true'
 os.environ['PYTHONUNBUFFERED'] = '1'
 
-def is_main_process():
-    """Checks if the current process is the main (rank 0) process."""
-    # In a single-instance job, checking LOCAL_RANK is sufficient.
-    # We use a default of 0 in case the variable isn't set (e.g., during local testing).
-    return int(os.environ.get('LOCAL_RANK', 0)) == 0
-
 def optimize_num_workers(batch_size, available_memory_gb=None, cpu_count=None):
     """
     Optimize num_workers for DataLoader based on system resources and batch size,
