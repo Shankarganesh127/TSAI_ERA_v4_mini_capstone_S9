@@ -158,75 +158,52 @@ class ResNetImageNet(nn.Module):
 
 def model_device_setup_for_ddp(model):
     """
-    Setup device and optionally configure for DistributedDataParallel (DDP).
+    Setup device and configure for DistributedDataParallel (DDP) using the 
+    standard PyTorch NCCL backend, completely bypassing SMDDP.
     """
     logger = get_unified_logger()
     num_gpus_available = torch.cuda.device_count()
     
-    # ----------------------------------------------------------------------
-    # CRITICAL FIX 1: DEFINE is_distributed
-    # Check for DDP environment variables (set by PyTorch DDP or SMDDP launcher)
+    # Check for DDP environment variables (standard for SageMaker and PyTorch)
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     is_distributed = world_size > 1 or 'RANK' in os.environ or 'LOCAL_RANK' in os.environ
-    # ----------------------------------------------------------------------
     
     if is_distributed and num_gpus_available > 0:
-        logger.info("🔧 Setting up model for distributed (multi-process) training")
+        logger.info("🔧 Setting up model for distributed (multi-process) training via NCCL backend.")
     
-        # 1. Determine local rank based on standard DDP env vars (set by PyTorch DDP or SMDDP launcher)
+        # 1. Determine local rank based on standard DDP env vars
         try:
             local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', 0)))
         except ValueError:
             local_rank = 0
-
-        # 2. Initialize DDP and set device for the current process
+            
+        # 2. Set device for the current process
         torch.cuda.set_device(local_rank)
         current_device = torch.device('cuda', local_rank)
         device_ids = [local_rank]
     
-        # 3. CRITICAL FIX: Determine backend based on the SageMaker launcher environment variable.
-        backend_name = 'nccl' # Default to standard PyTorch DDP backend
-        sm_framework_name = os.environ.get('SM_FRAMEWORK_NAME', '').lower()
-    
-        # Check if the SageMaker Distributed Data Parallel (SMDDP) framework is signaled
-        if 'sagemaker-distributed' in sm_framework_name:
-            try:
-                # Only attempt to import/use smddp if the launcher is set up for it
-                import smdistributed.dataparallel.torch.torch_smddp
-                backend_name = 'smddp'
-                logger.info("✅ SMDDP launcher detected and library imported.")
-            except ImportError:
-                # If the SMDDP launcher is used but the library is missing, log a warning
-                logger.warning("⚠️ WARNING: SMDDP launcher detected, but smdistributed package is missing or failed to import. Falling back to NCCL.")
-
+        # 3. Use the standard NCCL backend (the primary alternative to SMDDP)
+        backend_name = 'nccl' 
         logger.info(f"🔧 Final DDP Backend selected: {backend_name}")
     
-        # 4. Initialize the process group with robust error handling
+        # 4. Initialize the process group
         if not dist.is_initialized():
             logger.info(f"🔧 Attempting to initialize DDP process group with backend: {backend_name}...")
             try:
                 dist.init_process_group(backend=backend_name)
                 logger.info("✅ Distributed process group initialized.")
             except Exception as e:
-                # Include environment variables in the error log to help debug Exit Code 1
                 logger.error(f"❌ CRITICAL DDP INIT FAILURE for rank {local_rank}: {e}")
-                logger.error(f"❌ Env (WORLD_SIZE, MASTER_ADDR, RANK): {os.environ.get('WORLD_SIZE')}, {os.environ.get('MASTER_ADDR')}, {os.environ.get('RANK')}")
-                # Re-raise the exception to force the log flush before mpirun terminates
                 raise
 
         # 5. Wrap the model in DistributedDataParallel
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=device_ids)
+    
     else:
         # Single process setup - just move to available device
-        if num_gpus_available > 0:
-            device = torch.device('cuda:0')
-            model = model.to(device)
-            logger.info(f"✅ Model moved to GPU: {device}")
-        else:
-            device = torch.device('cpu')
-            model = model.to(device)
-            logger.info(f"✅ Model moved to CPU: {device}")
-        pass
+        device = torch.device('cuda:0') if num_gpus_available > 0 else torch.device('cpu')
+        model = model.to(device)
+        logger.info(f"✅ Model moved to {device}")
             
     return model
 
