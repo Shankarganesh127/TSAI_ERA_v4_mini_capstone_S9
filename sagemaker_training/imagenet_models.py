@@ -191,13 +191,29 @@ def model_device_setup_for_ddp(model):
             import smdistributed.dataparallel.torch.torch_smddp
             backend_name = 'smddp'
         except ImportError:
-            backend_name = os.environ.get('BACKEND', 'nccl') # Use environment BACKEND if available
+            backend_name = 'nccl' # Use environment BACKEND if available
             
         if not dist.is_initialized():
-            logger.info(f"🔧 Initializing distributed process group with backend: {backend_name}...")
-            # dist.init_process_group relies on environment variables (MASTER_ADDR, MASTER_PORT, etc.)
-            dist.init_process_group(backend=backend_name)
-            logger.info("✅ Distributed process group initialized")
+            #logger.info(f"🔧 Initializing distributed process group with backend: {backend_name}...")
+            ## dist.init_process_group relies on environment variables (MASTER_ADDR, MASTER_PORT, etc.)
+            #dist.init_process_group(backend=backend_name)
+            #logger.info("✅ Distributed process group initialized")
+            try:
+                logger.info(f"🔧 Initializing distributed process group with backend: {backend_name}...")
+                # CRITICAL: This is the failure point. Wrap it!
+                dist.init_process_group(backend=backend_name)
+                logger.info("✅ Distributed process group initialized")
+            except Exception as e:
+                # Log the environment for debugging
+                logger.error(f"❌ CRITICAL DDP INIT FAILURE for rank {local_rank}: {e}")
+                logger.error("❌ Environment variables related to DDP:")
+                logger.error(f"  WORLD_SIZE: {os.environ.get('WORLD_SIZE')}")
+                logger.error(f"  MASTER_ADDR: {os.environ.get('MASTER_ADDR')}")
+                logger.error(f"  MASTER_PORT: {os.environ.get('MASTER_PORT')}")
+                logger.error(f"  RANK: {os.environ.get('RANK')}")
+                
+                # Re-raise the exception so the process exits, but now we have diagnostics
+                raise
             
         # Wrap model in DDP
         from torch.nn.parallel import DistributedDataParallel
@@ -207,7 +223,7 @@ def model_device_setup_for_ddp(model):
             output_device=local_rank
         )
         logger.info("✅ Model configured for DDP")
-        
+        pass
     else:
         # Single process setup - just move to available device
         if num_gpus_available > 0:
@@ -218,6 +234,7 @@ def model_device_setup_for_ddp(model):
             device = torch.device('cpu')
             model = model.to(device)
             logger.info(f"✅ Model moved to CPU: {device}")
+        pass
             
     return model
 
