@@ -1223,36 +1223,6 @@ def detect_dataset_format(data_path):
 
 
 def main():
-    import sys
-    import os
-    parser = argparse.ArgumentParser(description='ImageNet Training Pipeline')
-    parser.add_argument('--train', type=str, required=True, help='ImageNet training dataset path')
-    parser.add_argument('--val', type=str, required=True, help='ImageNet validation dataset path')
-    parser.add_argument('--output', type=str, default='./imagenet_pipeline_results', help='Output directory')
-    parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
-    parser.add_argument('--quick-mode', action='store_true', help='Enable quick mode for faster testing')
-    parser.add_argument('--batch-size', type=int, default=32, help='Batch size for training')
-    parser.add_argument('--num-workers', type=int, default=4, help='Number of data loading workers')
-    parser.add_argument('--no-amp', action='store_true', help='Disable mixed precision training')
-    parser.add_argument('--no-compile', action='store_true', help='Disable torch.compile optimization')
-    parser.add_argument('--lightweight-augs', action='store_true', help='Use lightweight augmentations for maximum speed')
-    parser.add_argument('--skip-lr-test', action='store_true', help='Skip LR range test')
-    parser.add_argument('--skip-wd-search', action='store_true', help='Skip weight decay search')
-    args = parser.parse_args()
-
-    # Simple file existence checks
-    if not os.path.exists(args.train):
-        print("ERROR: Training data directory does not exist:", args.train)
-        sys.exit(1)
-    if not os.path.exists(args.val):
-        print("ERROR: Validation data directory does not exist:", args.val)
-        sys.exit(1)
-    if len(os.listdir(args.train)) == 0:
-        print("ERROR: Training data directory is empty:", args.train)
-        sys.exit(1)
-    if len(os.listdir(args.val)) == 0:
-        print("ERROR: Validation data directory is empty:", args.val)
-        sys.exit(1)
     """Main training pipeline"""
     import sys
     import os

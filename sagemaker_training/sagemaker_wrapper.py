@@ -116,6 +116,21 @@ class ImageNetSageMakerTrainer:
         return args
     
     def build_pipeline_command(self, args):
+        # Check Python executable
+        python_executable = sys.executable
+        if not Path(python_executable).exists():
+            self.logger.error(f"❌ Python executable not found: {python_executable}")
+            raise FileNotFoundError(f"Python executable not found: {python_executable}")
+
+        # Check train and val data directories
+        train_path = Path(args.data_dir)
+        val_path = Path(args.val_dir)
+        if not train_path.exists():
+            self.logger.error(f"❌ Training data directory not found: {train_path}")
+            raise FileNotFoundError(f"Training data directory not found: {train_path}")
+        if not val_path.exists():
+            self.logger.error(f"❌ Validation data directory not found: {val_path}")
+            raise FileNotFoundError(f"Validation data directory not found: {val_path}")
         """Build command for 7-step pipeline execution with model saving"""
         # In SageMaker, all source code is uploaded to /opt/ml/code/
         
