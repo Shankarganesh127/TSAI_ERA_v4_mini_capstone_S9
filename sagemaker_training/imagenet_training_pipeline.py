@@ -1834,10 +1834,10 @@ def main():
 
 
 if __name__ == "__main__":
-    if (is_main_process()):
-        try:
-            main()
-        except Exception as e:
+    try:
+        main()
+    except Exception as e:
+        if (is_main_process()):
             # Setup unified logger for error reporting if main logger fails
             try:
                 from logger_setup import setup_unified_logger

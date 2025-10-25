@@ -32,13 +32,11 @@ class ImageNetSageMakerTrainer:
         # Initialize logger attributes first to ensure they're always available
         self.logger = None
         self.unified_logger = None
-        self.subprocess_logger = None
         
         try:
             # Set up logging
             self.unified_logger = setup_unified_logger()
             self.logger = get_unified_logger("sagemaker_wrapper")
-            self.subprocess_logger = get_unified_logger("subprocess_monitor")
             
             # Set memory fragmentation fix BEFORE any PyTorch operations
             if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
@@ -67,7 +65,6 @@ class ImageNetSageMakerTrainer:
             self.logger = logging.getLogger("sagemaker_wrapper_fallback")
             self.logger.error(f"Failed to setup unified logger, using fallback: {e}")
             self.unified_logger = self.logger
-            self.subprocess_logger = self.logger
         
     def parse_hyperparameters(self):
         """Parse SageMaker hyperparameters"""
@@ -406,15 +403,9 @@ class ImageNetSageMakerTrainer:
         if len(cmd) > 2:
             self.logger.info(f"⚙️  Script arguments: {' '.join(map(str, cmd[2:]))}")
             
-        # Log environment variables that might affect execution
-        self.subprocess_logger.info("🌍 Subprocess environment variables:")
-        for key in ['PYTHONPATH', 'PATH', 'CUDA_VISIBLE_DEVICES', 'SM_MODEL_DIR', 'SM_CHANNEL_TRAINING']:
-            value = os.environ.get(key, 'Not set')
-            self.subprocess_logger.info(f"   {key}={value}")
             
         # Log process startup details
         start_time = datetime.now()
-        self.subprocess_logger.info(f"⏰ Subprocess start time: {start_time}")
         self.logger.info("🔥 Starting subprocess execution...")
 
         # Stream subprocess output in real-time instead of capturing
@@ -435,19 +426,9 @@ class ImageNetSageMakerTrainer:
         )
             
         # Log process creation details
-        self.subprocess_logger.info(f"🆔 Process ID: {process.pid}")
-        self.subprocess_logger.info(f"📝 Process created successfully")
         self.logger.info(f"🚀 Subprocess started with PID: {process.pid}")
             
         # Stream output line by line - simplified without progress bar parsing
-        last_progress_line = ""
-        line_counter = 0
-            
-        # Log process creation details
-        self.subprocess_logger.info(f"🆔 Process ID: {process.pid}")
-        self.subprocess_logger.info(f"📝 Process created successfully")
-        self.logger.info(f"🚀 Subprocess started with PID: {process.pid}")
-
         # Stream output line by line and log to both loggers
         line_counter = 0
         try:
@@ -456,10 +437,8 @@ class ImageNetSageMakerTrainer:
                 line = line.rstrip()
                 # Log every line to both loggers
                 self.logger.info(f"[PIPELINE] {line}")
-                self.subprocess_logger.info(f"[PIPELINE] {line}")
         except Exception as stream_exc:
             self.logger.error(f"❌ Error streaming subprocess output: {stream_exc}")
-            self.subprocess_logger.error(f"❌ Error streaming subprocess output: {stream_exc}")
         finally:
             try:
                 return_code = process.wait()
@@ -467,7 +446,6 @@ class ImageNetSageMakerTrainer:
                 duration = end_time - start_time
             except Exception as wait_exc:
                 self.logger.error(f"❌ Error waiting for subprocess: {wait_exc}")
-                self.subprocess_logger.error(f"❌ Error waiting for subprocess: {wait_exc}")
 
         # =============================================================================
         # SUBPROCESS COMPLETED
@@ -481,23 +459,10 @@ class ImageNetSageMakerTrainer:
         self.logger.info(f"📝 Total output lines: {line_counter}")
         self.logger.info("=" * 80)
 
-        # Comprehensive subprocess completion logging
-        self.subprocess_logger.info("="*60)
-        self.subprocess_logger.info("🏁 SUBPROCESS EXECUTION COMPLETED")
-        self.subprocess_logger.info("="*60)
-        self.subprocess_logger.info(f"🆔 Process ID: {process.pid}")
-        self.subprocess_logger.info(f"📊 Exit code: {return_code}")
-        self.subprocess_logger.info(f"⏰ Start time: {start_time}")
-        self.subprocess_logger.info(f"⏰ End time: {end_time}")
-        self.subprocess_logger.info(f"⌛ Total duration: {duration}")
-        self.subprocess_logger.info(f"📝 Total output lines captured: {line_counter}")
-
         if return_code == 0:
             self.logger.info("✅ Subprocess completed successfully")
-            self.subprocess_logger.info("✅ Process exited normally")
         else:
             self.logger.error(f"❌ Subprocess failed with return code: {return_code}")
-            self.subprocess_logger.error(f"❌ Process failed with exit code: {return_code}")
 
         # Check if subprocess failed
         if return_code != 0:
@@ -520,40 +485,38 @@ class ImageNetSageMakerTrainer:
         # Save comprehensive results summary  
         results_file = os.path.join(args.output_dir, 'training_summary.json')
         # Always save logs to the specified absolute path
-        local_logs_dir = '/home/sagemaker-user/TSAI_ERA_v4_mini_capstone_S9/sagemaker_training/logs'
-        os.makedirs(local_logs_dir, exist_ok=True)
-        log_file_path = os.path.join(local_logs_dir, 'training_log.txt')
         try:
             summary = {
-                # ...existing code...
+                'pipeline_completed': True,
+                'training_config': {
+                    'epochs': args.epochs,
+                    'batch_size': args.batch_size or 'auto-detected',
+                    'lr_finder_used': args.run_lr_finder,
+                    'wd_search_used': args.run_wd_search,
+                    'quick_mode': args.quick_mode,
+                    'mixed_precision': args.mixed_precision,
+                    'gradient_clip': args.gradient_clip
+                },
+                'sagemaker_info': {
+                    'job_name': os.environ.get('SM_TRAINING_JOB_NAME', 'unknown'),
+                    'instance_type': os.environ.get('SM_CURRENT_INSTANCE_TYPE', 'unknown'),
+                    'region': os.environ.get('AWS_DEFAULT_REGION', 'unknown'),
+                    'output_path': args.output_dir
+                },
+                'model_saving': {
+                    'save_every_epoch': True,
+                    'checkpoint_format': 'pytorch',
+                    'final_model_saved': True
+                }
             }
             with open(results_file, 'w') as f:
                 json.dump(summary, f, indent=2)
             self.logger.info(f"💾 Training summary saved: {results_file}")
             self._organize_model_artifacts(args.output_dir)
             self._verify_model_saving(args.output_dir)
-            # Save logs to text file in specified logs directory
-            if hasattr(self.logger, 'get_log_contents'):
-                log_contents = self.logger.get_log_contents()
-                with open(log_file_path, 'w', encoding='utf-8') as logf:
-                    logf.write(log_contents)
-                self.logger.info(f"📝 Training log saved to: {log_file_path}")
-            else:
-                # Fallback: Write a message if logger does not support get_log_contents
-                with open(log_file_path, 'w', encoding='utf-8') as logf:
-                    logf.write('Logger does not support get_log_contents. Please check console output.')
-                self.logger.info(f"📝 Training log saved to: {log_file_path} (fallback mode)")
         except Exception as e:
             self.logger.warning(f"⚠️ Could not save results summary or logs: {e}")
 
-    def _process_results(self, result, args):
-        """Process and log training results with model saving"""
-        # Log key pipeline outputs
-        if result.stdout:
-            for line in result.stdout.split('\n'):
-                if any(keyword in line for keyword in ['STEP', 'Best', 'Final', 'Accuracy', 'Epoch']):
-                    self.logger.info(f"📊 {line.strip()}")
-        
     def _verify_model_saving(self, output_dir):
         """Verify that model saving worked correctly"""
         try:
@@ -655,5 +618,4 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    if (int(os.environ.get('LOCAL_RANK', 0)) == 0):
         main()

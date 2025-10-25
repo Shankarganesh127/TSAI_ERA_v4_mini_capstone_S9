@@ -444,5 +444,4 @@ def main():
         raise
 
 if __name__ == "__main__":
-    if (int(os.environ.get('LOCAL_RANK', 0)) == 0):
         main()
