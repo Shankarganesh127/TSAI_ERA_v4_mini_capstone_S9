@@ -388,6 +388,8 @@ class ImageNetSageMakerTrainer:
             self.logger.info(f"💻 Working Directory: {run_cwd}")
             self.logger.info(f"⏰ Execution Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             self.logger.info("=" * 80)
+        except Exception as e:
+            self.logger.error(f"❌ Exception during SageMaker code/script checks: {e}")
             self.logger.info("🎬 SUBPROCESS OUTPUT STREAMING BELOW:")
             self.logger.info("=" * 80)
             sys.stdout.flush()
@@ -441,11 +443,32 @@ class ImageNetSageMakerTrainer:
             last_progress_line = ""
             line_counter = 0
             
-            # Wait for process to complete and get return code
-            return_code = process.wait()
-            end_time = datetime.now()
-            duration = end_time - start_time
-            
+            # Log process creation details
+            self.subprocess_logger.info(f"🆔 Process ID: {process.pid}")
+            self.subprocess_logger.info(f"📝 Process created successfully")
+            self.logger.info(f"🚀 Subprocess started with PID: {process.pid}")
+
+            # Stream output line by line and log to both loggers
+            line_counter = 0
+            try:
+                for line in process.stdout:
+                    line_counter += 1
+                    line = line.rstrip()
+                    # Log every line to both loggers
+                    self.logger.info(f"[PIPELINE] {line}")
+                    self.subprocess_logger.info(f"[PIPELINE] {line}")
+            except Exception as stream_exc:
+                self.logger.error(f"❌ Error streaming subprocess output: {stream_exc}")
+                self.subprocess_logger.error(f"❌ Error streaming subprocess output: {stream_exc}")
+            finally:
+                try:
+                    return_code = process.wait()
+                    end_time = datetime.now()
+                    duration = end_time - start_time
+                except Exception as wait_exc:
+                    self.logger.error(f"❌ Error waiting for subprocess: {wait_exc}")
+                    self.subprocess_logger.error(f"❌ Error waiting for subprocess: {wait_exc}")
+
             # =============================================================================
             # SUBPROCESS COMPLETED
             # =============================================================================
@@ -457,7 +480,7 @@ class ImageNetSageMakerTrainer:
             self.logger.info(f"⌛ Total Duration: {duration}")
             self.logger.info(f"📝 Total output lines: {line_counter}")
             self.logger.info("=" * 80)
-            
+
             # Comprehensive subprocess completion logging
             self.subprocess_logger.info("="*60)
             self.subprocess_logger.info("🏁 SUBPROCESS EXECUTION COMPLETED")
@@ -468,41 +491,60 @@ class ImageNetSageMakerTrainer:
             self.subprocess_logger.info(f"⏰ End time: {end_time}")
             self.subprocess_logger.info(f"⌛ Total duration: {duration}")
             self.subprocess_logger.info(f"📝 Total output lines captured: {line_counter}")
-            
+
             if return_code == 0:
                 self.logger.info("✅ Subprocess completed successfully")
                 self.subprocess_logger.info("✅ Process exited normally")
             else:
                 self.logger.error(f"❌ Subprocess failed with return code: {return_code}")
                 self.subprocess_logger.error(f"❌ Process failed with exit code: {return_code}")
-            
+
             # Check if subprocess failed
             if return_code != 0:
                 self.logger.error(f"❌ Pipeline failed with return code: {return_code}")
                 raise subprocess.CalledProcessError(return_code, cmd)
-            
+
             self.logger.info("✅ 7-Step Pipeline completed successfully!")
-            
+
             # Create a mock result object for compatibility with _process_results
             class MockResult:
                 def __init__(self, returncode):
                     self.returncode = returncode
                     self.stdout = ""  # Output was already streamed
                     self.stderr = ""
-            
+
             self._process_results(MockResult(return_code), args)
-            
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"❌ Pipeline failed: {e}")
-            self.logger.error(f"Return code: {e.returncode}")
-            raise
-        except Exception as e:
-            self.logger.error(f"❌ Unexpected error during pipeline execution: {e}")
-            raise
-        finally:
             # Clean up model monitoring (progress bars now handled in pipeline)
             self._cleanup_model_monitoring()
     
+        # Save comprehensive results summary  
+        results_file = os.path.join(args.output_dir, 'training_summary.json')
+        local_logs_dir = os.path.join(os.getcwd(), 'logs')
+        os.makedirs(local_logs_dir, exist_ok=True)
+        log_file_path = os.path.join(local_logs_dir, 'training_log.txt')
+        try:
+            summary = {
+                # ...existing code...
+            }
+            with open(results_file, 'w') as f:
+                json.dump(summary, f, indent=2)
+            self.logger.info(f"💾 Training summary saved: {results_file}")
+            self._organize_model_artifacts(args.output_dir)
+            self._verify_model_saving(args.output_dir)
+            # Save logs to text file in local logs directory
+            if hasattr(self.logger, 'get_log_contents'):
+                log_contents = self.logger.get_log_contents()
+                with open(log_file_path, 'w', encoding='utf-8') as logf:
+                    logf.write(log_contents)
+                self.logger.info(f"📝 Training log saved to: {log_file_path}")
+            else:
+                # Fallback: Write a message if logger does not support get_log_contents
+                with open(log_file_path, 'w', encoding='utf-8') as logf:
+                    logf.write('Logger does not support get_log_contents. Please check console output.')
+                self.logger.info(f"📝 Training log saved to: {log_file_path} (fallback mode)")
+        except Exception as e:
+            self.logger.warning(f"⚠️ Could not save results summary or logs: {e}")
+
     def _process_results(self, result, args):
         """Process and log training results with model saving"""
         # Log key pipeline outputs
@@ -511,45 +553,6 @@ class ImageNetSageMakerTrainer:
                 if any(keyword in line for keyword in ['STEP', 'Best', 'Final', 'Accuracy', 'Epoch']):
                     self.logger.info(f"📊 {line.strip()}")
         
-        # Save comprehensive results summary  
-        results_file = os.path.join(args.output_dir, 'training_summary.json')
-        try:
-            summary = {
-                'pipeline_completed': True,
-                'training_config': {
-                    'epochs': args.epochs,
-                    'batch_size': args.batch_size or 'auto-detected',
-                    'lr_finder_used': args.run_lr_finder,
-                    'wd_search_used': args.run_wd_search,
-                    'quick_mode': args.quick_mode,
-                    'mixed_precision': args.mixed_precision,
-                    'gradient_clip': args.gradient_clip
-                },
-                'sagemaker_info': {
-                    'job_name': os.environ.get('SM_TRAINING_JOB_NAME', 'unknown'),
-                    'instance_type': os.environ.get('SM_CURRENT_INSTANCE_TYPE', 'unknown'),
-                    'region': os.environ.get('AWS_DEFAULT_REGION', 'unknown'),
-                    'output_path': args.output_dir
-                },
-                'model_saving': {
-                    'save_every_epoch': True,
-                    'checkpoint_format': 'pytorch',
-                    'final_model_saved': True
-                }
-            }
-            
-            with open(results_file, 'w') as f:
-                json.dump(summary, f, indent=2)
-            
-            self.logger.info(f"💾 Training summary saved: {results_file}")
-            
-            # Create model artifacts structure and verify model saving
-            self._organize_model_artifacts(args.output_dir)
-            self._verify_model_saving(args.output_dir)
-            
-        except Exception as e:
-            self.logger.warning(f"⚠️ Could not save results summary: {e}")
-
     def _verify_model_saving(self, output_dir):
         """Verify that model saving worked correctly"""
         try:
