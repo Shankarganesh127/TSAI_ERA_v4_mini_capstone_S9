@@ -261,7 +261,7 @@ def main():
     )
     
     # Configure data inputs - support both single and multi-channel setups
-    data_inputs = {'train': train_input}  # Default: single channel with train/val subdirectories
+    data_inputs = {'imagenet': train_input}  # Default: single channel with train/val subdirectories
     
     # Add separate validation channel if specified
     if args.val_data_s3:

@@ -519,7 +519,8 @@ class ImageNetSageMakerTrainer:
     
         # Save comprehensive results summary  
         results_file = os.path.join(args.output_dir, 'training_summary.json')
-        local_logs_dir = os.path.join(os.getcwd(), 'logs')
+        # Always save logs to the specified absolute path
+        local_logs_dir = '/home/sagemaker-user/TSAI_ERA_v4_mini_capstone_S9/sagemaker_training/logs'
         os.makedirs(local_logs_dir, exist_ok=True)
         log_file_path = os.path.join(local_logs_dir, 'training_log.txt')
         try:
@@ -531,7 +532,7 @@ class ImageNetSageMakerTrainer:
             self.logger.info(f"💾 Training summary saved: {results_file}")
             self._organize_model_artifacts(args.output_dir)
             self._verify_model_saving(args.output_dir)
-            # Save logs to text file in local logs directory
+            # Save logs to text file in specified logs directory
             if hasattr(self.logger, 'get_log_contents'):
                 log_contents = self.logger.get_log_contents()
                 with open(log_file_path, 'w', encoding='utf-8') as logf:
