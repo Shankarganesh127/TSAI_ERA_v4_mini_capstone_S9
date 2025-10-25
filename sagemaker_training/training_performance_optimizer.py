@@ -101,10 +101,9 @@ class TrainingPerformanceOptimizer:
 
         # Setup mixed precision
         if self.enable_amp:
-            self.scaler = GradScaler('cuda')
+            self.scaler = GradScaler(enabled=torch.cuda.is_available(), device=torch.device(self.device))
         else:
-            self.scaler = GradScaler('cpu')
-
+            self.scaler = GradScaler(enabled=torch.cuda.is_available(), device=torch.device(self.device))
         
         # Setup distributed training
         self.is_distributed = torch.cuda.device_count() > 1 or world_size > 1
@@ -204,7 +203,7 @@ class TrainingPerformanceOptimizer:
                 # Test memory usage with dummy batch
                 dummy_input = torch.randn(batch_size, 3, 224, 224).to(self.device)
                 dummy_target = torch.randint(0, 1000, (batch_size,)).to(self.device)
-                with autocast(enabled=self.enable_amp):
+                with autocast(enabled=self.enable_amp, device_type=self.device):
                     output = self.model(dummy_input)
                     loss = self.criterion(output, dummy_target)
                     if self.scaler:
@@ -406,7 +405,7 @@ class TrainingPerformanceOptimizer:
         with self.profile_step(f'{step_type}_step'):
             # Forward pass
             with self.profile_step('forward_pass'):
-                with autocast(enabled=self.enable_amp):
+                with autocast(enabled=self.enable_amp, device_type=self.device):
                     outputs = self.model(inputs)
                     loss = self.criterion(outputs, targets)
 

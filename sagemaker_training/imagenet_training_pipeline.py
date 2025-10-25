@@ -21,7 +21,7 @@ from datetime import datetime
 import gc
 import logging
 import copy
-from torch.amp import autocast, GradScaler
+from torch.cuda.amp import autocast, GradScaler
 import psutil
 import multiprocessing as mp
 import math
@@ -355,8 +355,9 @@ def create_oom_resilient_trainer(model, optimizer, criterion, device, max_retrie
             self.criterion = criterion
             self.device = device
             self.max_retries = max_retries
-            self.scaler = GradScaler('cuda') if torch.cuda.is_available() else None
+            self.scaler = GradScaler(enabled=torch.cuda.is_available(), device=torch.device(self.device))
             self.oom_count = 0
+            self.enable_amp = self.scaler.enabled
 
         def train_step(self, inputs, targets, gradient_accumulation_steps=1):
             """Single training step with OOM resilience"""
@@ -372,7 +373,7 @@ def create_oom_resilient_trainer(model, optimizer, criterion, device, max_retrie
 
                     # Training step with mixed precision if available
                     if self.scaler and torch.cuda.is_available():
-                        with autocast('cuda'):
+                        with autocast(enabled=self.enable_amp, device_type=self.device):
                             outputs = self.model(inputs)
                             loss = self.criterion(outputs, targets)
 
@@ -523,7 +524,7 @@ class BatchSizeFinder:
         self.criterion = criterion
         self.device = device
         self.enable_amp = enable_amp
-        self.scaler = GradScaler('cuda') if enable_amp else None
+        self.scaler = GradScaler(enabled=enable_amp, device=device)
         
     def _calculate_max_memory_gb(self, max_memory_gb_limit: float) -> float:
         """Determines the effective memory ceiling based on actual GPU VRAM (Corrected)."""
@@ -570,7 +571,7 @@ class BatchSizeFinder:
                 dummy_input = torch.randn(batch_size, 3, 224, 224).to(self.device)
                 dummy_target = torch.randint(0, 1000, (batch_size,)).to(self.device)
 
-                with autocast('cuda' if self.enable_amp else 'cpu'):
+                with autocast(enabled=self.enable_amp, device_type=self.device):
                     output = self.model(dummy_input)
                     loss = self.criterion(output, dummy_target)
                     
@@ -971,10 +972,10 @@ class FullTrainer:
         scaler = None
         # Assuming AMP is desired unless explicitly disabled via args
         if is_cuda_available and args is not None and not getattr(args, 'no_amp', False):
-            scaler = GradScaler('cuda')
+            scaler = GradScaler(enabled=torch.cuda.is_available(), device=torch.device(self.device))
             logger.info("[SPEED] Mixed precision training enabled (AMP)")
         else:
-            scaler = GradScaler('cpu')
+            scaler = GradScaler(enabled=torch.cuda.is_available(), device=torch.device(self.device))
             logger.info("[SPEED] AMP disabled or not available, using full precision")
         
         # cuDNN benchmark
@@ -1053,7 +1054,7 @@ class FullTrainer:
             
             try:
                 # Forward pass with AMP (autocast) if scaler is available
-                with autocast('cuda' if scaler is not None else 'cpu'):
+                with autocast(enabled=self.enable_amp, device_type=self.device ):
                     outputs = self.model(inputs)
                     loss = criterion(outputs, targets)
                 
@@ -1128,7 +1129,7 @@ class FullTrainer:
         bar = tqdm(total=len(self.val_loader), desc="Validation", unit="batch", ncols=120)
         
         with torch.no_grad():
-            with autocast('cuda' if torch.cuda.is_available() else 'cpu'):
+            with autocast(enabled=self.enable_amp, device_type=self.device):
                 for batch_idx, (inputs, targets) in enumerate(self.val_loader):
                     inputs, targets = inputs.to(self.device), targets.to(self.device)
                     
