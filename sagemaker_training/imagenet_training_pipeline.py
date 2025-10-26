@@ -34,6 +34,141 @@ from imagenet_dataset import get_imagenet_dataloaders
 from training_performance_optimizer import TrainingPerformanceOptimizer
 from logger_setup import get_unified_logger
 
+import platform
+import psutil
+import subprocess
+
+import threading
+import time
+import psutil
+try:
+    import GPUtil
+except ImportError:
+    GPUtil = None
+
+
+def get_hardware_summary():
+    summary = {}
+    summary['system'] = platform.system()
+    summary['node_name'] = platform.node()
+    summary['release'] = platform.release()
+    summary['version'] = platform.version()
+    summary['machine'] = platform.machine()
+    summary['processor'] = platform.processor()
+    summary['cpu_cores'] = psutil.cpu_count(logical=False)
+    summary['logical_cpus'] = psutil.cpu_count(logical=True)
+    summary['ram_gb'] = round(psutil.virtual_memory().total / (1024**3), 2)
+
+    # GPU details
+    try:
+        import torch
+        if torch.cuda.is_available():
+            summary['cuda_device_count'] = torch.cuda.device_count()
+            gpus = []
+            for i in range(torch.cuda.device_count()):
+                gpu_info = {
+                    'name': torch.cuda.get_device_name(i),
+                    'memory_gb': round(torch.cuda.get_device_properties(i).total_memory / 1e9, 2)
+                }
+                gpus.append(gpu_info)
+            summary['gpus'] = gpus
+        else:
+            summary['gpus'] = 'No CUDA GPUs detected.'
+    except Exception as e:
+        summary['gpus'] = f'Error getting GPU info: {e}'
+
+    # NVIDIA SMI output
+    try:
+        result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
+        summary['nvidia_smi'] = result.stdout.strip()
+    except Exception as e:
+        summary['nvidia_smi'] = f'Error running nvidia-smi: {e}'
+
+    return summary
+
+
+# Advanced non-blocking resource monitor
+class ResourceMonitor:
+    def __init__(self, interval=2.0):
+        self.interval = interval
+        self.metrics = []
+        self.running = False
+        self.thread = None
+
+    def _collect(self):
+        while self.running:
+            metric = {
+                'timestamp': time.time(),
+                'cpu_percent': psutil.cpu_percent(),
+                'ram_gb': psutil.virtual_memory().used / (1024**3),
+            }
+            # GPU monitoring (multi-GPU)
+            if GPUtil:
+                try:
+                    gpus = GPUtil.getGPUs()
+                    metric['gpus'] = [{
+                        'id': gpu.id,
+                        'name': gpu.name,
+                        'load': gpu.load * 100,
+                        'mem_used': gpu.memoryUsed,
+                        'mem_total': gpu.memoryTotal,
+                        'mem_util': gpu.memoryUtil * 100,
+                        'temperature': gpu.temperature
+                    } for gpu in gpus]
+                except Exception:
+                    metric['gpus'] = []
+            else:
+                metric['gpus'] = []
+            self.metrics.append(metric)
+            time.sleep(self.interval)
+
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._collect, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join()
+
+    def save(self, path):
+        import json
+        with open(path, 'w') as f:
+            json.dump(self.metrics, f, indent=2)
+
+# -----------------------------
+# CSV/JSON Logging Utilities
+# -----------------------------
+import csv
+import json
+def log_metrics_csv(file_path, fieldnames, row):
+    """Append a row of metrics to a CSV file."""
+    file_exists = os.path.exists(file_path)
+    with open(file_path, 'a', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+def log_metrics_json(file_path, data):
+    """Append a dict of metrics to a JSON file (list of dicts)."""
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as f:
+            try:
+                existing = json.load(f)
+            except Exception:
+                existing = []
+    else:
+        existing = []
+    existing.append(data)
+    with open(file_path, 'w') as f:
+        json.dump(existing, f, indent=2)
+
+def log_config_json(file_path, config):
+    """Save config/hyperparameters to JSON file."""
+    with open(file_path, 'w') as f:
+        json.dump(config, f, indent=2)
 # Set memory fragmentation fix BEFORE any PyTorch operations
 # Make split size adaptive to GPU memory size for optimal performance
 if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
@@ -642,6 +777,12 @@ class LRFinder:
     def range_test(self, dataloader, start_lr=1e-7, end_lr=1, num_iter=100, smooth_factor=0.05):
         """Perform LR range test with state restoration."""
         logger = get_unified_logger("lr_range_test")
+        # Setup logging files
+        output_dir = './imagenet_pipeline_results'
+        os.makedirs(output_dir, exist_ok=True)
+        csv_path = os.path.join(output_dir, 'lr_range_log.csv')
+        json_path = os.path.join(output_dir, 'lr_range_log.json')
+        csv_fields = ['iteration', 'lr', 'smoothed_loss']
         
         # --- CRITICAL: Save Initial State ---
         model_state = copy.deepcopy(self.model.state_dict())
@@ -686,6 +827,18 @@ class LRFinder:
             else:
                 smoothed_loss = smooth_factor * loss.item() + (1 - smooth_factor) * losses[-1]
             losses.append(smoothed_loss)
+
+            # Log metrics for this iteration
+            log_metrics_csv(csv_path, csv_fields, {
+                'iteration': i+1,
+                'lr': current_lr,
+                'smoothed_loss': smoothed_loss
+            })
+            log_metrics_json(json_path, {
+                'iteration': i+1,
+                'lr': current_lr,
+                'smoothed_loss': smoothed_loss
+            })
             
             # Stop if loss explodes
             if smoothed_loss > 4 * best_loss or torch.isnan(loss):
@@ -748,6 +901,12 @@ class HyperparameterOptimizer:
         val_losses = []
         val_accs = []
         logger = get_unified_logger("WeightDecaySearch - QuickTrain")
+        # Setup logging files
+        output_dir = './imagenet_pipeline_results'
+        os.makedirs(output_dir, exist_ok=True)
+        csv_path = os.path.join(output_dir, 'wd_quicktrain_log.csv')
+        json_path = os.path.join(output_dir, 'wd_quicktrain_log.json')
+        csv_fields = ['epoch', 'train_loss', 'val_loss', 'val_acc']
         
         for epoch in range(epochs):
             # Training
@@ -827,6 +986,20 @@ class HyperparameterOptimizer:
             train_losses.append(train_loss / train_batches)
             val_losses.append(val_loss / val_batches)
             val_accs.append(100. * val_correct / val_total)
+
+            # Log metrics for this epoch
+            log_metrics_csv(csv_path, csv_fields, {
+                'epoch': epoch+1,
+                'train_loss': train_loss / train_batches if train_batches else 0,
+                'val_loss': val_loss / val_batches if val_batches else 0,
+                'val_acc': 100. * val_correct / val_total if val_total else 0
+            })
+            log_metrics_json(json_path, {
+                'epoch': epoch+1,
+                'train_loss': train_loss / train_batches if train_batches else 0,
+                'val_loss': val_loss / val_batches if val_batches else 0,
+                'val_acc': 100. * val_correct / val_total if val_total else 0
+            })
             
             # Clean up GPU memory to prevent OOM accumulation
             if torch.cuda.is_available():
@@ -929,6 +1102,13 @@ class FullTrainer:
         
         logger = get_unified_logger("FullTrainer")
         
+        # Setup logging files (once per run)
+        output_dir = self.save_dir if self.save_dir else './imagenet_pipeline_results'
+        os.makedirs(output_dir, exist_ok=True)
+        csv_path = os.path.join(output_dir, 'train_log.csv')
+        json_path = os.path.join(output_dir, 'train_log.json')
+        csv_fields = ['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc', 'lr', 'momentum', 'timestamp']
+        
         # --- 1. Resource and Hyperparameter Setup ---
         # Calculate adaptive gradient accumulation if not specified (uses dummy if not defined)
         if gradient_accumulation_steps == 1:
@@ -1009,6 +1189,21 @@ class FullTrainer:
             self.history['val_acc'].append(val_acc)
             self.history['lr'].append(optimizer.param_groups[0]['lr'])
             self.history['momentum'].append(optimizer.param_groups[0]['momentum'])
+
+            # Log metrics for this epoch with timestamp
+            import time
+            metric_row = {
+                'epoch': epoch+1,
+                'train_loss': train_loss,
+                'train_acc': train_acc,
+                'val_loss': val_loss,
+                'val_acc': val_acc,
+                'lr': optimizer.param_groups[0]['lr'],
+                'momentum': optimizer.param_groups[0]['momentum'],
+                'timestamp': time.time()
+            }
+            log_metrics_csv(csv_path, csv_fields, metric_row)
+            log_metrics_json(json_path, metric_row)
 
             # Update tqdm progress bar
             bar.n = epoch + 1
@@ -1234,15 +1429,90 @@ def detect_dataset_format(data_path):
     logger.warning("⚠️  Could not determine format, defaulting to ILSVRC")
     return 'ilsvrc'
 
+class TrainingResultPlotter:
+    def __init__(self):
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        self.pd = pd
+        self.plt = plt
+
+    def plot_train_log(self, output_dir):
+        train_log_csv = os.path.join(output_dir, 'train_log.csv')
+        if os.path.exists(train_log_csv):
+            df = self.pd.read_csv(train_log_csv)
+            self.plt.figure(figsize=(10, 6))
+            self.plt.plot(df['epoch'], df['train_loss'], label='Train Loss')
+            self.plt.plot(df['epoch'], df['val_loss'], label='Val Loss')
+            self.plt.xlabel('Epoch')
+            self.plt.ylabel('Loss')
+            self.plt.title('Training & Validation Loss')
+            self.plt.legend()
+            self.plt.grid(True)
+            self.plt.savefig(os.path.join(output_dir, 'loss_curve.png'))
+            self.plt.close()
+
+            self.plt.figure(figsize=(10, 6))
+            self.plt.plot(df['epoch'], df['train_acc'], label='Train Acc')
+            self.plt.plot(df['epoch'], df['val_acc'], label='Val Acc')
+            self.plt.xlabel('Epoch')
+            self.plt.ylabel('Accuracy (%)')
+            self.plt.title('Training & Validation Accuracy')
+            self.plt.legend()
+            self.plt.grid(True)
+            self.plt.savefig(os.path.join(output_dir, 'accuracy_curve.png'))
+            self.plt.close()
+        else:
+            print('No train_log.csv found for plotting.')
+
+    def plot_lr_range_curve(self, output_dir):
+        lr_curve_csv = os.path.join(output_dir, 'lr_range_curve.csv')
+        if os.path.exists(lr_curve_csv):
+            df = self.pd.read_csv(lr_curve_csv)
+            self.plt.figure(figsize=(10, 6))
+            self.plt.plot(df['lr'], df['smoothed_loss'])
+            self.plt.xscale('log')
+            self.plt.xlabel('Learning Rate')
+            self.plt.ylabel('Smoothed Loss')
+            self.plt.title('LR Range Test Curve')
+            self.plt.grid(True)
+            self.plt.savefig(os.path.join(output_dir, 'lr_range_curve_plot.png'))
+            self.plt.close()
+        else:
+            print('No lr_range_curve.csv found for plotting.')
+
+    def plot_weight_decay_search(self, output_dir):
+        wd_csv = os.path.join(output_dir, 'weight_decay_search.csv')
+        if os.path.exists(wd_csv):
+            df = self.pd.read_csv(wd_csv)
+            self.plt.figure(figsize=(10, 6))
+            self.plt.plot(df['weight_decay'], df['best_val_acc'], marker='o')
+            self.plt.xscale('log')
+            self.plt.xlabel('Weight Decay')
+            self.plt.ylabel('Best Validation Accuracy (%)')
+            self.plt.title('Weight Decay Search Results')
+            self.plt.grid(True)
+            self.plt.savefig(os.path.join(output_dir, 'weight_decay_search_plot.png'))
+            self.plt.close()
+        else:
+            print('No weight_decay_search.csv found for plotting.')
+
+    def plot_all(self, output_dir):
+        self.plot_train_log(output_dir)
+        self.plot_lr_range_curve(output_dir)
+        self.plot_weight_decay_search(output_dir)
+
 
 def main():
+
+    
+
     """Main training pipeline"""
     import sys
     import os
     
     # Set up unified logging first thing
     logger = get_unified_logger("imagenet_training_pipeline")
-    
+
     # =============================================================================
     # SAGEMAKER TRAINING STARTED - SIMPLE STATUS LOG
     # =============================================================================
@@ -1279,8 +1549,40 @@ def main():
     
     args = parser.parse_args()
     
-    # Setup logging
-    logger = get_unified_logger('imagenet_pipeline')
+    # Step 2: Start resource monitor before training
+    monitor = ResourceMonitor(interval=5.0)
+    monitor.start()
+    
+    # -----------------------------
+    # Log config and environment info
+    # -----------------------------
+    output_dir = args.output if hasattr(args, 'output') else './imagenet_pipeline_results'
+    os.makedirs(output_dir, exist_ok=True)
+    config_path = os.path.join(output_dir, 'run_config.json')
+    run_config = {
+        'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'python_version': sys.version,
+        'pytorch_version': torch.__version__,
+        'working_directory': os.getcwd(),
+        'script_path': sys.argv[0],
+        'command_line_args': sys.argv[1:] if len(sys.argv) > 1 else 'None',
+        'hyperparameters': {
+            'train_data': args.train,
+            'val_data': args.val,
+            'output_dir': args.output,
+            'epochs': args.epochs,
+            'batch_size': args.batch_size,
+            'num_workers': args.num_workers,
+            'quick_mode': args.quick_mode,
+            'no_amp': args.no_amp,
+            'no_compile': args.no_compile,
+            'lightweight_augs': args.lightweight_augs,
+            'skip_lr_test': args.skip_lr_test,
+            'skip_wd_search': args.skip_wd_search
+        }
+    }
+    log_config_json(config_path, run_config)
+    
     
     # DEBUG: Add extensive early debugging
     logger.info("[DEBUG] DEBUG: Arguments parsed successfully")
@@ -1568,6 +1870,22 @@ def main():
         # Save results
         with open(os.path.join(args.output, 'lr_config.json'), 'w') as f:
             json.dump({k: float(v) for k, v in lr_config.items()}, f, indent=2)
+
+        # Save LR range test curve to CSV/JSON for analysis
+        lr_curve_csv = os.path.join(args.output, 'lr_range_curve.csv')
+        lr_curve_json = os.path.join(args.output, 'lr_range_curve.json')
+        import csv
+        import time
+        with open(lr_curve_csv, 'w', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=['iteration', 'lr', 'smoothed_loss', 'timestamp'])
+            writer.writeheader()
+            for i, (lr, loss) in enumerate(zip(lrs, losses)):
+                writer.writerow({'iteration': i+1, 'lr': lr, 'smoothed_loss': loss, 'timestamp': time.time()})
+        with open(lr_curve_json, 'w') as f:
+            json.dump([
+                {'iteration': i+1, 'lr': float(lr), 'smoothed_loss': float(loss), 'timestamp': time.time()}
+                for i, (lr, loss) in enumerate(zip(lrs, losses))
+            ], f, indent=2)
             
         # Clean up GPU memory to prevent OOM
         del model, optimizer, criterion, lr_finder, lr_test_loader
@@ -1604,6 +1922,16 @@ def main():
         # Save results
         with open(os.path.join(args.output, 'weight_decay_search.json'), 'w') as f:
             json.dump(wd_results, f, indent=2)
+
+        # Save weight decay search results to CSV for analysis
+        wd_csv = os.path.join(args.output, 'weight_decay_search.csv')
+        import csv
+        import time
+        with open(wd_csv, 'w', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=['weight_decay', 'best_val_acc', 'timestamp'])
+            writer.writeheader()
+            for result in wd_results:
+                writer.writerow({'weight_decay': result['weight_decay'], 'best_val_acc': result['best_val_acc'], 'timestamp': time.time()})
 
         progress_manager.update_status(wd_step_key, f"[OK] STEP 5: Weight Decay Search Complete - Best WD: {best_weight_decay:.2e}")
         progress_manager.finalize_status(wd_step_key)
@@ -1761,6 +2089,12 @@ def main():
     analysis_steps = 4  # Plot creation, saving plot, saving JSON, final summary
     progress_manager.create_progress_bar("Results Analysis", analysis_steps)
     
+    
+    # ...existing training pipeline code...
+    # Call TrainingResultPlotter after training completes
+    plotter = TrainingResultPlotter()
+    plotter.plot_all(args.output)
+    
     # Plot training curves
     progress_manager.update_progress(1, {'step': 'Creating plots'})
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
@@ -1808,6 +2142,7 @@ def main():
     
     # Save final results
     progress_manager.update_progress(3, {'step': 'Saving final results JSON'})
+    import time
     final_results = {
         'lr_config': lr_config,
         'batch_size': optimal_batch_size,
@@ -1815,7 +2150,8 @@ def main():
         'final_train_acc': history['train_acc'][-1],
         'final_val_acc': history['val_acc'][-1],
         'best_val_acc': max(history['val_acc']),
-        'total_epochs': len(history['train_acc'])
+        'total_epochs': len(history['train_acc']),
+        'timestamp': time.time()
     }
     
     with open(os.path.join(args.output, 'final_results.json'), 'w') as f:
@@ -1842,6 +2178,56 @@ def main():
     logger.info(f"   Best Weight Decay: {best_weight_decay:.2e}")
     logger.info(f"   LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
     logger.info(f"[DIR] Results saved to: {args.output}")
+
+    # Step 2: Stop resource monitor and save metrics after training
+    monitor.stop()
+    resource_metrics_path = os.path.join(args.output, 'resource_metrics.json')
+    monitor.save(resource_metrics_path)
+    logger.info(f"[RESOURCE MONITOR] Resource utilization metrics saved to: {resource_metrics_path}")
+    
+    # Step 3: Plot resource utilization after training
+    try:
+        import matplotlib.pyplot as plt
+        import json
+
+        with open(resource_metrics_path) as f:
+            data = json.load(f)
+
+        timestamps = [m['timestamp'] - data[0]['timestamp'] for m in data]
+        cpu = [m['cpu_percent'] for m in data]
+        ram = [m['ram_gb'] for m in data]
+        gpu_load = [m['gpus'][0]['load'] if m['gpus'] and len(m['gpus']) > 0 else 0 for m in data]
+
+        plt.figure(figsize=(12,6))
+        plt.plot(timestamps, cpu, label='CPU %')
+        plt.plot(timestamps, ram, label='RAM (GB)')
+        plt.plot(timestamps, gpu_load, label='GPU Load %')
+        plt.legend()
+        plt.xlabel('Time (s)')
+        plt.ylabel('Utilization')
+        plt.title('Resource Utilization Over Training')
+        plot_path = os.path.join(args.output, 'resource_utilization.png')
+        plt.savefig(plot_path, dpi=200, bbox_inches='tight')
+        plt.close()
+        logger.info(f"[RESOURCE MONITOR] Resource utilization plot saved to: {plot_path}")
+    except Exception as e:
+        logger.warning(f"[RESOURCE MONITOR] Could not plot resource utilization: {e}")
+
+    # Log machine summary at the end of pipeline training
+    import time
+    machine_summary = get_hardware_summary()
+    machine_summary['timestamp'] = time.time()
+    logger.info("[MACHINE SUMMARY] Hardware and GPU Details:")
+    for k, v in machine_summary.items():
+        if k == 'gpus' and isinstance(v, list):
+            for idx, gpu in enumerate(v):
+                logger.info(f"    GPU {idx}: {gpu['name']} ({gpu['memory_gb']} GB)")
+        elif k == 'nvidia_smi':
+            logger.info("    NVIDIA SMI Output:")
+            for line in v.split('\n'):
+                logger.info(f"        {line}")
+        else:
+            logger.info(f"    {k}: {v}")
 
 
 if __name__ == "__main__":
