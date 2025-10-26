@@ -16,6 +16,8 @@ from torch.optim.lr_scheduler import OneCycleLR
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
+import os
+TQDM_DISABLE = os.environ.get("TQDM_DISABLE", "0") == "1"
 import argparse
 from datetime import datetime
 import gc
@@ -372,7 +374,7 @@ class LiveProgressManager:
     def create_progress_bar(self, desc, total):
         self.close_progress_bar()  # Close any previous bar
         from tqdm.auto import tqdm
-        self.current_bar = tqdm(total=total, desc=desc, ncols=120)
+        self.current_bar = tqdm(total=total, desc=desc, ncols=120, disable=TQDM_DISABLE)
 
     def update_progress(self, n, metrics=None):
         if self.current_bar:
@@ -575,6 +577,30 @@ class BatchSizeFinder:
 # ----------------------------------------------------------------------
 
 class LRFinder:
+    def suggest_lr(self):
+        """
+        Suggest min_lr and max_lr based on LR range test loss curve.
+        Returns a dict: {'min_lr': ..., 'max_lr': ...}
+        """
+        lrs = self.history.get('lr', [])
+        losses = self.history.get('loss', [])
+        if not lrs or not losses:
+            return {'min_lr': 1e-4, 'max_lr': 1e-2}
+        import numpy as np
+        losses = np.array(losses)
+        lrs = np.array(lrs)
+        min_idx = int(np.argmin(losses))
+        min_lr = float(lrs[min_idx])
+        # Heuristic: max_lr is where loss starts increasing rapidly after min
+        # Find first index after min_idx where loss increases by >30%
+        max_lr = min_lr
+        for i in range(min_idx+1, len(losses)):
+            if losses[i] > losses[min_idx] * 1.3:
+                max_lr = float(lrs[i])
+                break
+        if max_lr == min_lr:
+            max_lr = float(lrs[-1])
+        return {'min_lr': min_lr, 'max_lr': max_lr}
     def plot(self):
         """
         Plot LR vs Loss curve and return matplotlib figure and min_lr suggestion.
@@ -628,7 +654,7 @@ class LRFinder:
         lrs = []
         best_loss = float('inf')
         
-        bar = tqdm(total=num_iter, desc="LR Range Test", unit="it", ncols=120)
+        bar = tqdm(total=num_iter, desc="LR Range Test", unit="it", ncols=120, disable=TQDM_DISABLE)
         data_iter = iter(dataloader)
 
         for i in range(num_iter):
@@ -724,7 +750,7 @@ class HyperparameterOptimizer:
             # Use progress manager for clean progress tracking
             total_batches = min(100, len(self.train_loader))  # Limit for speed
             from tqdm.auto import tqdm
-            bar = tqdm(total=total_batches, desc=f"Epoch {epoch+1}/{epochs}", unit="it", ncols=120)
+            bar = tqdm(total=total_batches, desc=f"Epoch {epoch+1}/{epochs}", unit="it", ncols=120, disable=TQDM_DISABLE)
             
             for batch_idx, (inputs, targets) in enumerate(self.train_loader):
                 if batch_idx >= total_batches:  # Limit training batches for speed
@@ -759,7 +785,7 @@ class HyperparameterOptimizer:
             # Use progress manager for validation progress
             val_limit = min(50, len(self.val_loader))  # Limit validation batches for speed
             from tqdm.auto import tqdm
-            bar = tqdm(total=val_limit, desc=f"Validation {epoch+1}/{epochs}", unit="it", ncols=120)
+            bar = tqdm(total=val_limit, desc=f"Validation {epoch+1}/{epochs}", unit="it", ncols=120, disable=TQDM_DISABLE)
             
             with torch.no_grad():
                 for batch_idx, (inputs, targets) in enumerate(self.val_loader):
@@ -802,7 +828,7 @@ class HyperparameterOptimizer:
         logger = get_unified_logger("WeightDecaySearch")
         
         results = []
-        bar = tqdm(total=len(wd_values), desc="Weight Decay Search", unit="it", ncols=120)
+        bar = tqdm(total=len(wd_values), desc="Weight Decay Search", unit="it", ncols=120, disable=TQDM_DISABLE)
         
         for idx, wd in enumerate(wd_values):
             logger.info(f"[ANALYSIS] Testing Weight Decay: {wd:.2e} ({idx+1}/{len(wd_values)})")
@@ -953,7 +979,7 @@ class FullTrainer:
         best_val_acc = 0.0
         patience_counter = 0
         
-        bar = tqdm(total=epochs, desc="Full Training", unit="epoch", ncols=120)
+        bar = tqdm(total=epochs, desc="Full Training", unit="epoch", ncols=120, disable=TQDM_DISABLE)
         
         for epoch in range(epochs):
             # Training
@@ -1008,7 +1034,7 @@ class FullTrainer:
         total = 0
         accumulation_counter = 0
         
-        bar = tqdm(total=len(self.train_loader), desc="Training", unit="batch", ncols=120)
+        bar = tqdm(total=len(self.train_loader), desc="Training", unit="batch", ncols=120, disable=TQDM_DISABLE)
 
         for batch_idx, (inputs, targets) in enumerate(self.train_loader):
             inputs, targets = inputs.to(self.device), targets.to(self.device)
@@ -1091,7 +1117,7 @@ class FullTrainer:
         correct = 0
         total = 0
         
-        bar = tqdm(total=len(self.val_loader), desc="Validation", unit="batch", ncols=120)
+        bar = tqdm(total=len(self.val_loader), desc="Validation", unit="batch", ncols=120, disable=TQDM_DISABLE)
         
         with torch.no_grad():
             with autocast(enabled=self.enable_amp, device_type=self.device):

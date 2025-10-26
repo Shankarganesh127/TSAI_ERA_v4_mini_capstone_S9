@@ -11,6 +11,7 @@ with SageMaker cloud deployment while preserving all advanced capabilities.
 """
 
 
+
 import os
 import sys
 import subprocess
@@ -18,6 +19,10 @@ import json
 import argparse
 import shutil
 from pathlib import Path
+from tqdm import tqdm
+
+# Global flag to control tqdm disabling via environment variable
+TQDM_DISABLE = os.environ.get("TQDM_DISABLE", "0") == "1"
 
 # Import unified logger - all files are in same directory now
 try:
@@ -411,7 +416,7 @@ class ImageNetSageMakerTrainer:
         # Stream subprocess output in real-time instead of capturing
         # Set environment to disable tqdm in subprocess to prevent progress bar spam
         subprocess_env = os.environ.copy()
-        subprocess_env['TQDM_DISABLE'] = '0'  # 0 for Enable tqdm in subprocess
+        subprocess_env['TQDM_DISABLE'] = '1'  # 1 for Disable tqdm in subprocess
         subprocess_env['PYTHONUNBUFFERED'] = '1'  # Ensure immediate output
             
         process = subprocess.Popen(

@@ -139,14 +139,20 @@ def create_sagemaker_estimator(args, hyperparameters):
     """Create SageMaker PyTorch estimator with given args"""
     logger = get_unified_logger("sagemaker_estimator")
     if args.instance_count > 1:
-        distribution={'torch_distributed': {'enabled': True}}
+        # Use SMDDP for multi-node distributed training
+        distribution = {
+            'smdistributed': {
+                'dataparallel': {
+                    'enabled': True
+                }
+            }
+        }
         tags=[
             {'Key': 'Project', 'Value': 'Model-7Step'},
             {'Key': 'QuickMode', 'Value': str(args.quick_mode)},
             {'Key': 'LRFinder', 'Value': str(not args.skip_lr_finder)},
             {'Key': 'WDSearch', 'Value': str(not args.skip_wd_search)}
         ]
-        
     else:
         # Single-node training - enable DDP only for multi-GPU instances
         distribution = None
