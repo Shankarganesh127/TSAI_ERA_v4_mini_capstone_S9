@@ -149,7 +149,7 @@ class TrainingPerformanceOptimizer:
             self.train_loader.dataset,
             batch_size=self.train_loader.batch_size,
             shuffle=train_shuffle,
-            sampler=self.train_loader.sampler,
+            #sampler=self.train_loader.sampler,
             num_workers=target_workers,
             pin_memory=self.train_loader.pin_memory,
             drop_last=self.train_loader.drop_last,
@@ -171,7 +171,7 @@ class TrainingPerformanceOptimizer:
                 self.val_loader.dataset,
                 batch_size=self.val_loader.batch_size,
                 shuffle=val_shuffle,
-                sampler=self.val_loader.sampler,
+                #sampler=self.val_loader.sampler,
                 num_workers=target_workers,  # Use fewer workers for validation (typically smaller)
                 pin_memory=self.val_loader.pin_memory,
                 drop_last=self.val_loader.drop_last,
