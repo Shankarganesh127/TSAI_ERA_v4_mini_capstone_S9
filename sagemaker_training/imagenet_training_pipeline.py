@@ -780,7 +780,9 @@ class HyperparameterOptimizer:
                 bar.n = batch_idx + 1
                 bar.set_description(f"Epoch {epoch+1}/{epochs} | Loss: {train_loss/train_batches:.4f} | LR: {scheduler.get_last_lr()[0]:.6f}")
                 bar.refresh()
-                logger.info(f"weight_decay_search quick train | Epoch {epoch+1}/{epochs} | Batch {batch_idx+1}/{total_batches} | Loss: {train_loss/train_batches:.4f}")
+                
+                if (batch_idx + 1) % 10 == 0:
+                    logger.info(f"weight_decay_search quick train | Epoch {epoch+1}/{epochs} | Batch {batch_idx+1}/{total_batches} | Loss: {train_loss/train_batches:.4f}")
             
             bar.close()
             
@@ -814,11 +816,12 @@ class HyperparameterOptimizer:
                         'accuracy': 100.*val_correct/val_total
                     })
                     
+                    if (batch_idx + 1) % 10 == 0:
+                        logger.info(f"weight_decay_search quick valid | Epoch {epoch+1}/{epochs} | Batch {batch_idx+1}/{total_batches} | Loss: {val_loss/val_batches:.4f}")
                     # Limit validation batches for speed
                     if val_batches >= 50:
                         break
 
-            logger.info(f"weight_decay_search quick valid | Epoch {epoch+1}/{epochs} | Batch {batch_idx+1}/{total_batches} | Loss: {val_loss/val_batches:.4f}")
             bar.close()
             
             train_losses.append(train_loss / train_batches)
