@@ -708,6 +708,7 @@ class LRFinder:
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] *= lr_lambda
                 
+            logger.info("lr_range_test", f"Iter {i+1}/{num_iter} | LR: {current_lr:.2e} | Loss: {smoothed_loss:.4f}")
             # Update progress
             bar.n = i + 1
             bar.set_description(f"LR Range Test | LR: {current_lr:.2e} | Loss: {smoothed_loss:.4f}")
@@ -746,6 +747,7 @@ class HyperparameterOptimizer:
         train_losses = []
         val_losses = []
         val_accs = []
+        logger = get_unified_logger("WeightDecaySearch - QuickTrain")
         
         for epoch in range(epochs):
             # Training
@@ -778,6 +780,7 @@ class HyperparameterOptimizer:
                 bar.n = batch_idx + 1
                 bar.set_description(f"Epoch {epoch+1}/{epochs} | Loss: {train_loss/train_batches:.4f} | LR: {scheduler.get_last_lr()[0]:.6f}")
                 bar.refresh()
+                logger.info("weight_decay_search quick train", f"Epoch {epoch+1}/{epochs} | Batch {batch_idx+1}/{total_batches} | Loss: {train_loss/train_batches:.4f}")
             
             bar.close()
             
@@ -814,7 +817,8 @@ class HyperparameterOptimizer:
                     # Limit validation batches for speed
                     if val_batches >= 50:
                         break
-            
+
+            logger.info("weight_decay_search quick valid", f"Epoch {epoch+1}/{epochs} | Batch {batch_idx+1}/{total_batches} | Loss: {val_loss/val_batches:.4f}")
             bar.close()
             
             train_losses.append(train_loss / train_batches)
@@ -854,7 +858,8 @@ class HyperparameterOptimizer:
             # Train for a few epochs
             train_losses, val_losses, val_accs = self._quick_train(
                 model, optimizer, criterion, scheduler, epochs)
-            
+
+            logger.info("weight_decay_search", f"Iter {idx+1}/{len(wd_values)} | wd: {wd:.2e} | max accuracy: {max(val_accs):.4f}")
             # Store results
             result = {
                 'weight_decay': wd,
@@ -1006,6 +1011,7 @@ class FullTrainer:
             bar.n = epoch + 1
             bar.set_description(f"Full Training | E: {epoch+1}/{epochs} | T: {train_loss:.4f}/{train_acc:.2f}% | V: {val_loss:.4f}/{val_acc:.2f}% | LR: {optimizer.param_groups[0]['lr']:.2e}")
             bar.refresh()
+            logger.info(f"💾 Full Training | E: {epoch+1}/{epochs} | T: {train_loss:.4f}/{train_acc:.2f}% | V: {val_loss:.4f}/{val_acc:.2f}% | LR: {optimizer.param_groups[0]['lr']:.2e}")
 
             # Clean up GPU memory
             aggressive_memory_cleanup()
@@ -1039,6 +1045,7 @@ class FullTrainer:
         correct = 0
         total = 0
         accumulation_counter = 0
+        logger = get_unified_logger("FullTrainer - training")
         
         bar = tqdm(total=len(self.train_loader), desc="Training", unit="batch", ncols=120, disable=TQDM_DISABLE)
 
@@ -1097,6 +1104,8 @@ class FullTrainer:
                 del inputs, targets, outputs, loss, predicted
                 if (batch_idx + 1) % 50 == 0:
                      aggressive_memory_cleanup()
+                if (batch_idx + 1) % 10 == 0:
+                    logger.info(f"💾 Full Training - Training | B: {batch_idx+1}/{len(self.train_loader)} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}% | LR: {optimizer.param_groups[0]['lr']:.2e}")
                      
             except RuntimeError as e:
                 # Catch OOM errors if they still occur
@@ -1122,6 +1131,7 @@ class FullTrainer:
         running_loss = 0.0
         correct = 0
         total = 0
+        logger = get_unified_logger("FullTrainer - validation")
         
         bar = tqdm(total=len(self.val_loader), desc="Validation", unit="batch", ncols=120, disable=TQDM_DISABLE)
         
@@ -1139,10 +1149,12 @@ class FullTrainer:
                     
                     bar.set_description(f"Validation | B: {batch_idx+1}/{len(self.val_loader)} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}%")
                     bar.update(1)
-                    
+
                     del inputs, targets, outputs, loss, predicted
                     if (batch_idx + 1) % 25 == 0:
                         aggressive_memory_cleanup()
+                    if (batch_idx + 1) % 10 == 0:
+                        logger.info(f"💾 Full Training - Validation | B: {batch_idx+1}/{len(self.val_loader)} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}%")
 
         bar.close()
         return running_loss / len(self.val_loader), 100. * correct / total
