@@ -708,11 +708,11 @@ class LRFinder:
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] *= lr_lambda
                 
-            logger.info("lr_range_test", f"Iter {i+1}/{num_iter} | LR: {current_lr:.2e} | Loss: {smoothed_loss:.4f}")
             # Update progress
             bar.n = i + 1
             bar.set_description(f"LR Range Test | LR: {current_lr:.2e} | Loss: {smoothed_loss:.4f}")
             bar.refresh()
+            logger.info(f"lr_range_test | Iter {i+1}/{num_iter} | LR: {current_lr:.2e} | Loss: {smoothed_loss:.4f}")
             
         bar.close()
         
@@ -780,7 +780,7 @@ class HyperparameterOptimizer:
                 bar.n = batch_idx + 1
                 bar.set_description(f"Epoch {epoch+1}/{epochs} | Loss: {train_loss/train_batches:.4f} | LR: {scheduler.get_last_lr()[0]:.6f}")
                 bar.refresh()
-                logger.info("weight_decay_search quick train", f"Epoch {epoch+1}/{epochs} | Batch {batch_idx+1}/{total_batches} | Loss: {train_loss/train_batches:.4f}")
+                logger.info(f"weight_decay_search quick train | Epoch {epoch+1}/{epochs} | Batch {batch_idx+1}/{total_batches} | Loss: {train_loss/train_batches:.4f}")
             
             bar.close()
             
@@ -818,7 +818,7 @@ class HyperparameterOptimizer:
                     if val_batches >= 50:
                         break
 
-            logger.info("weight_decay_search quick valid", f"Epoch {epoch+1}/{epochs} | Batch {batch_idx+1}/{total_batches} | Loss: {val_loss/val_batches:.4f}")
+            logger.info(f"weight_decay_search quick valid | Epoch {epoch+1}/{epochs} | Batch {batch_idx+1}/{total_batches} | Loss: {val_loss/val_batches:.4f}")
             bar.close()
             
             train_losses.append(train_loss / train_batches)
@@ -859,7 +859,7 @@ class HyperparameterOptimizer:
             train_losses, val_losses, val_accs = self._quick_train(
                 model, optimizer, criterion, scheduler, epochs)
 
-            logger.info("weight_decay_search", f"Iter {idx+1}/{len(wd_values)} | wd: {wd:.2e} | max accuracy: {max(val_accs):.4f}")
+            logger.info(f"weight_decay_search | Iter {idx+1}/{len(wd_values)} | wd: {wd:.2e} | max accuracy: {max(val_accs):.4f}")
             # Store results
             result = {
                 'weight_decay': wd,
