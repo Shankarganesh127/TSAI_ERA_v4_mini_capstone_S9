@@ -315,7 +315,7 @@ def create_oom_resilient_trainer(model, optimizer, criterion, device, max_retrie
 
                     # Training step with mixed precision if available
                     if self.scaler and torch.cuda.is_available():
-                        with autocast(enabled=self.enable_amp, device_type=self.device):
+                        with autocast(enabled=self.enable_amp):
                             outputs = self.model(inputs)
                             loss = self.criterion(outputs, targets)
 
@@ -521,7 +521,7 @@ class BatchSizeFinder:
                 dummy_input = torch.randn(batch_size, 3, 224, 224).to(self.device)
                 dummy_target = torch.randint(0, 1000, (batch_size,)).to(self.device)
 
-                with autocast(enabled=self.enable_amp, device_type=self.device):
+                with autocast(enabled=self.enable_amp):
                     output = self.model(dummy_input)
                     loss = self.criterion(output, dummy_target)
                     
@@ -1051,7 +1051,7 @@ class FullTrainer:
             
             try:
                 # Forward pass with AMP (autocast) if scaler is available
-                with autocast(enabled=self.enable_amp, device_type=self.device ):
+                with autocast(enabled=self.enable_amp):
                     outputs = self.model(inputs)
                     loss = criterion(outputs, targets)
                 
@@ -1126,7 +1126,7 @@ class FullTrainer:
         bar = tqdm(total=len(self.val_loader), desc="Validation", unit="batch", ncols=120, disable=TQDM_DISABLE)
         
         with torch.no_grad():
-            with autocast(enabled=self.enable_amp, device_type=self.device):
+            with autocast(enabled=self.enable_amp):
                 for batch_idx, (inputs, targets) in enumerate(self.val_loader):
                     inputs, targets = inputs.to(self.device), targets.to(self.device)
                     

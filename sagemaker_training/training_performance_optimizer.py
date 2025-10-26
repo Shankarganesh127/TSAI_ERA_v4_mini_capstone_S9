@@ -205,7 +205,7 @@ class TrainingPerformanceOptimizer:
                 # Test memory usage with dummy batch
                 dummy_input = torch.randn(batch_size, 3, 224, 224).to(self.device)
                 dummy_target = torch.randint(0, 1000, (batch_size,)).to(self.device)
-                with autocast(enabled=self.enable_amp, device_type=self.device):
+                with autocast(enabled=self.enable_amp):
                     output = self.model(dummy_input)
                     loss = self.criterion(output, dummy_target)
                     if self.scaler:
@@ -407,7 +407,7 @@ class TrainingPerformanceOptimizer:
         with self.profile_step(f'{step_type}_step'):
             # Forward pass
             with self.profile_step('forward_pass'):
-                with autocast(enabled=self.enable_amp, device_type=self.device):
+                with autocast(enabled=self.enable_amp):
                     outputs = self.model(inputs)
                     loss = self.criterion(outputs, targets)
 
