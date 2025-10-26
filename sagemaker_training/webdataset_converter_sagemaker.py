@@ -25,6 +25,25 @@ SAMPLES_PER_SHARD = 5000
 # You must ensure the functions `create_synset_to_index_mapping` and 
 # `convert_to_tar_shards` are present in this file.
 
+def create_synset_to_index_mapping(base_dir: Path) -> Dict[str, int]:
+    """
+    Creates a mapping from ImageNet Synset ID (folder name) to integer class index (0-999).
+    This is determined by the sorted order of the Synset ID folders, which is standard.
+    """
+    print(f"🔍 Creating Synset to Index Mapping from directories under: {base_dir}")
+    
+    # List all subdirectories (Synset IDs) and sort them alphabetically
+    synset_dirs = sorted([d.name for d in base_dir.iterdir() if d.is_dir()])
+    
+    if len(synset_dirs) != 1000:
+        print(f"⚠️ Warning: Found {len(synset_dirs)} directories, expected 1000.")
+        
+    mapping = {synset_id: idx for idx, synset_id in enumerate(synset_dirs)}
+    
+    print(f"✅ Created mapping for {len(mapping)} classes (e.g., '{synset_dirs[0]}' -> 0)")
+    
+    return mapping
+
 def convert_to_tar_shards(
     input_dir: Path, 
     output_dir: Path, 
@@ -113,24 +132,7 @@ def convert_to_tar_shards(
             tar_writer.close()
         raise
 
-def create_synset_to_index_mapping(base_dir: Path) -> Dict[str, int]:
-    """
-    Creates a mapping from ImageNet Synset ID (folder name) to integer class index (0-999).
-    This is determined by the sorted order of the Synset ID folders, which is standard.
-    """
-    print(f"🔍 Creating Synset to Index Mapping from directories under: {base_dir}")
-    
-    # List all subdirectories (Synset IDs) and sort them alphabetically
-    synset_dirs = sorted([d.name for d in base_dir.iterdir() if d.is_dir()])
-    
-    if len(synset_dirs) != 1000:
-        print(f"⚠️ Warning: Found {len(synset_dirs)} directories, expected 1000.")
-        
-    mapping = {synset_id: idx for idx, synset_id in enumerate(synset_dirs)}
-    
-    print(f"✅ Created mapping for {len(mapping)} classes (e.g., '{synset_dirs[0]}' -> 0)")
-    
-    return mapping
+
 
 # --- Main Function for SageMaker Processing Job ---
 def main():
