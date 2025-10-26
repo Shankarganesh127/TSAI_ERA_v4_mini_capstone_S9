@@ -1519,14 +1519,13 @@ def main():
 
         lr_finder = LRFinder(model, optimizer, criterion, device)
 
-        # Create a small batch size dataloader specifically for LR range test to prevent OOM
         lr_test_batch_size = min(16, initial_batch_size // 4)  # Use much smaller batch size for LR test
         lr_test_batch_size = max(8, lr_test_batch_size)  # Minimum batch size of 8
-        
+
         # Optimize num_workers for LR test based on smaller batch size
         lr_test_num_workers = optimize_num_workers(lr_test_batch_size)
         lr_test_num_workers = min(lr_test_num_workers, 4)  # Cap at 4 for LR test to avoid overhead
-        
+
         logger.info(f"[MEMORY] Creating LR range test dataloader with batch_size: {lr_test_batch_size}, num_workers: {lr_test_num_workers}")
 
         lr_test_loader = get_imagenet_dataloaders(
