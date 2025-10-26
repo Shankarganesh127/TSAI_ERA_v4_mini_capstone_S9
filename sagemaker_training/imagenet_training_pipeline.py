@@ -16,8 +16,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
-import os
-TQDM_DISABLE = os.environ.get("TQDM_DISABLE", "0") == "1"
+import csv
 import argparse
 from datetime import datetime
 import gc
@@ -28,24 +27,29 @@ import psutil
 import multiprocessing as mp
 import math
 from utils import is_main_process
-
 from imagenet_models import resnet50_imagenet
 from imagenet_dataset import get_imagenet_dataloaders
 from training_performance_optimizer import TrainingPerformanceOptimizer
 from logger_setup import get_unified_logger
-
 import platform
-import psutil
 import subprocess
-
 import threading
-import time
-import psutil
+import sys
 try:
     import GPUtil
 except ImportError:
     GPUtil = None
 
+def save_pipeline_status(stage_name, status_file):
+    if is_main_process():
+        status = {
+            'last_completed_stage': stage_name,
+            'timestamp': datetime.now().isoformat()
+        }
+        with open(status_file, 'w') as f:
+            json.dump(status, f)
+
+TQDM_DISABLE = os.environ.get("TQDM_DISABLE", "0") == "1"
 
 def get_hardware_summary():
     summary = {}
@@ -133,15 +137,12 @@ class ResourceMonitor:
             self.thread.join()
 
     def save(self, path):
-        import json
         with open(path, 'w') as f:
             json.dump(self.metrics, f, indent=2)
 
 # -----------------------------
 # CSV/JSON Logging Utilities
 # -----------------------------
-import csv
-import json
 def log_metrics_csv(file_path, fieldnames, row):
     """Append a row of metrics to a CSV file."""
     file_exists = os.path.exists(file_path)
@@ -182,7 +183,7 @@ if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
         else:
             os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
             print("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128 (CPU mode)")
-    except Exception as e:
+    except Exception:
         # Fallback to conservative setting
         os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256'
         print("🔧 Set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256 (fallback)")
@@ -399,7 +400,7 @@ def get_instance_resource_profile():
             import psutil
             total_memory_gb = psutil.virtual_memory().total / (1024**3)
             profile['memory_per_core_gb'] = total_memory_gb / cpu_cores
-        except:
+        except Exception:
             profile['memory_per_core_gb'] = 4.0  # Default assumption
 
     except Exception as e:
@@ -603,18 +604,17 @@ def optimize_num_workers(batch_size: int, available_memory_gb: float = None, cpu
 # ----------------------------------------------------------------------
 
 class BatchSizeFinder:
-    def __init__(self, model, optimizer, criterion, device, enable_amp=False):
+    def __init__(self, model, optimizer, criterion, device, enable_amp=True):
         self.model = model
         self.optimizer = optimizer
         self.criterion = criterion
         self.device = device
-        self.enable_amp = enable_amp
+        self.enable_amp = torch.cuda.is_available() and enable_amp
         self.scaler = GradScaler(enabled=enable_amp)
         
     def _calculate_max_memory_gb(self, max_memory_gb_limit: float) -> float:
         """Determines the effective memory ceiling based on actual GPU VRAM (Corrected)."""
         if torch.cuda.is_available() and 'cuda' in str(self.device):
-            num_gpus = torch.cuda.device_count()
             actual_gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
             
             # The memory limit should be based on a single GPU's VRAM, not divided by num_gpus.
@@ -1063,15 +1063,10 @@ class HyperparameterOptimizer:
 
 
 
-def get_adaptive_gradient_accumulation_steps(batch_size):
-    # Dummy logic: Always use 1 for simplicity if not optimized
-    return 1
+## Removed duplicate get_adaptive_gradient_accumulation_steps
 
 # --- DUMMY AGGRESSIVE MEMORY CLEANUP (Needed for OOM handling) ---
-def aggressive_memory_cleanup():
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        gc.collect()
+## Removed duplicate aggressive_memory_cleanup
 
 # ----------------------------------------------------------------------
 # FULL TRAINER (CORRECTED)
@@ -1086,14 +1081,22 @@ class FullTrainer:
         self.val_loader = val_loader
         self.device = device
         self.save_dir = save_dir
+        self.enable_amp = torch.cuda.is_available()
         self.history = {
             'train_loss': [], 'train_acc': [],
             'val_loss': [], 'val_acc': [],
             'lr': [], 'momentum': []
         }
         
-    def train(self, lr_config, epochs, batch_size, weight_decay=1e-4, 
-              save_checkpoints=True, early_stopping_patience=10, args=None, 
+    def train(self, 
+              lr_config, 
+              epochs, 
+              batch_size, 
+              weight_decay=1e-4, 
+              save_checkpoints=True,
+              start_epoch=0, 
+              early_stopping_patience=10, 
+              args=None, 
               gradient_accumulation_steps=1):
         """
         Full training run. Simplified by removing external performance_optimizer
@@ -1175,7 +1178,7 @@ class FullTrainer:
         
         bar = tqdm(total=epochs, desc="Full Training", unit="epoch", ncols=120, disable=TQDM_DISABLE)
         
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             # Training
             train_loss, train_acc = self._train_epoch(optimizer, criterion, scheduler, scaler, gradient_accumulation_steps)
 
@@ -1357,18 +1360,20 @@ class FullTrainer:
         bar.close()
         return running_loss / len(self.val_loader), 100. * correct / total
     
-    def _save_checkpoint(self, epoch, val_acc, optimizer, scheduler):
-        """Save model checkpoint"""
-        os.makedirs(self.save_dir, exist_ok=True)
+    def _save_checkpoint(self, epoch, val_acc, optimizer, scheduler, step=0):
+        """Save model checkpoint to SageMaker's /opt/ml/checkpoints for spot resumption"""
+        checkpoint_dir = '/opt/ml/checkpoints'
+        os.makedirs(checkpoint_dir, exist_ok=True)
         checkpoint = {
             'epoch': epoch,
+            'step': step,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
             'val_acc': val_acc,
             'history': self.history
         }
-        torch.save(checkpoint, os.path.join(self.save_dir, 'best_model.pth'))
+        torch.save(checkpoint, os.path.join(checkpoint_dir, 'checkpoint.pt'))
 
 def detect_dataset_format(data_path):
     """
@@ -1503,55 +1508,68 @@ class TrainingResultPlotter:
 
 
 def main():
+    # --- Step 1: Define checkpoint directory and pipeline status file ---
+    # ...existing code...
+    global os, logger, torch
+    checkpoint_dir = os.environ.get('SM_CHECKPOINT_DIR', '/opt/ml/checkpoints')
+    status_file = os.path.join(checkpoint_dir, 'pipeline_status.json')
 
-    
+    current_stage = 'START'
+    if os.path.exists(status_file):
+        try:
+            with open(status_file, 'r') as f:
+                status = json.load(f)
+            current_stage = status.get('last_completed_stage', 'START')
+            global logger
+            logger.info(f"🔄 Resuming pipeline. Last completed stage: {current_stage}")
+        except Exception as e:
+            logger.error(f"❌ Failed to load pipeline status: {e}. Starting from scratch.")
 
     """Main training pipeline"""
-    import sys
-    import os
-    
     # Set up unified logging first thing
     logger = get_unified_logger("imagenet_training_pipeline")
 
     # =============================================================================
     # SAGEMAKER TRAINING STARTED - SIMPLE STATUS LOG
     # =============================================================================
-    logger.info("=" * 80)
-    logger.info("[START] SAGEMAKER IMAGENET TRAINING PIPELINE STARTED")
-    logger.info("=" * 80)
-    logger.info(f"[TIME] Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"[PYTHON] Python: {sys.version}")
-    logger.info(f"[PYTORCH] PyTorch: {torch.__version__}")
-    logger.info(f"[SYSTEM] Working Directory: {os.getcwd()}")
-    logger.info("=" * 80)
-    
-    # Log to unified log file
-    logger.info("="*80)
-    logger.info(f"[PYTHON] Python version: {sys.version}")
-    logger.info(f"[PYTORCH] PyTorch version: {torch.__version__}")
-    logger.info(f"[SYSTEM] Working directory: {os.getcwd()}")
-    logger.info(f"[FILE] Script path: {sys.argv[0]}")
-    logger.info(f"[ARGS] Command line args: {sys.argv[1:] if len(sys.argv) > 1 else 'None'}")
+    if (is_main_process()):
+        logger.info("=" * 80)
+        logger.info("[START] SAGEMAKER IMAGENET TRAINING PIPELINE STARTED")
+        logger.info("=" * 80)
+        logger.info(f"[TIME] Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"[PYTHON] Python: {sys.version}")
+        logger.info(f"[PYTORCH] PyTorch: {torch.__version__}")
+        logger.info(f"[SYSTEM] Working Directory: {os.getcwd()}")
+        logger.info("=" * 80)
+        # Log to unified log file
+        logger.info("="*80)
+        logger.info(f"[PYTHON] Python version: {sys.version}")
+        logger.info(f"[PYTORCH] PyTorch version: {torch.__version__}")
+        logger.info(f"[SYSTEM] Working directory: {os.getcwd()}")
+        logger.info(f"[FILE] Script path: {sys.argv[0]}")
+        logger.info(f"[ARGS] Command line args: {sys.argv[1:] if len(sys.argv) > 1 else 'None'}")
     
     parser = argparse.ArgumentParser(description='ImageNet Training Pipeline')
     parser.add_argument('--train', type=str, required=True, help='ImageNet training dataset path')
     parser.add_argument('--val', type=str, required=True, help='ImageNet validation dataset path')
     parser.add_argument('--output', type=str, default='./imagenet_pipeline_results', help='Output directory')
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
-    parser.add_argument('--quick-mode', action='store_true', help='Enable quick mode for faster testing')
+    parser.add_argument('--quick-mode', action='store_true', default=False, help='Enable quick mode for faster testing')
     parser.add_argument('--batch-size', type=int, default=32, help='Batch size for training')
     parser.add_argument('--num-workers', type=int, default=4, help='Number of data loading workers')
-    parser.add_argument('--no-amp', action='store_true', help='Disable mixed precision training')
-    parser.add_argument('--no-compile', action='store_true', help='Disable torch.compile optimization')
-    parser.add_argument('--lightweight-augs', action='store_true', help='Use lightweight augmentations for maximum speed')
-    parser.add_argument('--skip-lr-test', action='store_true', help='Skip LR range test')
-    parser.add_argument('--skip-wd-search', action='store_true', help='Skip weight decay search')
-    
+    parser.add_argument('--no-amp', action='store_true', default=False, help='Disable mixed precision training')
+    parser.add_argument('--no-compile', action='store_true', default=False, help='Disable torch.compile optimization')
+    parser.add_argument('--lightweight-augs', action='store_true', default=False, help='Use lightweight augmentations for maximum speed')
+    parser.add_argument('--skip-lr-test', action='store_true', default=False, help='Skip LR range test')
+    parser.add_argument('--skip-wd-search', action='store_true', default=False, help='Skip weight decay search')
+    parser.add_argument('--world-size', type=int, default=1, help='Number of distributed processes (GPUs)')
+    parser.add_argument('--local-rank', type=int, default=0, help='Local rank for DDP')
     args = parser.parse_args()
     
     # Step 2: Start resource monitor before training
-    monitor = ResourceMonitor(interval=5.0)
-    monitor.start()
+    if (is_main_process()):
+        monitor = ResourceMonitor(interval=5.0)
+        monitor.start()
     
     # -----------------------------
     # Log config and environment info
@@ -1622,6 +1640,10 @@ def main():
         logger.info(f"[DEBUG] DEBUG: CUDA available: {torch.cuda.is_available()}")
         if torch.cuda.is_available():
             logger.info(f"[DEBUG] DEBUG: CUDA device count: {torch.cuda.device_count()}")
+        # DDP setup
+        world_size = getattr(args, 'world_size', 1)
+        local_rank = getattr(args, 'local_rank', 0)
+        logger.info(f"[DDP] world_size: {world_size}, local_rank: {local_rank}")
     except Exception as e:
         logger.error(f"[ERROR] DEBUG: Error setting up device: {e}")
         raise
@@ -1675,7 +1697,7 @@ def main():
             train_loader=None,  # Not needed for batch size detection
             val_loader=None,
             device=device,
-            enable_amp=not args.no_amp,
+            enable_amp=True,
             enable_profiling=False  # Disable profiling for batch size detection
         )
         
@@ -1758,6 +1780,12 @@ def main():
         train_loader, val_loader = get_imagenet_dataloaders(
             train=args.train, val=args.val, batch_size=initial_batch_size, num_workers=args.num_workers, 
             lightweight_augs=args.lightweight_augs)
+        # DDP: Use DistributedSampler if multi-GPU
+        if torch.cuda.is_available() and getattr(args, 'world_size', 1) > 1:
+            from torch.utils.data.distributed import DistributedSampler
+            train_loader.sampler = DistributedSampler(train_loader.dataset, num_replicas=args.world_size, rank=args.local_rank)
+            val_loader.sampler = DistributedSampler(val_loader.dataset, num_replicas=args.world_size, rank=args.local_rank)
+            logger.info("[DDP] Using DistributedSampler for train and val loaders")
         progress_manager.update_progress(2, {'step': 'Loading validation dataset'})
     except Exception as e:
         progress_manager.close_progress_bar()
@@ -1806,6 +1834,7 @@ def main():
         logger.warning(f"[OPTIMIZER] ⚠️ Failed to initialize performance optimizer: {e}")
         logger.warning("[OPTIMIZER] Continuing with standard data loading...")
         performance_optimizer = None
+           
     
     # =============================================================================
     # STARTING 7-STEP IMAGENET TRAINING PIPELINE
@@ -1823,6 +1852,8 @@ def main():
     print("[START] Starting Step 1: LR Range Test...")
     print("=" * 80)
     sys.stdout.flush()
+    
+    
     
     # STEP 1: LR Range Test
     lr_config = None
@@ -1853,15 +1884,23 @@ def main():
         num_iter = 100 if args.quick_mode else 200
 
         progress_manager.update_status(lr_step_key, f"[DEBUG] STEP 1: LR Range Test - Running {num_iter} iterations...")
-        lrs, losses = lr_finder.range_test(lr_test_loader, num_iter=num_iter)
+        if current_stage == 'START':
+            lrs, losses = lr_finder.range_test(lr_test_loader, num_iter=num_iter)
+            # Plot results
+            fig, min_lr = lr_finder.plot()
+            fig.savefig(os.path.join(args.output, 'lr_range_test.png'))
+            global plt
+            plt.close(fig)
 
-        # Plot results
-        fig, min_lr = lr_finder.plot()
-        fig.savefig(os.path.join(args.output, 'lr_range_test.png'))
-        plt.close(fig)
+            # Get suggestions
+            lr_config = lr_finder.suggest_lr()
+        else:
+             # Load lr_config from checkpoint_dir
+            lr_config_path = os.path.join(checkpoint_dir, 'lr_config.json')
+            with open(lr_config_path, 'r') as f:
+                lr_config = json.load(f)
 
-        # Get suggestions
-        lr_config = lr_finder.suggest_lr()
+        
 
         progress_manager.update_status(lr_step_key,
             f"[OK] STEP 1: LR Range Test Complete - Min: {lr_config['min_lr']:.2e}, Max: {lr_config['max_lr']:.2e}")
@@ -1886,10 +1925,16 @@ def main():
                 {'iteration': i+1, 'lr': float(lr), 'smoothed_loss': float(loss), 'timestamp': time.time()}
                 for i, (lr, loss) in enumerate(zip(lrs, losses))
             ], f, indent=2)
-            
+        
+        lr_config_path = os.path.join(checkpoint_dir, 'lr_config.json')
+        with open(lr_config_path, 'w') as f:
+            json.dump(lr_config, f)
+        logger.info(f"✅ Saved LR config to {lr_config_path}")
+        save_pipeline_status('LR_TEST_COMPLETE', status_file)    
         # Clean up GPU memory to prevent OOM
         del model, optimizer, criterion, lr_finder, lr_test_loader
         aggressive_memory_cleanup()
+        
     else:
         # Default LR config
         lr_config = {'min_lr': 1e-3, 'max_lr': 0.1}
@@ -1915,10 +1960,18 @@ def main():
         wd_values = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3] if not args.quick_mode else [1e-4, 5e-4]
         search_epochs = 3 if args.quick_mode else 5
 
-        progress_manager.update_status(wd_step_key, f"[WEIGHT] STEP 5: Weight Decay Search - Testing {len(wd_values)} values for {search_epochs} epochs each...")
-        wd_results, best_weight_decay = optimizer.weight_decay_search(
-            lr_config, optimal_batch_size, wd_values, epochs=search_epochs)
-
+        if current_stage in ['START', 'LR_TEST_COMPLETE']:
+            progress_manager.update_status(wd_step_key, f"[WEIGHT] STEP 5: Weight Decay Search - Testing {len(wd_values)} values for {search_epochs} epochs each...")
+            wd_results, best_weight_decay = optimizer.weight_decay_search(
+                lr_config, optimal_batch_size, wd_values, epochs=search_epochs)
+        else:
+            # Load best_weight_decay from checkpoint_dir
+            wd_results_path = os.path.join(checkpoint_dir, 'wd_results.json')
+            with open(wd_results_path, 'r') as f:
+                wd_data = json.load(f)
+                wd_results = wd_data['wd_results']
+                best_weight_decay = wd_data['best_weight_decay']
+        
         # Save results
         with open(os.path.join(args.output, 'weight_decay_search.json'), 'w') as f:
             json.dump(wd_results, f, indent=2)
@@ -1935,6 +1988,16 @@ def main():
 
         progress_manager.update_status(wd_step_key, f"[OK] STEP 5: Weight Decay Search Complete - Best WD: {best_weight_decay:.2e}")
         progress_manager.finalize_status(wd_step_key)
+        
+        wd_results_path = os.path.join(checkpoint_dir, 'wd_results.json')
+        with open(wd_results_path, 'w') as f:
+            json.dump({
+                'wd_results': wd_results,
+                'best_weight_decay': best_weight_decay
+            }, f)
+        logger.info(f"✅ Saved WD results and best_weight_decay to {wd_results_path}")
+        
+        save_pipeline_status('WD_SEARCH_COMPLETE', status_file)
         
         # Check for memory fragmentation after weight decay search
         check_memory_fragmentation()
@@ -1975,6 +2038,11 @@ def main():
         logger.info("[MEMORY] Gradient checkpointing: DISABLED")
 
     model = create_model().to(device)
+    # DDP: Wrap model if multi-GPU
+    if torch.cuda.is_available() and getattr(args, 'world_size', 1) > 1:
+        import torch.nn.parallel
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
+        logger.info("[DDP] Model wrapped with DistributedDataParallel")
     
     # Log memory usage after model creation
     log_detailed_memory_usage("after_model_creation")
@@ -1987,7 +2055,7 @@ def main():
         logger.info("[MEMORY] Enabling gradient checkpointing for memory efficiency")
         try:
             # Import checkpoint utilities
-            from torch.utils.checkpoint import checkpoint_sequential
+            # Removed unused import checkpoint_sequential
 
             # Apply gradient checkpointing to ResNet layers to reduce memory usage
             # This trades computation for memory by recomputing activations during backward pass
@@ -2012,6 +2080,17 @@ def main():
         except Exception as e:
             logger.warning(f"[MEMORY] Could not enable gradient checkpointing: {e}")
             logger.warning("[MEMORY] Continuing without gradient checkpointing")
+            
+    model_ckpt_path = os.path.join(checkpoint_dir, 'checkpoint.pt')
+    start_epoch = 0
+    if os.path.exists(model_ckpt_path):
+        checkpoint = torch.load(model_ckpt_path, map_location='cpu')
+        start_epoch = checkpoint.get('epoch', 0) + 1
+        # Load model, optimizer, scheduler state as needed:
+        model.load_state_dict(checkpoint['model_state_dict'])
+        logger.info(f"➡️ Resuming Full Training from Epoch {start_epoch}")
+    else:
+        logger.info("🟢 Starting Full Training from Epoch 0")
     
     trainer = FullTrainer(model, train_loader, val_loader, device, args.output)
 
@@ -2048,20 +2127,23 @@ def main():
         logger.info("[MEMORY] Gradient checkpointing: ENABLED")
     else:
         logger.info("[MEMORY] Gradient checkpointing: DISABLED")
-
-    history = trainer.train(
-        lr_config=lr_config,
-        epochs=training_epochs,
-        batch_size=optimal_batch_size,
-        weight_decay=best_weight_decay,
-        save_checkpoints=True,
-        early_stopping_patience=15 if not args.quick_mode else 5,
-        args=args,
-        #performance_optimizer=performance_optimizer,
-        gradient_accumulation_steps=gradient_accumulation_steps
-    )
-    progress_manager.update_status(full_train_key, f"[OK] STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")
-    progress_manager.finalize_status(full_train_key)
+        
+    if current_stage in ['START', 'LR_TEST_COMPLETE', 'WD_SEARCH_COMPLETE']:
+        history = trainer.train(
+            lr_config=lr_config,
+            epochs=training_epochs,
+            batch_size=optimal_batch_size,
+            weight_decay=best_weight_decay,
+            save_checkpoints=True,
+            early_stopping_patience=15 if not args.quick_mode else 5,
+            args=args,
+            start_epoch=start_epoch,
+            #performance_optimizer=performance_optimizer,
+            gradient_accumulation_steps=gradient_accumulation_steps
+        )
+    if (is_main_process()):
+        progress_manager.update_status(full_train_key, f"[OK] STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")
+        progress_manager.finalize_status(full_train_key)
     
     # Performance Optimization Summary
     #if performance_optimizer:
@@ -2079,155 +2161,162 @@ def main():
     #        logger.info(f"[SAVE] Optimization summary saved to: {summary_file}")
     #    except Exception as e:
     #        logger.warning(f"[OPTIMIZER] Failed to generate optimization summary: {e}")
+   
+    if (is_main_process()): 
+        # STEP 7: Results Analysis and Plotting
+        logger.info("="*60)
+        logger.info("[ANALYSIS] STEP 7: Results Analysis")
+        logger.info("="*60)
+   
+        # Create progress bar for results analysis
+        analysis_steps = 4  # Plot creation, saving plot, saving JSON, final summary
+        progress_manager.create_progress_bar("Results Analysis", analysis_steps)
     
-    # STEP 7: Results Analysis and Plotting
-    logger.info("="*60)
-    logger.info("[ANALYSIS] STEP 7: Results Analysis")
-    logger.info("="*60)
     
-    # Create progress bar for results analysis
-    analysis_steps = 4  # Plot creation, saving plot, saving JSON, final summary
-    progress_manager.create_progress_bar("Results Analysis", analysis_steps)
+        # ...existing training pipeline code...
+        # Call TrainingResultPlotter after training completes
+        plotter = TrainingResultPlotter()
+        plotter.plot_all(args.output)
     
+        # Plot training curves
+        progress_manager.update_progress(1, {'step': 'Creating plots'})
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
     
-    # ...existing training pipeline code...
-    # Call TrainingResultPlotter after training completes
-    plotter = TrainingResultPlotter()
-    plotter.plot_all(args.output)
+        # Loss curves
+        epochs_range = range(1, len(history['train_loss']) + 1)
+        ax1.plot(epochs_range, history['train_loss'], label='Train Loss')
+        ax1.plot(epochs_range, history['val_loss'], label='Val Loss')
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('Loss')
+        ax1.set_title('Training and Validation Loss')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
     
-    # Plot training curves
-    progress_manager.update_progress(1, {'step': 'Creating plots'})
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+        # Accuracy curves
+        ax2.plot(epochs_range, history['train_acc'], label='Train Acc')
+        ax2.plot(epochs_range, history['val_acc'], label='Val Acc')
+        ax2.set_xlabel('Epoch')
+        ax2.set_ylabel('Accuracy (%)')
+        ax2.set_title('Training and Validation Accuracy')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
     
-    # Loss curves
-    epochs_range = range(1, len(history['train_loss']) + 1)
-    ax1.plot(epochs_range, history['train_loss'], label='Train Loss')
-    ax1.plot(epochs_range, history['val_loss'], label='Val Loss')
-    ax1.set_xlabel('Epoch')
-    ax1.set_ylabel('Loss')
-    ax1.set_title('Training and Validation Loss')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
+        # Learning rate schedule
+        ax3.plot(epochs_range, history['lr'])
+        ax3.set_xlabel('Epoch')
+        ax3.set_ylabel('Learning Rate')
+        ax3.set_title('OneCycle Learning Rate Schedule')
+        ax3.set_yscale('log')
+        ax3.grid(True, alpha=0.3)
     
-    # Accuracy curves
-    ax2.plot(epochs_range, history['train_acc'], label='Train Acc')
-    ax2.plot(epochs_range, history['val_acc'], label='Val Acc')
-    ax2.set_xlabel('Epoch')
-    ax2.set_ylabel('Accuracy (%)')
-    ax2.set_title('Training and Validation Accuracy')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
+        # Momentum schedule
+        ax4.plot(epochs_range, history['momentum'])
+        ax4.set_xlabel('Epoch')
+        ax4.set_ylabel('Momentum')
+        ax4.set_title('Cyclical Momentum Schedule')
+        ax4.grid(True, alpha=0.3)
     
-    # Learning rate schedule
-    ax3.plot(epochs_range, history['lr'])
-    ax3.set_xlabel('Epoch')
-    ax3.set_ylabel('Learning Rate')
-    ax3.set_title('OneCycle Learning Rate Schedule')
-    ax3.set_yscale('log')
-    ax3.grid(True, alpha=0.3)
+        plt.tight_layout()
     
-    # Momentum schedule
-    ax4.plot(epochs_range, history['momentum'])
-    ax4.set_xlabel('Epoch')
-    ax4.set_ylabel('Momentum')
-    ax4.set_title('Cyclical Momentum Schedule')
-    ax4.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    
-    # Save plot
-    progress_manager.update_progress(2, {'step': 'Saving training curves plot'})
-    plt.savefig(os.path.join(args.output, 'training_results.png'), dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    # Save final results
-    progress_manager.update_progress(3, {'step': 'Saving final results JSON'})
-    import time
-    final_results = {
-        'lr_config': lr_config,
-        'batch_size': optimal_batch_size,
-        'weight_decay': best_weight_decay,
-        'final_train_acc': history['train_acc'][-1],
-        'final_val_acc': history['val_acc'][-1],
-        'best_val_acc': max(history['val_acc']),
-        'total_epochs': len(history['train_acc']),
-        'timestamp': time.time()
-    }
-    
-    with open(os.path.join(args.output, 'final_results.json'), 'w') as f:
-        json.dump(final_results, f, indent=2)
-    
-    # Final summary
-    progress_manager.update_progress(4, {'step': 'Generating final summary'})
-    progress_manager.close_progress_bar()
-    
-    # =============================================================================
-    # TRAINING PIPELINE COMPLETED!
-    # =============================================================================
-    completion_key = "pipeline_complete"
-    progress_manager.create_status_updater(completion_key,
-        f"[SUCCESS] ImageNet Training Pipeline Completed! Best Val Acc: {final_results['best_val_acc']:.2f}%")
-    progress_manager.finalize_status(completion_key)
-
-    logger.info("[SUCCESS] Pipeline Complete!")
-    logger.info("[ANALYSIS] Final Results:")
-    logger.info(f"   Best Validation Accuracy: {final_results['best_val_acc']:.2f}%")
-    logger.info(f"   Final Training Accuracy: {final_results['final_train_acc']:.2f}%")
-    logger.info(f"   Final Validation Accuracy: {final_results['final_val_acc']:.2f}%")
-    logger.info(f"   Optimal Batch Size: {optimal_batch_size}")
-    logger.info(f"   Best Weight Decay: {best_weight_decay:.2e}")
-    logger.info(f"   LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
-    logger.info(f"[DIR] Results saved to: {args.output}")
-
-    # Step 2: Stop resource monitor and save metrics after training
-    monitor.stop()
-    resource_metrics_path = os.path.join(args.output, 'resource_metrics.json')
-    monitor.save(resource_metrics_path)
-    logger.info(f"[RESOURCE MONITOR] Resource utilization metrics saved to: {resource_metrics_path}")
-    
-    # Step 3: Plot resource utilization after training
-    try:
-        import matplotlib.pyplot as plt
-        import json
-
-        with open(resource_metrics_path) as f:
-            data = json.load(f)
-
-        timestamps = [m['timestamp'] - data[0]['timestamp'] for m in data]
-        cpu = [m['cpu_percent'] for m in data]
-        ram = [m['ram_gb'] for m in data]
-        gpu_load = [m['gpus'][0]['load'] if m['gpus'] and len(m['gpus']) > 0 else 0 for m in data]
-
-        plt.figure(figsize=(12,6))
-        plt.plot(timestamps, cpu, label='CPU %')
-        plt.plot(timestamps, ram, label='RAM (GB)')
-        plt.plot(timestamps, gpu_load, label='GPU Load %')
-        plt.legend()
-        plt.xlabel('Time (s)')
-        plt.ylabel('Utilization')
-        plt.title('Resource Utilization Over Training')
-        plot_path = os.path.join(args.output, 'resource_utilization.png')
-        plt.savefig(plot_path, dpi=200, bbox_inches='tight')
+        # Save plot
+        progress_manager.update_progress(2, {'step': 'Saving training curves plot'})
+        plt.savefig(os.path.join(args.output, 'training_results.png'), dpi=300, bbox_inches='tight')
         plt.close()
-        logger.info(f"[RESOURCE MONITOR] Resource utilization plot saved to: {plot_path}")
-    except Exception as e:
-        logger.warning(f"[RESOURCE MONITOR] Could not plot resource utilization: {e}")
+    
+        # Save final results
+        progress_manager.update_progress(3, {'step': 'Saving final results JSON'})
+        import time
+        final_results = {
+            'lr_config': lr_config,
+            'batch_size': optimal_batch_size,
+            'weight_decay': best_weight_decay,
+            'final_train_acc': history['train_acc'][-1],
+            'final_val_acc': history['val_acc'][-1],
+            'best_val_acc': max(history['val_acc']),
+            'total_epochs': len(history['train_acc']),
+            'timestamp': time.time()
+        }
+    
+        with open(os.path.join(args.output, 'final_results.json'), 'w') as f:
+            json.dump(final_results, f, indent=2)
+    
+        # Final summary
+        progress_manager.update_progress(4, {'step': 'Generating final summary'})
+        progress_manager.close_progress_bar()
+    
+        # =============================================================================
+        # TRAINING PIPELINE COMPLETED!
+        # =============================================================================
+        completion_key = "pipeline_complete"
+        progress_manager.create_status_updater(completion_key,
+            f"[SUCCESS] ImageNet Training Pipeline Completed! Best Val Acc: {final_results['best_val_acc']:.2f}%")
+        progress_manager.finalize_status(completion_key)
 
-    # Log machine summary at the end of pipeline training
-    import time
-    machine_summary = get_hardware_summary()
-    machine_summary['timestamp'] = time.time()
-    logger.info("[MACHINE SUMMARY] Hardware and GPU Details:")
-    for k, v in machine_summary.items():
-        if k == 'gpus' and isinstance(v, list):
-            for idx, gpu in enumerate(v):
-                logger.info(f"    GPU {idx}: {gpu['name']} ({gpu['memory_gb']} GB)")
-        elif k == 'nvidia_smi':
-            logger.info("    NVIDIA SMI Output:")
-            for line in v.split('\n'):
-                logger.info(f"        {line}")
-        else:
-            logger.info(f"    {k}: {v}")
+        logger.info("[SUCCESS] Pipeline Complete!")
+        logger.info("[ANALYSIS] Final Results:")
+        logger.info(f"   Best Validation Accuracy: {final_results['best_val_acc']:.2f}%")
+        logger.info(f"   Final Training Accuracy: {final_results['final_train_acc']:.2f}%")
+        logger.info(f"   Final Validation Accuracy: {final_results['final_val_acc']:.2f}%")
+        logger.info(f"   Optimal Batch Size: {optimal_batch_size}")
+        logger.info(f"   Best Weight Decay: {best_weight_decay:.2e}")
+        logger.info(f"   LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
+        logger.info(f"[DIR] Results saved to: {args.output}")
+
+        # Step 2: Stop resource monitor and save metrics after training
+        monitor.stop()
+        resource_metrics_path = os.path.join(args.output, 'resource_metrics.json')
+        monitor.save(resource_metrics_path)
+        logger.info(f"[RESOURCE MONITOR] Resource utilization metrics saved to: {resource_metrics_path}")
+    
+        # Step 3: Plot resource utilization after training
+        try:
+            import matplotlib.pyplot as plt
+            ## removed duplicate import
+
+            with open(resource_metrics_path) as f:
+                data = json.load(f)
+
+            timestamps = [m['timestamp'] - data[0]['timestamp'] for m in data]
+            cpu = [m['cpu_percent'] for m in data]
+            ram = [m['ram_gb'] for m in data]
+            gpu_load = [m['gpus'][0]['load'] if m['gpus'] and len(m['gpus']) > 0 else 0 for m in data]
+
+            plt.figure(figsize=(12,6))
+            plt.plot(timestamps, cpu, label='CPU %')
+            plt.plot(timestamps, ram, label='RAM (GB)')
+            plt.plot(timestamps, gpu_load, label='GPU Load %')
+            plt.legend()
+            plt.xlabel('Time (s)')
+            plt.ylabel('Utilization')
+            plt.title('Resource Utilization Over Training')
+            plot_path = os.path.join(args.output, 'resource_utilization.png')
+            plt.savefig(plot_path, dpi=200, bbox_inches='tight')
+            plt.close()
+            logger.info(f"[RESOURCE MONITOR] Resource utilization plot saved to: {plot_path}")
+        except Exception as e:
+            logger.warning(f"[RESOURCE MONITOR] Could not plot resource utilization: {e}")
+
+        # Log machine summary at the end of pipeline training
+        import time
+        machine_summary = get_hardware_summary()
+        machine_summary['timestamp'] = time.time()
+        logger.info("[MACHINE SUMMARY] Hardware and GPU Details:")
+        for k, v in machine_summary.items():
+            if k == 'gpus' and isinstance(v, list):
+                for idx, gpu in enumerate(v):
+                    logger.info(f"    GPU {idx}: {gpu['name']} ({gpu['memory_gb']} GB)")
+            elif k == 'nvidia_smi':
+                logger.info("    NVIDIA SMI Output:")
+                for line in v.split('\n'):
+                    logger.info(f"        {line}")
+            else:
+                logger.info(f"    {k}: {v}")
+    
+        final_results_path = os.path.join(checkpoint_dir, 'final_results.json')
+        with open(final_results_path, 'w') as f:
+            json.dump(final_results, f)
+        logger.info(f"✅ Saved final results to {final_results_path}")
+    save_pipeline_status('FULL_TRAINING_COMPLETE', status_file)
 
 
 if __name__ == "__main__":
@@ -2246,7 +2335,7 @@ if __name__ == "__main__":
             logger.error(f"[ERROR] CRITICAL ERROR: Pipeline failed with exception: {e}")
             logger.error(f"[ERROR] Exception type: {type(e).__name__}")
             import traceback
-            logger.error(f"[ERROR] Full traceback:")
+            logger.error("[ERROR] Full traceback:")
             for line in traceback.format_exc().split('\n'):
                 if line.strip():
                     logger.error(f"   {line}")

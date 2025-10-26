@@ -191,6 +191,7 @@ def create_sagemaker_estimator(args, hyperparameters):
         max_wait=43200 if args.spot_training else None,
         max_run=36000,
         checkpoint_s3_uri=f"{args.s3_bucket}/checkpoints/{args.job_name}",
+        checkpoint_local_path="/opt/ml/checkpoints",
         output_path=f"{args.s3_bucket}/output/{args.job_name}",
         volume_size=args.volume_size,
         enable_sagemaker_metrics=True,
