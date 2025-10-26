@@ -103,9 +103,9 @@ class TrainingPerformanceOptimizer:
 
         # Setup mixed precision
         if self.enable_amp:
-            self.scaler = GradScaler(enabled=torch.cuda.is_available(), device=torch.device(self.device))
+            self.scaler = GradScaler(enabled=torch.cuda.is_available())
         else:
-            self.scaler = GradScaler(enabled=torch.cuda.is_available(), device=torch.device(self.device))
+            self.scaler = GradScaler(enabled=torch.cuda.is_available())
         
         # Setup distributed training
         self.is_distributed = torch.cuda.device_count() > 1 or world_size > 1

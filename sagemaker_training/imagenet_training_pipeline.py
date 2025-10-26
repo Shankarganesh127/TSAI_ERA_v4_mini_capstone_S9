@@ -297,7 +297,7 @@ def create_oom_resilient_trainer(model, optimizer, criterion, device, max_retrie
             self.criterion = criterion
             self.device = device
             self.max_retries = max_retries
-            self.scaler = GradScaler(enabled=torch.cuda.is_available(), device=torch.device(self.device))
+            self.scaler = GradScaler(enabled=torch.cuda.is_available())
             self.oom_count = 0
             self.enable_amp = self.scaler.enabled
 
@@ -380,10 +380,16 @@ class LiveProgressManager:
         if self.current_bar:
             self.current_bar.n = n
             if metrics:
+                formatted_metrics = {
+                    k: f"{v:.4f}" if isinstance(v, float) else v 
+                    for k, v in metrics.items()
+                }
+            
+                self.current_bar.set_postfix(formatted_metrics, refresh=False)
                 # Compose description from metrics dict
-                desc = self.current_bar.desc.split('|')[0].strip()
-                metrics_str = ' | '.join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items()])
-                self.current_bar.set_description(f"{desc} | {metrics_str}")
+                #desc = self.current_bar.desc.split('|')[0].strip()
+                #metrics_str = ' | '.join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items()])
+                #self.current_bar.set_description(f"{desc} | {metrics_str}")
             self.current_bar.refresh()
 
     def close_progress_bar(self):
@@ -468,7 +474,7 @@ class BatchSizeFinder:
         self.criterion = criterion
         self.device = device
         self.enable_amp = enable_amp
-        self.scaler = GradScaler(enabled=enable_amp, device=device)
+        self.scaler = GradScaler(enabled=enable_amp)
         
     def _calculate_max_memory_gb(self, max_memory_gb_limit: float) -> float:
         """Determines the effective memory ceiling based on actual GPU VRAM (Corrected)."""
@@ -963,10 +969,10 @@ class FullTrainer:
         scaler = None
         # Assuming AMP is desired unless explicitly disabled via args
         if is_cuda_available and args is not None and not getattr(args, 'no_amp', False):
-            scaler = GradScaler(enabled=torch.cuda.is_available(), device=torch.device(self.device))
+            scaler = GradScaler(enabled=torch.cuda.is_available())
             logger.info("[SPEED] Mixed precision training enabled (AMP)")
         else:
-            scaler = GradScaler(enabled=torch.cuda.is_available(), device=torch.device(self.device))
+            scaler = GradScaler(enabled=torch.cuda.is_available())
             logger.info("[SPEED] AMP disabled or not available, using full precision")
         
         # cuDNN benchmark
