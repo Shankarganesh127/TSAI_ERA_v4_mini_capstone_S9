@@ -195,6 +195,7 @@ def create_sagemaker_estimator(args, hyperparameters):
         output_path=f"{args.s3_bucket}/output/{args.job_name}",
         volume_size=args.volume_size,
         enable_sagemaker_metrics=True,
+        volume_size_in_gb=500, 
         tags=tags
     )
     return estimator

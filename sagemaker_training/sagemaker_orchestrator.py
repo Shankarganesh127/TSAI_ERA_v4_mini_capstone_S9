@@ -41,6 +41,10 @@ class SageMakerPipelineOrchestrator:
         self.s3_client = None
         self.sagemaker_client = None
         
+    #s3://tsai-era-v4-mini-capstone/webdataset_shards/train_tars/
+
+    #s3://tsai-era-v4-mini-capstone/webdataset_shards/val_tars/
+        
     def _load_config(self, config_file):
         """Load configuration from file or use defaults"""
         default_config = {
@@ -50,7 +54,8 @@ class SageMakerPipelineOrchestrator:
             },
             "dataset": {
                 "source_bucket": "tsai-era-v4-mini-capstone",
-                "source_prefix": "Datasets/imagenet1k/ILSVRC",
+                #"source_prefix": "Datasets/imagenet1k/ILSVRC",
+                "source_prefix": "webdataset_shards",
                 "target_prefix": "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker",
                 "validation_required": True
             },
@@ -102,9 +107,9 @@ class SageMakerPipelineOrchestrator:
                 return False
                 
             # Step 2: Validate Dataset Structure
-            dataset_ready = self._validate_and_convert_dataset(args)
-            if not dataset_ready:
-                return False
+            #dataset_ready = self._validate_and_convert_dataset(args)
+            #if not dataset_ready:
+            #    return False
             
             # Step 3: Launch SageMaker Training Pipeline
             training_job_name = self._launch_training_pipeline(args)
@@ -313,12 +318,15 @@ class SageMakerPipelineOrchestrator:
             s3_bucket_uri = f"s3://{source_bucket}" if source_bucket and not source_bucket.startswith("s3://") else source_bucket
             
             # Configure train and validation data paths based on your specific structure
-            source_prefix = training_args.get("source_prefix", "Datasets/imagenet1k/ILSVRC")
+            source_prefix = training_args.get("source_prefix", "webdataset_shards")
             target_prefix = training_args.get("target_prefix", "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker")
             
             # Your specific dataset paths
-            train_data_path = f"{source_prefix}/Data/CLS-LOC/train/"
-            val_data_path = f"{target_prefix}/val/"
+            #train_data_path = f"{source_prefix}/Data/CLS-LOC/train/"
+            #val_data_path = f"{target_prefix}/val/"
+            train_data_path = f"{source_prefix}"
+            val_data_path = f"{source_prefix}"
+            
             
             self.logger.info(f"📂 Training data S3 path: {s3_bucket_uri}/{train_data_path}")
             self.logger.info(f"📂 Validation data S3 path: {s3_bucket_uri}/{val_data_path}")

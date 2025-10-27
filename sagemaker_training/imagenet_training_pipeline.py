@@ -1780,12 +1780,12 @@ def main():
         train_loader, val_loader = get_imagenet_dataloaders(
             train=args.train, val=args.val, batch_size=initial_batch_size, num_workers=args.num_workers, 
             lightweight_augs=args.lightweight_augs)
-        # DDP: Use DistributedSampler if multi-GPU
-        if torch.cuda.is_available() and getattr(args, 'world_size', 1) > 1:
-            from torch.utils.data.distributed import DistributedSampler
-            train_loader.sampler = DistributedSampler(train_loader.dataset, num_replicas=args.world_size, rank=args.local_rank)
-            val_loader.sampler = DistributedSampler(val_loader.dataset, num_replicas=args.world_size, rank=args.local_rank)
-            logger.info("[DDP] Using DistributedSampler for train and val loaders")
+        # DDP: Use DistributedSampler if multi-GPU -> will not support in webloader
+        #if torch.cuda.is_available() and getattr(args, 'world_size', 1) > 1:
+        #    from torch.utils.data.distributed import DistributedSampler
+        #    train_loader.sampler = DistributedSampler(train_loader.dataset, num_replicas=args.world_size, rank=args.local_rank)
+        #    val_loader.sampler = DistributedSampler(val_loader.dataset, num_replicas=args.world_size, rank=args.local_rank)
+        #    logger.info("[DDP] Using DistributedSampler for train and val loaders")
         progress_manager.update_progress(2, {'step': 'Loading validation dataset'})
     except Exception as e:
         progress_manager.close_progress_bar()
@@ -1795,45 +1795,46 @@ def main():
     progress_manager.close_progress_bar()
     logger.info(f"Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
     
+    # Not required for webloader
     # Initialize Training Performance Optimizer for data loading optimization
-    logger.info("[OPTIMIZER] Initializing TrainingPerformanceOptimizer for data loading optimization...")
-    try:
-        # Create temporary model and optimizer for optimizer initialization
-        temp_model = create_model().to(device)
-        temp_optimizer = optim.SGD(temp_model.parameters(), lr=1e-3, momentum=0.9)
-        temp_criterion = nn.CrossEntropyLoss()
-        
-        # Create optimizer instance
-        performance_optimizer = TrainingPerformanceOptimizer(
-            model=temp_model,
-            optimizer=temp_optimizer,
-            criterion=temp_criterion,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            device=device,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            enable_amp=not args.no_amp,
-            enable_profiling=True
-        )
-        
-        # Optimize data loading
-        logger.info("[OPTIMIZER] Optimizing data loading pipeline...")
-        optimized_train_loader, optimized_val_loader = performance_optimizer.optimize_data_loading(target_workers=16)
-        
-        # Replace original loaders with optimized ones
-        train_loader = optimized_train_loader
-        if optimized_val_loader is not None:
-            val_loader = optimized_val_loader
-        logger.info("[OPTIMIZER] ✅ Data loading optimization complete")
-        
-        # Clean up temporary resources
-        del temp_model, temp_optimizer, temp_criterion
-        
-    except Exception as e:
-        logger.warning(f"[OPTIMIZER] ⚠️ Failed to initialize performance optimizer: {e}")
-        logger.warning("[OPTIMIZER] Continuing with standard data loading...")
-        performance_optimizer = None
+    #logger.info("[OPTIMIZER] Initializing TrainingPerformanceOptimizer for data loading optimization...")
+    #try:
+    #    # Create temporary model and optimizer for optimizer initialization
+    #    temp_model = create_model().to(device)
+    #    temp_optimizer = optim.SGD(temp_model.parameters(), lr=1e-3, momentum=0.9)
+    #    temp_criterion = nn.CrossEntropyLoss()
+    #    
+    #    # Create optimizer instance
+    #    performance_optimizer = TrainingPerformanceOptimizer(
+    #        model=temp_model,
+    #        optimizer=temp_optimizer,
+    #        criterion=temp_criterion,
+    #        train_loader=train_loader,
+    #        val_loader=val_loader,
+    #        device=device,
+    #        batch_size=args.batch_size,
+    #        num_workers=args.num_workers,
+    #        enable_amp=not args.no_amp,
+    #        enable_profiling=True
+    #    )
+    #    
+    #    # Optimize data loading
+    #    logger.info("[OPTIMIZER] Optimizing data loading pipeline...")
+    #    optimized_train_loader, optimized_val_loader = performance_optimizer.optimize_data_loading(target_workers=16)
+    #    
+    #    # Replace original loaders with optimized ones
+    #    train_loader = optimized_train_loader
+    #    if optimized_val_loader is not None:
+    #        val_loader = optimized_val_loader
+    #    logger.info("[OPTIMIZER] ✅ Data loading optimization complete")
+    #    
+    #    # Clean up temporary resources
+    #    del temp_model, temp_optimizer, temp_criterion
+    #    
+    #except Exception as e:
+    #    logger.warning(f"[OPTIMIZER] ⚠️ Failed to initialize performance optimizer: {e}")
+    #    logger.warning("[OPTIMIZER] Continuing with standard data loading...")
+    #    performance_optimizer = None
            
     
     # =============================================================================
@@ -1943,11 +1944,11 @@ def main():
         progress_manager.finalize_status(lr_skip_key)
     
     # STEP 2 & 3: Already incorporated in lr_config
-    logger.info(f"[OK] LR bounds selected: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
+    logger.info(f"[OK] STEP 2 and 3: LR bounds selected: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
     
     # STEP 4: Batch Size Already Optimized
     optimal_batch_size = initial_batch_size
-    logger.info(f"[OK] Using optimized batch size: {optimal_batch_size}")
+    logger.info(f"[OK] STEP 4: Using optimized batch size: {optimal_batch_size}")
     
     # STEP 5: Weight Decay Search
     best_weight_decay = 1e-4  # Default
@@ -2141,9 +2142,9 @@ def main():
             #performance_optimizer=performance_optimizer,
             gradient_accumulation_steps=gradient_accumulation_steps
         )
-    if (is_main_process()):
-        progress_manager.update_status(full_train_key, f"[OK] STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")
-        progress_manager.finalize_status(full_train_key)
+    
+    progress_manager.update_status(full_train_key, f"[OK] STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")
+    progress_manager.finalize_status(full_train_key)
     
     # Performance Optimization Summary
     #if performance_optimizer:

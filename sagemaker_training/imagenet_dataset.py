@@ -188,8 +188,8 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     
     # 2. Define URL Glob Patterns (WebDataset input)
     # SageMaker mounts S3 data at data_dir. Assuming tar files are in a dedicated folder.
-    train_urls = os.path.join(train, 'train_tars', '*.tar')
-    val_urls = os.path.join(val, 'val_tars', '*.tar')
+    train_urls = os.path.join(train, '*.tar')
+    val_urls = os.path.join(val, '*.tar')
 
     logger.info(f"Checking paths - train_dir={train_dir}, val_dir={val_dir}")
     
