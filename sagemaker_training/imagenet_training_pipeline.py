@@ -893,11 +893,13 @@ class LRFinder:
 class HyperparameterOptimizer:
     """Grid/Random search for hyperparameters"""
     
-    def __init__(self, model_fn, train_loader, val_loader, device):
+    def __init__(self, model_fn, train_loader, val_loader, device, train_batches_per_epoch=None, val_batches_per_epoch=None):
         self.model_fn = model_fn
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
+        self.train_batches_per_epoch = train_batches_per_epoch
+        self.val_batches_per_epoch = val_batches_per_epoch
         
     def _quick_train(self, model, optimizer, criterion, scheduler, epochs):
         """Quick training for hyperparameter search"""
@@ -919,7 +921,7 @@ class HyperparameterOptimizer:
             train_batches = 0
             
             # Use progress manager for clean progress tracking
-            total_batches = self.train_loader.batch_size  # Calculate effective epoch size for the scheduler. This is critical.
+            total_batches = self.train_batches_per_epoch   # Calculate effective epoch size for the scheduler. This is critical.
             from tqdm.auto import tqdm
             bar = tqdm(total=total_batches, desc=f"Epoch {epoch+1}/{epochs}", unit="it", ncols=120, disable=TQDM_DISABLE)
             
@@ -957,7 +959,7 @@ class HyperparameterOptimizer:
             val_batches = 0
             
             # Use progress manager for validation progress
-            val_limit = self.val_loader.batch_size  # Limit validation batches for speed
+            val_limit = self.val_batches_per_epoch  # Limit validation batches for speed
             from tqdm.auto import tqdm
             bar = tqdm(total=val_limit, desc=f"Validation {epoch+1}/{epochs}", unit="it", ncols=120, disable=TQDM_DISABLE)
             
@@ -1033,7 +1035,7 @@ class HyperparameterOptimizer:
             
             # OneCycle scheduler is essential for fast convergence in short runs
             scheduler = OneCycleLR(optimizer, max_lr=lr_config['max_lr'], 
-                                epochs=epochs, steps_per_epoch=self.train_loader.batch_size)
+                                epochs=epochs, steps_per_epoch=self.train_batches_per_epoch)
             
             # Train for a few epochs
             train_losses, val_losses, val_accs = self._quick_train(
@@ -1079,12 +1081,14 @@ class HyperparameterOptimizer:
 class FullTrainer:
     """Full training with OneCycleLR, AMP, Gradient Accumulation, and Checkpointing."""
     
-    def __init__(self, model, train_loader, val_loader, device, save_dir):
+    def __init__(self, model, train_loader, val_loader, device, save_dir, train_batches_per_epoch=None, val_batches_per_epoch=None):
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
         self.save_dir = save_dir
+        self.train_batches_per_epoch = train_batches_per_epoch
+        self.val_batches_per_epoch = val_batches_per_epoch
         self.enable_amp = torch.cuda.is_available()
         self.history = {
             'train_loss': [], 'train_acc': [],
@@ -1132,7 +1136,7 @@ class FullTrainer:
                               momentum=0.85, weight_decay=weight_decay, nesterov=True)
         
         # --- CRITICAL CORRECTION: div_factor uses scaled LRs ---
-        steps_per_epoch = self.train_loader.batch_size // gradient_accumulation_steps
+        steps_per_epoch = self.train_batches_per_epoch // gradient_accumulation_steps
         scheduler = OneCycleLR(
             optimizer, 
             max_lr=scaled_max_lr,
@@ -1252,7 +1256,7 @@ class FullTrainer:
         accumulation_counter = 0
         logger = get_unified_logger("FullTrainer - training")
         
-        train_batches = self.train_loader.batch_size
+        train_batches = self.train_batches_per_epoch
         bar = tqdm(total=train_batches, desc="Training", unit="batch", ncols=120, disable=TQDM_DISABLE)
 
         for batch_idx, (inputs, targets) in enumerate(self.train_loader):
@@ -1339,7 +1343,7 @@ class FullTrainer:
         total = 0
         logger = get_unified_logger("FullTrainer - validation")
         
-        val_batches = self.val_loader.batch_size
+        val_batches = self.val_batches_per_epoch
         bar = tqdm(total=val_batches, desc="Validation", unit="batch", ncols=120, disable=TQDM_DISABLE)
         
         with torch.no_grad():
@@ -1783,7 +1787,7 @@ def main():
     logger.info("Using standard ImageNet dataset loader")
     try:
         progress_manager.update_progress(1, {'step': 'Loading training dataset'})
-        train_loader, val_loader = get_imagenet_dataloaders(
+        train_loader, val_loader, train_batches_per_epoch, val_batches_per_epoch = get_imagenet_dataloaders(
             train=args.train, val=args.val, batch_size=initial_batch_size, num_workers=args.num_workers, 
             lightweight_augs=args.lightweight_augs)
         # DDP: Use DistributedSampler if multi-GPU -> will not support in webloader
@@ -1799,17 +1803,13 @@ def main():
         raise
     
     progress_manager.close_progress_bar()
-    # For WebLoader, .dataset does not exist. Log number of batches and samples instead.
-    num_train_batches = train_loader.batch_size
-    num_val_batches = val_loader.batch_size
-    try:
-        num_train_samples = sum(len(batch[0]) for batch in train_loader)
-        num_val_samples = sum(len(batch[0]) for batch in val_loader)
-        logger.info(f"Dataset loaded - Train batches: {num_train_batches}, Val batches: {num_val_batches}")
-        logger.info(f"Dataset loaded - Train samples: {num_train_samples}, Val samples: {num_val_samples}")
-    except Exception as e:
-        logger.info(f"Dataset loaded - Train batches: {num_train_batches}, Val batches: {num_val_batches}")
-        logger.warning(f"Could not count samples in WebLoader: {e}")
+    # For WebLoader, use the calculated batch counts and known dataset sizes
+    num_train_batches = train_batches_per_epoch
+    num_val_batches = val_batches_per_epoch
+    num_train_samples = IMAGENET_TRAIN_SIZE
+    num_val_samples = IMAGENET_VAL_SIZE
+    logger.info(f"Dataset loaded - Train batches: {num_train_batches}, Val batches: {num_val_batches}")
+    logger.info(f"Dataset loaded - Train samples: {num_train_samples}, Val samples: {num_val_samples}")
     
     # Not required for webloader
     # Initialize Training Performance Optimizer for data loading optimization
@@ -1972,7 +1972,7 @@ def main():
         wd_step_key = "weight_decay_search"
         progress_manager.create_status_updater(wd_step_key, "[WEIGHT] STEP 5: Weight Decay Search - Starting...")
 
-        optimizer = HyperparameterOptimizer(create_model, train_loader, val_loader, device)
+        optimizer = HyperparameterOptimizer(create_model, train_loader, val_loader, device, train_batches_per_epoch, val_batches_per_epoch)
 
         wd_values = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3] if not args.quick_mode else [1e-4, 5e-4]
         search_epochs = 3 if args.quick_mode else 5
@@ -2109,7 +2109,7 @@ def main():
     else:
         logger.info("🟢 Starting Full Training from Epoch 0")
     
-    trainer = FullTrainer(model, train_loader, val_loader, device, args.output)
+    trainer = FullTrainer(model, train_loader, val_loader, device, args.output, train_batches_per_epoch, val_batches_per_epoch)
 
     progress_manager.update_status(full_train_key,
         f"[START] STEP 6: Full OneCycle Training - LR: {lr_config['min_lr']:.2e}→{lr_config['max_lr']:.2e}, WD: {best_weight_decay:.2e}, Batch: {optimal_batch_size}")

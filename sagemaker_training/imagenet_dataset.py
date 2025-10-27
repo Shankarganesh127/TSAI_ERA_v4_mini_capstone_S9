@@ -163,7 +163,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         lightweight_augs: Use lightweight augmentations for maximum speed
     
     Returns:
-        train_loader, val_loader
+        train_loader, val_loader, train_batches_per_epoch, val_batches_per_epoch
     """
     
     logger = get_unified_logger("imagenet_dataset")
@@ -260,7 +260,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         persistent_workers=True if num_workers > 0 else False
     )
 
-    return train_loader, val_loader
+    return train_loader, val_loader, train_batches_per_epoch, val_batches_per_epoch
 
 ''''
     # Create datasets
