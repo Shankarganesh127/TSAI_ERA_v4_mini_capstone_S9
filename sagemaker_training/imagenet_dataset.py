@@ -186,14 +186,17 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     train_dir = train
     val_dir = val
     
-    # 2. Define URL Glob Patterns (WebDataset input)
-    # SageMaker mounts S3 data at data_dir. Assuming tar files are in a dedicated folder.
+    # Define URL patterns
     train_url_pattern = os.path.join(train, '*.tar')
     val_url_pattern = os.path.join(val, '*.tar')
     
-    # For multi-node training, properly handle shard distribution
-    train_urls = wds.PytorchWorker(wds.shardlists.split_by_node(wds.shardurls(train_url_pattern)))
-    val_urls = wds.PytorchWorker(wds.shardlists.split_by_node(wds.shardurls(val_url_pattern)))
+    # 1. Get ALL URLs using brace expansion utility
+    train_urls_all = wds.shardurls(train_url_pattern)
+    val_urls_all = wds.shardurls(val_url_pattern)
+    
+    # 2. Use split_by_node directly for DDP/Multi-Instance sharding
+    train_urls = wds.shardlists.split_by_node(train_urls_all)
+    val_urls = wds.shardlists.split_by_node(val_urls_all)
 
     logger.info(f"Checking paths - train_dir={train_dir}, val_dir={val_dir}")
     
@@ -229,15 +232,11 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .batched(batch_size, partial=False)
     )
 
-    # WebLoader is necessary to wrap the WebDataset object and correctly handle multi-threading/DDP
+    # WebLoader automatically handles worker splitting when num_workers > 0
     train_loader = wds.WebLoader(
         train_dataset,
-        batch_size=batch_size,
-        shuffle=False,
         num_workers=num_workers,
-        pin_memory=True,
-        prefetch_factor=2,
-        persistent_workers=True if num_workers > 0 else False
+        pin_memory=True
     )
     
     # --- Validation DataLoader (WebDataset) ---
@@ -261,12 +260,8 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
 
     val_loader = wds.WebLoader(
         val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
         num_workers=num_workers,
-        pin_memory=True,
-        prefetch_factor=2,
-        persistent_workers=True if num_workers > 0 else False
+        pin_memory=True
     )
 
     return train_loader, val_loader, train_batches_per_epoch, val_batches_per_epoch
