@@ -215,7 +215,6 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
 
     train_dataset = (
         wds.WebDataset(train_urls)
-        .ddp_auto()
         .shuffle(1000)
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
@@ -243,7 +242,6 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     # Note: Validation doesn't need shuffling, but still needs DDP partitioning
     val_dataset = (
         wds.WebDataset(val_urls)
-        .ddp_auto()
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
         .map_dict(image=val_transform, handler=wds.handlers.ignore_and_continue)
