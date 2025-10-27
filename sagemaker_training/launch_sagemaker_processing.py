@@ -7,7 +7,7 @@ from datetime import datetime
 
 # Import logger setup from your existing utilities
 try:
-    from logger_setup import setup_unified_logger
+    from logger_setup import get_unified_logger, setup_unified_logger
 except ImportError:
     # Basic fallback if utility files are not in the path
     import logging
@@ -18,7 +18,7 @@ def launch_processing_job(role_arn, source_bucket, instance_type='ml.c5.9xlarge'
     """
     Launches a SageMaker Processing job to convert ImageNet folders to WebDataset tar files.
     """
-    logger = setup_unified_logger("sagemaker_processing_launcher")
+    logger = get_unified_logger("sagemaker_processing_launcher")
     
     # --- 1. Configuration ---
     
