@@ -211,7 +211,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     # --- Training DataLoader (WebDataset) ---
 
     train_dataset = (
-        wds.WebDataset(train_urls, resample=True) # resample=True ensures shard shuffling
+        wds.WebDataset(train_urls) # removed resample argument
         .shuffle(1000) # Buffer for inter-shard shuffling
         # Decode the image: load bytes from 'jpg' key, decode to PIL Image
         .decode("pil", handler=wds.handlers.ignore_and_continue) 
@@ -231,7 +231,9 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         batch_size=None, # batching is done in the dataset pipeline (.batched())
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        prefetch_factor=2,
+        persistent_workers=True if num_workers > 0 else False
     ).ddp(timeout=60.0) # Apply DDP shard partitioning and set timeout
     
     # --- Validation DataLoader (WebDataset) ---
@@ -240,7 +242,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
 
     # Note: Validation doesn't need shuffling, but still needs DDP partitioning
     val_dataset = (
-        wds.WebDataset(val_urls, resample=False) # No shard shuffling for validation
+        wds.WebDataset(val_urls) # removed resample argument
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
         .map_dict(image=val_transform, handler=wds.handlers.ignore_and_continue)
@@ -254,7 +256,9 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         batch_size=None,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        prefetch_factor=2,
+        persistent_workers=True if num_workers > 0 else False
     ).ddp(timeout=60.0)
 
     return train_loader, val_loader
