@@ -196,10 +196,10 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     logger.info(f"  LOCAL_RANK: {local_rank}")
     logger.info(f"  LOCAL_WORLD_SIZE: {local_world_size}")
     
-    # Validate multi-node setup
-    is_multi_node = int(world_size) > 1
+    # Validate multi-node setup (multiple physical nodes, not just multi-GPU on single node)
+    is_multi_node = int(world_size) > int(local_world_size)
     if is_multi_node:
-        logger.info(f"🔄 Multi-node training detected: {world_size} total processes")
+        logger.info(f"🔄 Multi-node training detected: {world_size} total processes across {int(world_size)//int(local_world_size)} nodes")
         logger.info("Using nodesplitter() for shard distribution across nodes")
         
         # Additional validation for multi-node setup
@@ -209,8 +209,8 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
             logger.info(f"This is worker node (RANK={rank})")
             
     else:
-        logger.info("🔄 Single-node training detected")
-        logger.info("nodesplitter() will pass data through unchanged")
+        logger.info(f"🔄 Single-node training detected ({world_size} processes on 1 node)")
+        logger.info("All processes will see all shards (no node-level splitting)")
     
     # Ensure environment variables are properly set for WebDataset
     if is_multi_node:
@@ -238,9 +238,15 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
 
     logger.info(f"Found {len(train_urls_all)} total training shards and {len(val_urls_all)} validation shards locally.")
 
-    # 3. Split URLs across nodes for multi-node training using WebDataset's built-in splitter
-    train_urls = wds.shardlists.split_by_node(train_urls_all)
-    val_urls = wds.shardlists.split_by_node(val_urls_all)
+    # 3. Split URLs across nodes ONLY for actual multi-node training
+    if is_multi_node:
+        logger.info("Splitting shards across nodes using wds.shardlists.split_by_node()")
+        train_urls = wds.shardlists.split_by_node(train_urls_all)
+        val_urls = wds.shardlists.split_by_node(val_urls_all)
+    else:
+        logger.info("Single-node training: using all shards for all processes")
+        train_urls = train_urls_all
+        val_urls = val_urls_all
 
     if not train_urls_all:
         # List directory contents for debugging
@@ -286,7 +292,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     # --- Training DataLoader (WebDataset) ---
 
     train_dataset = (
-        wds.WebDataset(train_urls)  # URLs already split by wds.shardlists.split_by_node()
+        wds.WebDataset(train_urls)  # URLs split by node only if multi-node
         
         .shuffle(1000)
         .decode("pil", handler=wds.handlers.ignore_and_continue)
@@ -301,11 +307,12 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .batched(batch_size, partial=False)
     )
     
-    # Set nodesplitter flag to satisfy WebDataset's multi-node check
-    # Since we pre-split URLs with wds.shardlists.split_by_node(), we manually set the flag
-    train_dataset.nodesplitter = True
-    
-    logger.info("✅ Training dataset created with pre-split URLs for multi-node training")
+    # Set nodesplitter flag ONLY if we actually split URLs across nodes
+    if is_multi_node:
+        train_dataset.nodesplitter = True
+        logger.info("✅ Training dataset created with node-split URLs for multi-node training")
+    else:
+        logger.info("✅ Training dataset created for single-node training (all processes see all shards)")
 
     # WebLoader automatically handles worker splitting when num_workers > 0
     train_loader = wds.WebLoader(
@@ -319,7 +326,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     val_batches_per_epoch = math.ceil(IMAGENET_VAL_SIZE / batch_size)
 
     val_dataset = (
-        wds.WebDataset(val_urls)  # URLs already split by wds.shardlists.split_by_node()
+        wds.WebDataset(val_urls)  # URLs split by node only if multi-node
         
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
@@ -333,10 +340,12 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .batched(batch_size, partial=True)
     )
     
-    # Set nodesplitter flag to satisfy WebDataset's multi-node check
-    val_dataset.nodesplitter = True
-    
-    logger.info("✅ Validation dataset created with pre-split URLs for multi-node training")
+    # Set nodesplitter flag ONLY if we actually split URLs across nodes
+    if is_multi_node:
+        val_dataset.nodesplitter = True
+        logger.info("✅ Validation dataset created with node-split URLs for multi-node training")
+    else:
+        logger.info("✅ Validation dataset created for single-node training (all processes see all shards)")
 
     val_loader = wds.WebLoader(
         val_dataset,
