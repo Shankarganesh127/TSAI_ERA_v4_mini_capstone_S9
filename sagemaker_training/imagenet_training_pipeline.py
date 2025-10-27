@@ -1904,6 +1904,7 @@ def main():
 
         progress_manager.update_status(lr_step_key, f"[DEBUG] STEP 1: LR Range Test - Running {num_iter} iterations...")
         if current_stage == 'START':
+            # Only main process runs LR range test to avoid NCCL conflicts
             if is_main_process():
                 lrs, losses = lr_finder.range_test(lr_test_loader, num_iter=num_iter)
                 # Plot results
@@ -1914,8 +1915,37 @@ def main():
                 # Get suggestions
                 lr_config = lr_finder.suggest_lr()
             else:
-                # Non-main processes wait and will load results later
+                # Non-main processes wait
                 lr_config = None
+
+            # Broadcast lr_config from rank 0 to all processes
+            if hasattr(args, 'world_size') and args.world_size > 1:
+                import torch.distributed as dist
+                if is_main_process():
+                    lr_config_str = json.dumps(lr_config)
+                    lr_config_bytes = lr_config_str.encode('utf-8')
+                    lr_config_size = len(lr_config_bytes)
+                else:
+                    lr_config_size = 0
+
+                # Broadcast size first
+                lr_config_size_tensor = torch.tensor([lr_config_size], dtype=torch.int32, device=device)
+                dist.broadcast(lr_config_size_tensor, src=0)
+                lr_config_size = lr_config_size_tensor.item()
+
+                # Broadcast data
+                if is_main_process():
+                    lr_config_tensor = torch.frombuffer(lr_config_bytes, dtype=torch.uint8).to(device)
+                else:
+                    lr_config_tensor = torch.zeros(lr_config_size, dtype=torch.uint8, device=device)
+
+                dist.broadcast(lr_config_tensor, src=0)
+
+                # Decode on non-main processes
+                if not is_main_process():
+                    lr_config_bytes = bytes(lr_config_tensor.cpu().numpy())
+                    lr_config_str = lr_config_bytes.decode('utf-8')
+                    lr_config = json.loads(lr_config_str)
         else:
              # Load lr_config from checkpoint_dir
             lr_config_path = os.path.join(checkpoint_dir, 'lr_config.json')
