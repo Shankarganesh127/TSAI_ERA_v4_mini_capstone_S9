@@ -187,30 +187,69 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     train_dir = train
     val_dir = val
     
-    # Define URL patterns
-    train_url_pattern = os.path.join(train, '*.tar')
-    val_url_pattern = os.path.join(val, '*.tar')
+    # Define URL patterns - try multiple possible locations
+    train_url_patterns = [
+        os.path.join(train, '*.tar'),           # Direct .tar files
+        os.path.join(train, '**', '*.tar'),     # .tar files in subdirectories
+    ]
+    val_url_patterns = [
+        os.path.join(val, '*.tar'),             # Direct .tar files  
+        os.path.join(val, '**', '*.tar'),       # .tar files in subdirectories
+    ]
     
-    # Check if tar files exist
-    train_tar_files = glob.glob(train_url_pattern)
-    val_tar_files = glob.glob(val_url_pattern)
+    # Check if tar files exist in any of the patterns
+    train_tar_files = []
+    val_tar_files = []
+    
+    for pattern in train_url_patterns:
+        files = glob.glob(pattern, recursive=True)
+        if files:
+            train_tar_files.extend(files)
+            logger.info(f"Found {len(files)} training tar files with pattern: {pattern}")
+            break
+    
+    for pattern in val_url_patterns:
+        files = glob.glob(pattern, recursive=True)
+        if files:
+            val_tar_files.extend(files)
+            logger.info(f"Found {len(files)} validation tar files with pattern: {pattern}")
+            break
     
     if not train_tar_files:
+        # List directory contents for debugging
+        try:
+            logger.error(f"Training directory contents: {os.listdir(train)}")
+            for root, dirs, files in os.walk(train):
+                tar_files = [f for f in files if f.endswith('.tar')]
+                if tar_files:
+                    logger.error(f"Found .tar files in {root}: {tar_files[:5]}...")  # Show first 5
+        except Exception as e:
+            logger.error(f"Could not list training directory: {e}")
         raise FileNotFoundError(f"No .tar files found in training directory: {train}")
+    
     if not val_tar_files:
+        # List directory contents for debugging
+        try:
+            logger.error(f"Validation directory contents: {os.listdir(val)}")
+            for root, dirs, files in os.walk(val):
+                tar_files = [f for f in files if f.endswith('.tar')]
+                if tar_files:
+                    logger.error(f"Found .tar files in {root}: {tar_files[:5]}...")  # Show first 5
+        except Exception as e:
+            logger.error(f"Could not list validation directory: {e}")
         raise FileNotFoundError(f"No .tar files found in validation directory: {val}")
     
-    logger.info(f"Found {len(train_tar_files)} training tar files")
-    logger.info(f"Found {len(val_tar_files)} validation tar files")
+    logger.info(f"Total training tar files found: {len(train_tar_files)}")
+    logger.info(f"Total validation tar files found: {len(val_tar_files)}")
     
-    # Use split_by_node directly for DDP/Multi-Instance sharding
+    # Use split_by_node for DDP/Multi-Instance sharding
     train_urls = wds.shardlists.split_by_node(train_tar_files)
     val_urls = wds.shardlists.split_by_node(val_tar_files)
 
     logger.info(f"Checking paths - train_dir={train_dir}, val_dir={val_dir}")
     
-    logger.info(f"🚀 Using WebDataset for training from: {train_url_pattern}")
-    logger.info(f"🚀 Using WebDataset for validation from: {val_url_pattern}")
+    logger.info(f"🚀 Using WebDataset for training from: {train}")
+    logger.info(f"🚀 Using WebDataset for validation from: {val}")
     
     # Calculate effective epoch size for the scheduler. This is critical.
     train_batches_per_epoch = math.ceil(IMAGENET_TRAIN_SIZE / batch_size)
