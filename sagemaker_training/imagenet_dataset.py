@@ -191,8 +191,9 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     train_urls = os.path.join(train, '*.tar')
     val_urls = os.path.join(val, '*.tar')
     
-    #train_urls = wds.shardlists.split_by_node(train_urls)
-    #val_urls = wds.shardlists.split_by_node(val_urls)
+    # For multi-node training, split shards across nodes
+    train_urls = wds.shardlists.split_by_node(train_urls)
+    val_urls = wds.shardlists.split_by_node(val_urls)
 
     logger.info(f"Checking paths - train_dir={train_dir}, val_dir={val_dir}")
     
@@ -215,7 +216,6 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
 
     train_dataset = (
         wds.WebDataset(train_urls)
-        .nodesplitter()
         .shuffle(1000)
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
@@ -243,7 +243,6 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     # Note: Validation doesn't need shuffling, but still needs DDP partitioning
     val_dataset = (
         wds.WebDataset(val_urls)
-        .nodesplitter()
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
         .map_dict(image=val_transform, handler=wds.handlers.ignore_and_continue)
