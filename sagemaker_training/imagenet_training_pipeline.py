@@ -1904,9 +1904,11 @@ def main():
 
         progress_manager.update_status(lr_step_key, f"[DEBUG] STEP 1: LR Range Test - Running {num_iter} iterations...")
         if current_stage == 'START':
-            # Only main process runs LR range test to avoid NCCL conflicts
+            # All processes run LR range test simultaneously to maintain NCCL synchronization
+            lrs, losses = lr_finder.range_test(lr_test_loader, num_iter=num_iter)
+
+            # Only main process plots and suggests LR config
             if is_main_process():
-                lrs, losses = lr_finder.range_test(lr_test_loader, num_iter=num_iter)
                 # Plot results
                 fig, min_lr = lr_finder.plot()
                 fig.savefig(os.path.join(args.output, 'lr_range_test.png'))
@@ -1915,10 +1917,10 @@ def main():
                 # Get suggestions
                 lr_config = lr_finder.suggest_lr()
             else:
-                # Non-main processes wait
-                lr_config = None
+                # Non-main processes get lr_config via broadcasting
+                lr_config = lr_finder.suggest_lr()
 
-            # Broadcast lr_config from rank 0 to all processes
+            # Broadcast lr_config from rank 0 to ensure consistency across all processes
             if hasattr(args, 'world_size') and args.world_size > 1:
                 import torch.distributed as dist
                 if is_main_process():
