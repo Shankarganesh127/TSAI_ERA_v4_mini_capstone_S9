@@ -282,10 +282,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     # --- Training DataLoader (WebDataset) ---
 
     train_dataset = (
-        wds.WebDataset(train_urls_all)  # Pass the FULL list of URLs
-        
-        # CRITICAL: This explicitly adds the required "nodesplitter" for multi-node DDP
-        .split_by_node()
+        wds.WebDataset(train_urls_all)  # URLs are already split by manual_split_urls
         
         .shuffle(1000)
         .decode("pil", handler=wds.handlers.ignore_and_continue)
@@ -299,7 +296,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .with_epoch(train_batches_per_epoch)
         .batched(batch_size, partial=False)
     )
-    logger.info("✅ Training dataset created with split_by_node() for multi-node training")
+    logger.info("✅ Training dataset created with pre-split URLs for multi-node training")
 
     # WebLoader automatically handles worker splitting when num_workers > 0
     train_loader = wds.WebLoader(
@@ -313,10 +310,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     val_batches_per_epoch = math.ceil(IMAGENET_VAL_SIZE / batch_size)
 
     val_dataset = (
-        wds.WebDataset(val_urls_all)  # Pass the FULL list of URLs
-        
-        # CRITICAL: This explicitly adds the required "nodesplitter" for multi-node DDP
-        .split_by_node()
+        wds.WebDataset(val_urls_all)  # URLs are already split by manual_split_urls
         
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
@@ -329,7 +323,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .with_epoch(val_batches_per_epoch)
         .batched(batch_size, partial=True)
     )
-    logger.info("✅ Validation dataset created with split_by_node() for multi-node training")
+    logger.info("✅ Validation dataset created with pre-split URLs for multi-node training")
 
     val_loader = wds.WebLoader(
         val_dataset,
