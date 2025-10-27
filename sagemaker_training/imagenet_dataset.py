@@ -183,6 +183,47 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         logger.info("Using advanced augmentations for better accuracy")
     logger.info("Transforms created")
 
+    # Check distributed training environment variables
+    import os
+    rank = os.environ.get('RANK', '0')
+    world_size = os.environ.get('WORLD_SIZE', '1')
+    local_rank = os.environ.get('LOCAL_RANK', '0')
+    local_world_size = os.environ.get('LOCAL_WORLD_SIZE', '1')
+    
+    logger.info(f"Distributed training environment:")
+    logger.info(f"  RANK: {rank}")
+    logger.info(f"  WORLD_SIZE: {world_size}")
+    logger.info(f"  LOCAL_RANK: {local_rank}")
+    logger.info(f"  LOCAL_WORLD_SIZE: {local_world_size}")
+    
+    # Validate multi-node setup
+    is_multi_node = int(world_size) > 1
+    if is_multi_node:
+        logger.info(f"🔄 Multi-node training detected: {world_size} total processes")
+        logger.info("Using nodesplitter() for shard distribution across nodes")
+        
+        # Additional validation for multi-node setup
+        if rank == '0':
+            logger.info("This is the master node (RANK=0)")
+        else:
+            logger.info(f"This is worker node (RANK={rank})")
+            
+    else:
+        logger.info("🔄 Single-node training detected")
+        logger.info("nodesplitter() will pass data through unchanged")
+    
+    # Ensure environment variables are properly set for WebDataset
+    if is_multi_node:
+        # WebDataset nodesplitter() relies on these environment variables
+        required_vars = ['RANK', 'WORLD_SIZE']
+        missing_vars = [var for var in required_vars if os.environ.get(var) is None]
+        if missing_vars:
+            logger.warning(f"⚠️  Missing environment variables for multi-node training: {missing_vars}")
+            logger.warning("WebDataset nodesplitter() may not work correctly")
+            logger.warning("Ensure your distributed training framework sets RANK and WORLD_SIZE")
+        else:
+            logger.info("✅ Required environment variables for multi-node training are set")
+
     # Use the provided paths directly
     train_dir = train
     val_dir = val
@@ -266,7 +307,8 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     # --- Training DataLoader (WebDataset) ---
 
     train_dataset = (
-        wds.WebDataset(train_urls)
+        wds.WebDataset(train_urls, shardshuffle=False)
+        .nodesplitter()
         .shuffle(1000)
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
@@ -293,7 +335,8 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
 
     # Note: Validation doesn't need shuffling, but still needs DDP partitioning
     val_dataset = (
-        wds.WebDataset(val_urls)
+        wds.WebDataset(val_urls, shardshuffle=False)
+        .nodesplitter()
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
         .map_dict(image=val_transform, handler=wds.handlers.ignore_and_continue)
