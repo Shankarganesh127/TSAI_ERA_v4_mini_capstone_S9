@@ -238,6 +238,10 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
 
     logger.info(f"Found {len(train_urls_all)} total training shards and {len(val_urls_all)} validation shards locally.")
 
+    # 3. Split URLs across nodes for multi-node training using WebDataset's built-in splitter
+    train_urls = wds.shardlists.split_by_node(train_urls_all)
+    val_urls = wds.shardlists.split_by_node(val_urls_all)
+
     if not train_urls_all:
         # List directory contents for debugging
         try:
@@ -282,7 +286,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     # --- Training DataLoader (WebDataset) ---
 
     train_dataset = (
-        wds.WebDataset(train_urls_all)  # URLs are already split by manual_split_urls
+        wds.WebDataset(train_urls)  # URLs already split by wds.shardlists.split_by_node()
         
         .shuffle(1000)
         .decode("pil", handler=wds.handlers.ignore_and_continue)
@@ -296,7 +300,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .with_epoch(train_batches_per_epoch)
         .batched(batch_size, partial=False)
     )
-    logger.info("✅ Training dataset created with pre-split URLs for multi-node training")
+    logger.info("✅ Training dataset created with WebDataset shard splitting for multi-node training")
 
     # WebLoader automatically handles worker splitting when num_workers > 0
     train_loader = wds.WebLoader(
@@ -310,7 +314,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     val_batches_per_epoch = math.ceil(IMAGENET_VAL_SIZE / batch_size)
 
     val_dataset = (
-        wds.WebDataset(val_urls_all)  # URLs are already split by manual_split_urls
+        wds.WebDataset(val_urls)  # URLs already split by wds.shardlists.split_by_node()
         
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
@@ -323,7 +327,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .with_epoch(val_batches_per_epoch)
         .batched(batch_size, partial=True)
     )
-    logger.info("✅ Validation dataset created with pre-split URLs for multi-node training")
+    logger.info("✅ Validation dataset created with WebDataset shard splitting for multi-node training")
 
     val_loader = wds.WebLoader(
         val_dataset,
