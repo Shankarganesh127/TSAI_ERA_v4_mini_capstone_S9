@@ -4,6 +4,7 @@ High-performance ImageNet-1K dataset loader using WebDataset (.tar I/O)
 """
 
 import os
+import glob
 import torch
 import torchvision
 import torchvision.transforms as transforms
@@ -190,13 +191,21 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     train_url_pattern = os.path.join(train, '*.tar')
     val_url_pattern = os.path.join(val, '*.tar')
     
-    # 1. Get ALL URLs using brace expansion utility
-    train_urls_all = wds.shardurls(train_url_pattern)
-    val_urls_all = wds.shardurls(val_url_pattern)
+    # Check if tar files exist
+    train_tar_files = glob.glob(train_url_pattern)
+    val_tar_files = glob.glob(val_url_pattern)
     
-    # 2. Use split_by_node directly for DDP/Multi-Instance sharding
-    train_urls = wds.shardlists.split_by_node(train_urls_all)
-    val_urls = wds.shardlists.split_by_node(val_urls_all)
+    if not train_tar_files:
+        raise FileNotFoundError(f"No .tar files found in training directory: {train}")
+    if not val_tar_files:
+        raise FileNotFoundError(f"No .tar files found in validation directory: {val}")
+    
+    logger.info(f"Found {len(train_tar_files)} training tar files")
+    logger.info(f"Found {len(val_tar_files)} validation tar files")
+    
+    # Use split_by_node directly for DDP/Multi-Instance sharding
+    train_urls = wds.shardlists.split_by_node(train_tar_files)
+    val_urls = wds.shardlists.split_by_node(val_tar_files)
 
     logger.info(f"Checking paths - train_dir={train_dir}, val_dir={val_dir}")
     
