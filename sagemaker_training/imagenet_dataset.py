@@ -15,7 +15,6 @@ from logger_setup import get_unified_logger
 import webdataset as wds 
 import io
 import math
-import torch.distributed as dist
 
 
 # Logger setup
@@ -24,39 +23,6 @@ logger = get_unified_logger("imagenet_dataset")
 # Standard ImageNet Constants
 IMAGENET_TRAIN_SIZE = 1281167
 IMAGENET_VAL_SIZE = 50000
-
-
-def manual_split_urls(urls_all, logger):
-    """
-    Manually splits the list of URLs based on PyTorch DDP environment variables.
-    This bypasses all high-level webdataset sharding helpers.
-    """
-    try:
-        if dist.is_initialized():
-            rank = dist.get_rank()
-            world_size = dist.get_world_size()
-            logger.info(f"DDP initialized. Rank: {rank}, World Size: {world_size}")
-        elif os.environ.get('WORLD_SIZE'):
-            # Fallback for non-PyTorch DDP (e.g., if PyTorch-XLA or other launcher is used)
-            rank = int(os.environ['RANK'])
-            world_size = int(os.environ['WORLD_SIZE'])
-            logger.info(f"Using Environment Variables. Rank: {rank}, World Size: {world_size}")
-        else:
-            # Single process / non-distributed (return all URLs)
-            return urls_all
-    except Exception as e:
-        logger.error(f"Failed to get DDP context: {e}. Defaulting to all URLs.")
-        return urls_all
-
-    # Slice the URL list: Take every 'world_size'th shard, starting at 'rank'
-    urls_sharded = urls_all[rank::world_size]
-    
-    # Critical Check: if the resulting list is empty, return the full list to avoid crash (though incorrect sharding)
-    if not urls_sharded:
-        return urls_all
-        
-    logger.info(f"Assigned {len(urls_sharded)} shards to this node (Rank {rank}).")
-    return urls_sharded
 
 
 def get_imagenet_transforms(input_size=224, lightweight=False):
@@ -262,35 +228,17 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     train_dir = train
     val_dir = val
     
-    # Define URL patterns - try multiple possible locations
-    train_url_patterns = [
-        os.path.join(train, '*.tar'),           # Direct .tar files
-        os.path.join(train, '**', '*.tar'),     # .tar files in subdirectories
-    ]
-    val_url_patterns = [
-        os.path.join(val, '*.tar'),             # Direct .tar files  
-        os.path.join(val, '**', '*.tar'),       # .tar files in subdirectories
-    ]
-    
-    # Check if tar files exist in any of the patterns
-    train_tar_files = []
-    val_tar_files = []
-    
-    for pattern in train_url_patterns:
-        files = glob.glob(pattern, recursive=True)
-        if files:
-            train_tar_files.extend(files)
-            logger.info(f"Found {len(files)} training tar files with pattern: {pattern}")
-            break
-    
-    for pattern in val_url_patterns:
-        files = glob.glob(pattern, recursive=True)
-        if files:
-            val_tar_files.extend(files)
-            logger.info(f"Found {len(files)} validation tar files with pattern: {pattern}")
-            break
-    
-    if not train_tar_files:
+    # 1. Define the local glob patterns
+    train_url_pattern = os.path.join(train, '*.tar')
+    val_url_pattern = os.path.join(val, '*.tar')
+
+    # 2. Use standard Python globbing (glob.glob) to find the FULL list of files
+    train_urls_all = sorted(glob.glob(train_url_pattern))
+    val_urls_all = sorted(glob.glob(val_url_pattern))
+
+    logger.info(f"Found {len(train_urls_all)} total training shards and {len(val_urls_all)} validation shards locally.")
+
+    if not train_urls_all:
         # List directory contents for debugging
         try:
             logger.error(f"Training directory contents: {os.listdir(train)}")
@@ -302,7 +250,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
             logger.error(f"Could not list training directory: {e}")
         raise FileNotFoundError(f"No .tar files found in training directory: {train}")
     
-    if not val_tar_files:
+    if not val_urls_all:
         # List directory contents for debugging
         try:
             logger.error(f"Validation directory contents: {os.listdir(val)}")
@@ -313,13 +261,6 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         except Exception as e:
             logger.error(f"Could not list validation directory: {e}")
         raise FileNotFoundError(f"No .tar files found in validation directory: {val}")
-    
-    logger.info(f"Total training tar files found: {len(train_tar_files)}")
-    logger.info(f"Total validation tar files found: {len(val_tar_files)}")
-    
-    # Use manual URL splitting for DDP/Multi-Instance sharding
-    train_urls = manual_split_urls(train_tar_files, logger)
-    val_urls = manual_split_urls(val_tar_files, logger)
 
     logger.info(f"Checking paths - train_dir={train_dir}, val_dir={val_dir}")
     
@@ -341,7 +282,11 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     # --- Training DataLoader (WebDataset) ---
 
     train_dataset = (
-        wds.WebDataset(train_urls, shardshuffle=False)
+        wds.WebDataset(train_urls_all)  # Pass the FULL list of URLs
+        
+        # CRITICAL: This explicitly adds the required "nodesplitter" for multi-node DDP
+        .split_by_node()
+        
         .shuffle(1000)
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
@@ -354,7 +299,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .with_epoch(train_batches_per_epoch)
         .batched(batch_size, partial=False)
     )
-    logger.info("✅ Using manual URL splitting for multi-node training")
+    logger.info("✅ Training dataset created with split_by_node() for multi-node training")
 
     # WebLoader automatically handles worker splitting when num_workers > 0
     train_loader = wds.WebLoader(
@@ -367,9 +312,12 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
 
     val_batches_per_epoch = math.ceil(IMAGENET_VAL_SIZE / batch_size)
 
-    # Note: Validation doesn't need shuffling, but still needs DDP partitioning
     val_dataset = (
-        wds.WebDataset(val_urls, shardshuffle=False)
+        wds.WebDataset(val_urls_all)  # Pass the FULL list of URLs
+        
+        # CRITICAL: This explicitly adds the required "nodesplitter" for multi-node DDP
+        .split_by_node()
+        
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
         .map_dict(image=val_transform, handler=wds.handlers.ignore_and_continue)
@@ -381,7 +329,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .with_epoch(val_batches_per_epoch)
         .batched(batch_size, partial=True)
     )
-    logger.info("✅ Using manual URL splitting for validation multi-node training")
+    logger.info("✅ Validation dataset created with split_by_node() for multi-node training")
 
     val_loader = wds.WebLoader(
         val_dataset,
