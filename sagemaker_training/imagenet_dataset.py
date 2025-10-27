@@ -292,7 +292,10 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     # --- Training DataLoader (WebDataset) ---
 
     train_dataset = (
-        wds.WebDataset(train_urls)  # URLs split by node only if multi-node
+        wds.WebDataset(
+            train_urls,  # URLs split by node only if multi-node
+            nodesplitter=wds.shardlists.split_by_node if is_multi_node else None
+        )
         
         .shuffle(1000)
         .repeat()  # 🔄 CRITICAL: Cycle indefinitely for LR range test (avoids StopIteration sync issues in DDP)
@@ -307,15 +310,6 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .with_epoch(train_batches_per_epoch)
         .batched(batch_size, partial=False)
     )
-    
-    # Set nodesplitter flag for WebLoader compatibility
-    # WebLoader with num_workers > 0 internally calls split_by_worker, which requires nodesplitter=True
-    # This is needed for both multi-node and single-node multi-GPU training
-    train_dataset.nodesplitter = True
-    if is_multi_node:
-        logger.info("✅ Training dataset created with node-split URLs for multi-node training")
-    else:
-        logger.info("✅ Training dataset created for single-node training (nodesplitter set for WebLoader compatibility)")
 
     # WebLoader automatically handles worker splitting when num_workers > 0
     train_loader = wds.WebLoader(
@@ -329,9 +323,11 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     val_batches_per_epoch = math.ceil(IMAGENET_VAL_SIZE / batch_size)
 
     val_dataset = (
-        wds.WebDataset(val_urls)  # URLs split by node only if multi-node
+        wds.WebDataset(val_urls,
+                       nodesplitter=wds.shardlists.split_by_node if is_multi_node else None
+                       )
         
-        .repeat()  # 🔄 CRITICAL: Cycle indefinitely for LR range test (avoids StopIteration sync issues in DDP)
+        .repeat()
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
         .map_dict(image=val_transform, handler=wds.handlers.ignore_and_continue)
@@ -344,14 +340,11 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .batched(batch_size, partial=True)
     )
     
-    # Set nodesplitter flag for WebLoader compatibility
-    # WebLoader with num_workers > 0 internally calls split_by_worker, which requires nodesplitter=True
-    # This is needed for both multi-node and single-node multi-GPU training
-    val_dataset.nodesplitter = True
+    # Validation doesn't need nodesplitter (uses fewer workers, no sync issues)
     if is_multi_node:
         logger.info("✅ Validation dataset created with node-split URLs for multi-node training")
     else:
-        logger.info("✅ Validation dataset created for single-node training (nodesplitter set for WebLoader compatibility)")
+        logger.info("✅ Validation dataset created for single-node training")
 
     val_loader = wds.WebLoader(
         val_dataset,
