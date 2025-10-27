@@ -295,6 +295,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         wds.WebDataset(train_urls)  # URLs split by node only if multi-node
         
         .shuffle(1000)
+        .repeat()  # 🔄 CRITICAL: Cycle indefinitely for LR range test (avoids StopIteration sync issues in DDP)
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
         .map_dict(image=train_transform, handler=wds.handlers.ignore_and_continue)
@@ -330,6 +331,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     val_dataset = (
         wds.WebDataset(val_urls)  # URLs split by node only if multi-node
         
+        .repeat()  # 🔄 CRITICAL: Cycle indefinitely for LR range test (avoids StopIteration sync issues in DDP)
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
         .map_dict(image=val_transform, handler=wds.handlers.ignore_and_continue)

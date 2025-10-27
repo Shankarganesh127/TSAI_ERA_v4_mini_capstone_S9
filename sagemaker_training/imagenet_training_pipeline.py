@@ -809,16 +809,13 @@ class LRFinder:
         data_iter = iter(dataloader)
 
         for i in range(num_iter):
+            # With .repeat() in WebDataset, StopIteration should never occur naturally
+            # But keep error handling for safety
             try:
                 inputs, targets = next(data_iter)
             except StopIteration:
-                # Restart dataloader when we reach the end
-                data_iter = iter(dataloader)
-                try:
-                    inputs, targets = next(data_iter)
-                except StopIteration:
-                    logger.error("Dataloader appears to be empty!")
-                    break
+                logger.error("Unexpected StopIteration - dataloader may be empty or corrupted")
+                break
                 
             inputs, targets = inputs.to(self.device), targets.to(self.device)
             
