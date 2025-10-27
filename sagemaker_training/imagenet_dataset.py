@@ -188,17 +188,17 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     
     # 2. Define URL Glob Patterns (WebDataset input)
     # SageMaker mounts S3 data at data_dir. Assuming tar files are in a dedicated folder.
-    train_urls = os.path.join(train, '*.tar')
-    val_urls = os.path.join(val, '*.tar')
+    train_url_pattern = os.path.join(train, '*.tar')
+    val_url_pattern = os.path.join(val, '*.tar')
     
-    # For multi-node training, split shards across nodes
-    train_urls = wds.shardlists.split_by_node(train_urls)
-    val_urls = wds.shardlists.split_by_node(val_urls)
+    # For multi-node training, properly handle shard distribution
+    train_urls = wds.PytorchWorker(wds.shardlists.split_by_node(wds.shardurls(train_url_pattern)))
+    val_urls = wds.PytorchWorker(wds.shardlists.split_by_node(wds.shardurls(val_url_pattern)))
 
     logger.info(f"Checking paths - train_dir={train_dir}, val_dir={val_dir}")
     
-    logger.info(f"🚀 Using WebDataset for training from: {train_urls}")
-    logger.info(f"🚀 Using WebDataset for validation from: {val_urls}")
+    logger.info(f"🚀 Using WebDataset for training from: {train_url_pattern}")
+    logger.info(f"🚀 Using WebDataset for validation from: {val_url_pattern}")
     
     # Calculate effective epoch size for the scheduler. This is critical.
     train_batches_per_epoch = math.ceil(IMAGENET_TRAIN_SIZE / batch_size)
@@ -220,6 +220,10 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
         .map_dict(image=train_transform, handler=wds.handlers.ignore_and_continue)
+        
+        # Filter to drop corrupted samples that don't have both image and label
+        .select(lambda sample: "image" in sample and "label" in sample)
+        
         .to_tuple("image", "label")
         .with_epoch(train_batches_per_epoch)
         .batched(batch_size, partial=False)
@@ -246,6 +250,10 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
         .map_dict(image=val_transform, handler=wds.handlers.ignore_and_continue)
+        
+        # Filter to drop corrupted samples that don't have both image and label
+        .select(lambda sample: "image" in sample and "label" in sample)
+        
         .to_tuple("image", "label")
         .with_epoch(val_batches_per_epoch)
         .batched(batch_size, partial=True)
