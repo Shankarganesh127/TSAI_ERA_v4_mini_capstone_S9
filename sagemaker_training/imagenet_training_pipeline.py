@@ -915,7 +915,7 @@ class HyperparameterOptimizer:
             train_batches = 0
             
             # Use progress manager for clean progress tracking
-            total_batches = min(100, len(self.train_loader))  # Limit for speed
+            total_batches = min(100, sum(1 for _ in self.train_loader))  # Limit for speed
             from tqdm.auto import tqdm
             bar = tqdm(total=total_batches, desc=f"Epoch {epoch+1}/{epochs}", unit="it", ncols=120, disable=TQDM_DISABLE)
             
@@ -953,7 +953,7 @@ class HyperparameterOptimizer:
             val_batches = 0
             
             # Use progress manager for validation progress
-            val_limit = min(50, len(self.val_loader))  # Limit validation batches for speed
+            val_limit = min(50, sum(1 for _ in self.val_loader))  # Limit validation batches for speed
             from tqdm.auto import tqdm
             bar = tqdm(total=val_limit, desc=f"Validation {epoch+1}/{epochs}", unit="it", ncols=120, disable=TQDM_DISABLE)
             
@@ -1248,7 +1248,8 @@ class FullTrainer:
         accumulation_counter = 0
         logger = get_unified_logger("FullTrainer - training")
         
-        bar = tqdm(total=len(self.train_loader), desc="Training", unit="batch", ncols=120, disable=TQDM_DISABLE)
+        train_batches = sum(1 for _ in self.train_loader)
+        bar = tqdm(total=train_batches, desc="Training", unit="batch", ncols=120, disable=TQDM_DISABLE)
 
         for batch_idx, (inputs, targets) in enumerate(self.train_loader):
             inputs, targets = inputs.to(self.device), targets.to(self.device)
@@ -1298,7 +1299,7 @@ class FullTrainer:
                 correct += predicted.eq(targets).sum().item()
                 
                 # Update progress
-                bar.set_description(f"Training | B: {batch_idx+1}/{len(self.train_loader)} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}% | LR: {optimizer.param_groups[0]['lr']:.2e}")
+                bar.set_description(f"Training | B: {batch_idx+1}/{train_batches} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}% | LR: {optimizer.param_groups[0]['lr']:.2e}")
                 bar.update(1)
 
                 # Clean up memory
@@ -1306,7 +1307,7 @@ class FullTrainer:
                 if (batch_idx + 1) % 50 == 0:
                      aggressive_memory_cleanup()
                 if (batch_idx + 1) % 10 == 0:
-                    logger.info(f"💾 Full Training - Training | B: {batch_idx+1}/{len(self.train_loader)} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}% | LR: {optimizer.param_groups[0]['lr']:.2e}")
+                    logger.info(f"💾 Full Training - Training | B: {batch_idx+1}/{train_batches} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}% | LR: {optimizer.param_groups[0]['lr']:.2e}")
                      
             except RuntimeError as e:
                 # Catch OOM errors if they still occur
@@ -1320,7 +1321,7 @@ class FullTrainer:
         bar.close()
         # Final step check: If accumulation_counter > 0, the last batch was too small for a full step
         # This is expected and typically ignored in standard training loops.
-        return running_loss / len(self.train_loader), 100. * correct / total
+        return running_loss / train_batches, 100. * correct / total
     
     # ----------------------------------------------------------------------
     # _validate_epoch and _save_checkpoint (Kept mostly as is)
@@ -1334,7 +1335,8 @@ class FullTrainer:
         total = 0
         logger = get_unified_logger("FullTrainer - validation")
         
-        bar = tqdm(total=len(self.val_loader), desc="Validation", unit="batch", ncols=120, disable=TQDM_DISABLE)
+        val_batches = sum(1 for _ in self.val_loader)
+        bar = tqdm(total=val_batches, desc="Validation", unit="batch", ncols=120, disable=TQDM_DISABLE)
         
         with torch.no_grad():
             with autocast(enabled=self.enable_amp):
@@ -1348,17 +1350,17 @@ class FullTrainer:
                     total += targets.size(0)
                     correct += predicted.eq(targets).sum().item()
                     
-                    bar.set_description(f"Validation | B: {batch_idx+1}/{len(self.val_loader)} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}%")
+                    bar.set_description(f"Validation | B: {batch_idx+1}/{val_batches} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}%")
                     bar.update(1)
 
                     del inputs, targets, outputs, loss, predicted
                     if (batch_idx + 1) % 25 == 0:
                         aggressive_memory_cleanup()
                     if (batch_idx + 1) % 10 == 0:
-                        logger.info(f"💾 Full Training - Validation | B: {batch_idx+1}/{len(self.val_loader)} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}%")
+                        logger.info(f"💾 Full Training - Validation | B: {batch_idx+1}/{val_batches} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}%")
 
         bar.close()
-        return running_loss / len(self.val_loader), 100. * correct / total
+        return running_loss / val_batches, 100. * correct / total
     
     def _save_checkpoint(self, epoch, val_acc, optimizer, scheduler, step=0):
         """Save model checkpoint to SageMaker's /opt/ml/checkpoints for spot resumption"""
