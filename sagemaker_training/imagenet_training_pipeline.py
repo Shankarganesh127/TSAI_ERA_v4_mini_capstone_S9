@@ -1904,15 +1904,18 @@ def main():
 
         progress_manager.update_status(lr_step_key, f"[DEBUG] STEP 1: LR Range Test - Running {num_iter} iterations...")
         if current_stage == 'START':
-            lrs, losses = lr_finder.range_test(lr_test_loader, num_iter=num_iter)
             if is_main_process():
+                lrs, losses = lr_finder.range_test(lr_test_loader, num_iter=num_iter)
                 # Plot results
                 fig, min_lr = lr_finder.plot()
                 fig.savefig(os.path.join(args.output, 'lr_range_test.png'))
                 global plt
                 plt.close(fig)
-            # Get suggestions
-            lr_config = lr_finder.suggest_lr()
+                # Get suggestions
+                lr_config = lr_finder.suggest_lr()
+            else:
+                # Non-main processes wait and will load results later
+                lr_config = None
         else:
              # Load lr_config from checkpoint_dir
             lr_config_path = os.path.join(checkpoint_dir, 'lr_config.json')
@@ -1982,24 +1985,87 @@ def main():
         search_epochs = 3 if args.quick_mode else 5
 
         if current_stage in ['START', 'LR_TEST_COMPLETE']:
-            # Only main process should run weight decay search in distributed training
-            progress_manager.update_status(wd_step_key, f"[WEIGHT] STEP 5: Weight Decay Search - Testing {len(wd_values)} values for {search_epochs} epochs each...")
-            wd_results, best_weight_decay = optimizer.weight_decay_search(
-                lr_config, optimal_batch_size, wd_values, epochs=search_epochs)
+            # Parallel weight decay search: divide work among processes, but run sequentially to avoid NCCL conflicts
+            import torch.distributed as dist
+
+            world_size = getattr(args, 'world_size', 1)
+            local_rank = getattr(args, 'local_rank', 0)
+
+            # Divide weight decay values among processes
+            wd_values_per_process = len(wd_values) // world_size
+            remainder = len(wd_values) % world_size
+
+            # Assign values to each process (some get extra if not evenly divisible)
+            start_idx = local_rank * wd_values_per_process + min(local_rank, remainder)
+            end_idx = start_idx + wd_values_per_process + (1 if local_rank < remainder else 0)
+            my_wd_values = wd_values[start_idx:end_idx]
+
+            logger.info(f"[WEIGHT] Process {local_rank}/{world_size-1} assigned {len(my_wd_values)} weight decay values: {[f'{wd:.2e}' for wd in my_wd_values]}")
+
+            # Processes take turns running their searches (sequential to avoid NCCL conflicts)
+            for rank in range(world_size):
+                dist.barrier()  # Synchronize all processes
+
+                if local_rank == rank:
+                    # This process's turn to run
+                    progress_manager.update_status(wd_step_key, f"[WEIGHT] STEP 5: Process {local_rank} testing {len(my_wd_values)} weight decay values for {search_epochs} epochs each...")
+                    my_wd_results, my_best_weight_decay = optimizer.weight_decay_search(
+                        lr_config, optimal_batch_size, my_wd_values, epochs=search_epochs)
+                    logger.info(f"[WEIGHT] Process {local_rank} completed weight decay search")
+                else:
+                    # Other processes wait
+                    my_wd_results = []
+                    my_best_weight_decay = 1e-4
+
+                dist.barrier()  # Wait for current process to finish
+
+            # Now gather results from all processes to rank 0
+            # Prepare data for gathering
+            my_results_data = {
+                'wd_results': my_wd_results,
+                'best_weight_decay': my_best_weight_decay,
+                'process_rank': local_rank
+            }
+
+            # Serialize for transmission
+            import pickle
+            my_data_bytes = pickle.dumps(my_results_data)
+            my_data_size = len(my_data_bytes)
+
+            # Gather sizes first
+            size_tensor = torch.tensor([my_data_size], dtype=torch.int32, device=device)
+            all_sizes = [torch.tensor([0], dtype=torch.int32, device=device) for _ in range(world_size)]
+            dist.all_gather(all_sizes, size_tensor)
+
+            # Gather data
+            max_size = max(size.item() for size in all_sizes)
+            my_padded_data = my_data_bytes + b'\0' * (max_size - my_data_size)
+
+            all_data = [torch.zeros(max_size, dtype=torch.uint8, device=device) for _ in range(world_size)]
+            my_tensor_data = torch.frombuffer(my_padded_data, dtype=torch.uint8).to(device)
+            dist.all_gather(all_data, my_tensor_data)
+
+            # Process 0 collects and combines all results
             if is_main_process():
-                # Non-main processes wait and load results
-                logger.info("[WEIGHT] Non-main process waiting for weight decay search results from main process...")
-                wd_results = None
-                # Wait for main process to complete and save results
-                import time
-                wd_results_path = os.path.join(checkpoint_dir, 'wd_results.json')
-                while not os.path.exists(wd_results_path):
-                    time.sleep(1)
-                with open(wd_results_path, 'r') as f:
-                    wd_data = json.load(f)
-                    wd_results = wd_data['wd_results']
-                    best_weight_decay = wd_data['best_weight_decay']
-                logger.info(f"[WEIGHT] Loaded weight decay results from main process: {best_weight_decay:.2e}")
+                all_wd_results = []
+                for i, data_tensor in enumerate(all_data):
+                    data_bytes = bytes(data_tensor.cpu().numpy())
+                    # Remove padding
+                    actual_size = all_sizes[i].item()
+                    clean_data_bytes = data_bytes[:actual_size]
+                    process_results = pickle.loads(clean_data_bytes)
+                    all_wd_results.extend(process_results['wd_results'])
+
+                # Find best weight decay across all processes
+                best_result = max(all_wd_results, key=lambda x: x['best_val_acc'])
+                best_weight_decay = best_result['weight_decay']
+                wd_results = all_wd_results
+
+                logger.info(f"[WEIGHT] Combined results from all {world_size} processes. Best WD: {best_weight_decay:.2e} (acc: {best_result['best_val_acc']:.4f})")
+            else:
+                # Non-main processes get results from main process
+                wd_results = my_wd_results  # Fallback
+                best_weight_decay = my_best_weight_decay  # Fallback
         else:
             # Load best_weight_decay from checkpoint_dir
             wd_results_path = os.path.join(checkpoint_dir, 'wd_results.json')
