@@ -314,6 +314,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     # WebLoader automatically handles worker splitting when num_workers > 0
     train_loader = wds.WebLoader(
         train_dataset,
+        batch_size=None,  # 🔧 CRITICAL: Prevent double batching (WebDataset already batches)
         num_workers=num_workers,
         pin_memory=True
     )
@@ -348,6 +349,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
 
     val_loader = wds.WebLoader(
         val_dataset,
+        batch_size=None,  # 🔧 CRITICAL: Prevent double batching (WebDataset already batches)
         num_workers=num_workers,
         pin_memory=True
     )
