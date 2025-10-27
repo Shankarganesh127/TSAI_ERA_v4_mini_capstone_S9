@@ -307,12 +307,14 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .batched(batch_size, partial=False)
     )
     
-    # Set nodesplitter flag ONLY if we actually split URLs across nodes
+    # Set nodesplitter flag for WebLoader compatibility
+    # WebLoader with num_workers > 0 internally calls split_by_worker, which requires nodesplitter=True
+    # This is needed for both multi-node and single-node multi-GPU training
+    train_dataset.nodesplitter = True
     if is_multi_node:
-        train_dataset.nodesplitter = True
         logger.info("✅ Training dataset created with node-split URLs for multi-node training")
     else:
-        logger.info("✅ Training dataset created for single-node training (all processes see all shards)")
+        logger.info("✅ Training dataset created for single-node training (nodesplitter set for WebLoader compatibility)")
 
     # WebLoader automatically handles worker splitting when num_workers > 0
     train_loader = wds.WebLoader(
@@ -340,12 +342,14 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .batched(batch_size, partial=True)
     )
     
-    # Set nodesplitter flag ONLY if we actually split URLs across nodes
+    # Set nodesplitter flag for WebLoader compatibility
+    # WebLoader with num_workers > 0 internally calls split_by_worker, which requires nodesplitter=True
+    # This is needed for both multi-node and single-node multi-GPU training
+    val_dataset.nodesplitter = True
     if is_multi_node:
-        val_dataset.nodesplitter = True
         logger.info("✅ Validation dataset created with node-split URLs for multi-node training")
     else:
-        logger.info("✅ Validation dataset created for single-node training (all processes see all shards)")
+        logger.info("✅ Validation dataset created for single-node training (nodesplitter set for WebLoader compatibility)")
 
     val_loader = wds.WebLoader(
         val_dataset,
