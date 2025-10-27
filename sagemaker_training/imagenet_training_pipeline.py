@@ -1905,12 +1905,12 @@ def main():
         progress_manager.update_status(lr_step_key, f"[DEBUG] STEP 1: LR Range Test - Running {num_iter} iterations...")
         if current_stage == 'START':
             lrs, losses = lr_finder.range_test(lr_test_loader, num_iter=num_iter)
-            # Plot results
-            fig, min_lr = lr_finder.plot()
-            fig.savefig(os.path.join(args.output, 'lr_range_test.png'))
-            global plt
-            plt.close(fig)
-
+            if is_main_process():
+                # Plot results
+                fig, min_lr = lr_finder.plot()
+                fig.savefig(os.path.join(args.output, 'lr_range_test.png'))
+                global plt
+                plt.close(fig)
             # Get suggestions
             lr_config = lr_finder.suggest_lr()
         else:
@@ -1925,31 +1925,33 @@ def main():
             f"[OK] STEP 1: LR Range Test Complete - Min: {lr_config['min_lr']:.2e}, Max: {lr_config['max_lr']:.2e}")
         progress_manager.finalize_status(lr_step_key)
 
-        # Save results
-        with open(os.path.join(args.output, 'lr_config.json'), 'w') as f:
-            json.dump({k: float(v) for k, v in lr_config.items()}, f, indent=2)
+        # Save results (only main process to avoid conflicts)
+        if is_main_process():
+            with open(os.path.join(args.output, 'lr_config.json'), 'w') as f:
+                json.dump({k: float(v) for k, v in lr_config.items()}, f, indent=2)
 
-        # Save LR range test curve to CSV/JSON for analysis
-        lr_curve_csv = os.path.join(args.output, 'lr_range_curve.csv')
-        lr_curve_json = os.path.join(args.output, 'lr_range_curve.json')
-        import csv
-        import time
-        with open(lr_curve_csv, 'w', newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=['iteration', 'lr', 'smoothed_loss', 'timestamp'])
-            writer.writeheader()
-            for i, (lr, loss) in enumerate(zip(lrs, losses)):
-                writer.writerow({'iteration': i+1, 'lr': lr, 'smoothed_loss': loss, 'timestamp': time.time()})
-        with open(lr_curve_json, 'w') as f:
-            json.dump([
-                {'iteration': i+1, 'lr': float(lr), 'smoothed_loss': float(loss), 'timestamp': time.time()}
-                for i, (lr, loss) in enumerate(zip(lrs, losses))
-            ], f, indent=2)
-        
-        lr_config_path = os.path.join(checkpoint_dir, 'lr_config.json')
-        with open(lr_config_path, 'w') as f:
-            json.dump(lr_config, f)
-        logger.info(f"✅ Saved LR config to {lr_config_path}")
-        save_pipeline_status('LR_TEST_COMPLETE', status_file)    
+            # Save LR range test curve to CSV/JSON for analysis
+            lr_curve_csv = os.path.join(args.output, 'lr_range_curve.csv')
+            lr_curve_json = os.path.join(args.output, 'lr_range_curve.json')
+            import csv
+            import time
+            with open(lr_curve_csv, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=['iteration', 'lr', 'smoothed_loss', 'timestamp'])
+                writer.writeheader()
+                for i, (lr, loss) in enumerate(zip(lrs, losses)):
+                    writer.writerow({'iteration': i+1, 'lr': lr, 'smoothed_loss': loss, 'timestamp': time.time()})
+            with open(lr_curve_json, 'w') as f:
+                json.dump([
+                    {'iteration': i+1, 'lr': float(lr), 'smoothed_loss': float(loss), 'timestamp': time.time()}
+                    for i, (lr, loss) in enumerate(zip(lrs, losses))
+                ], f, indent=2)
+            
+            lr_config_path = os.path.join(checkpoint_dir, 'lr_config.json')
+            with open(lr_config_path, 'w') as f:
+                json.dump(lr_config, f)
+            logger.info(f"✅ Saved LR config to {lr_config_path}")
+            
+            save_pipeline_status('LR_TEST_COMPLETE', status_file)    
         # Clean up GPU memory to prevent OOM
         del model, optimizer, criterion, lr_finder, lr_test_loader
         aggressive_memory_cleanup()
@@ -1980,9 +1982,24 @@ def main():
         search_epochs = 3 if args.quick_mode else 5
 
         if current_stage in ['START', 'LR_TEST_COMPLETE']:
+            # Only main process should run weight decay search in distributed training
             progress_manager.update_status(wd_step_key, f"[WEIGHT] STEP 5: Weight Decay Search - Testing {len(wd_values)} values for {search_epochs} epochs each...")
             wd_results, best_weight_decay = optimizer.weight_decay_search(
                 lr_config, optimal_batch_size, wd_values, epochs=search_epochs)
+            if is_main_process():
+                # Non-main processes wait and load results
+                logger.info("[WEIGHT] Non-main process waiting for weight decay search results from main process...")
+                wd_results = None
+                # Wait for main process to complete and save results
+                import time
+                wd_results_path = os.path.join(checkpoint_dir, 'wd_results.json')
+                while not os.path.exists(wd_results_path):
+                    time.sleep(1)
+                with open(wd_results_path, 'r') as f:
+                    wd_data = json.load(f)
+                    wd_results = wd_data['wd_results']
+                    best_weight_decay = wd_data['best_weight_decay']
+                logger.info(f"[WEIGHT] Loaded weight decay results from main process: {best_weight_decay:.2e}")
         else:
             # Load best_weight_decay from checkpoint_dir
             wd_results_path = os.path.join(checkpoint_dir, 'wd_results.json')
@@ -1991,32 +2008,33 @@ def main():
                 wd_results = wd_data['wd_results']
                 best_weight_decay = wd_data['best_weight_decay']
         
-        # Save results
-        with open(os.path.join(args.output, 'weight_decay_search.json'), 'w') as f:
-            json.dump(wd_results, f, indent=2)
+        # Save results (only main process)
+        if is_main_process():
+            with open(os.path.join(args.output, 'weight_decay_search.json'), 'w') as f:
+                json.dump(wd_results, f, indent=2)
 
-        # Save weight decay search results to CSV for analysis
-        wd_csv = os.path.join(args.output, 'weight_decay_search.csv')
-        import csv
-        import time
-        with open(wd_csv, 'w', newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=['weight_decay', 'best_val_acc', 'timestamp'])
-            writer.writeheader()
-            for result in wd_results:
-                writer.writerow({'weight_decay': result['weight_decay'], 'best_val_acc': result['best_val_acc'], 'timestamp': time.time()})
+            # Save weight decay search results to CSV for analysis
+            wd_csv = os.path.join(args.output, 'weight_decay_search.csv')
+            import csv
+            import time
+            with open(wd_csv, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=['weight_decay', 'best_val_acc', 'timestamp'])
+                writer.writeheader()
+                for result in wd_results:
+                    writer.writerow({'weight_decay': result['weight_decay'], 'best_val_acc': result['best_val_acc'], 'timestamp': time.time()})
 
-        progress_manager.update_status(wd_step_key, f"[OK] STEP 5: Weight Decay Search Complete - Best WD: {best_weight_decay:.2e}")
-        progress_manager.finalize_status(wd_step_key)
-        
-        wd_results_path = os.path.join(checkpoint_dir, 'wd_results.json')
-        with open(wd_results_path, 'w') as f:
-            json.dump({
-                'wd_results': wd_results,
-                'best_weight_decay': best_weight_decay
-            }, f)
-        logger.info(f"✅ Saved WD results and best_weight_decay to {wd_results_path}")
-        
-        save_pipeline_status('WD_SEARCH_COMPLETE', status_file)
+            progress_manager.update_status(wd_step_key, f"[OK] STEP 5: Weight Decay Search Complete - Best WD: {best_weight_decay:.2e}")
+            progress_manager.finalize_status(wd_step_key)
+            
+            wd_results_path = os.path.join(checkpoint_dir, 'wd_results.json')
+            with open(wd_results_path, 'w') as f:
+                json.dump({
+                    'wd_results': wd_results,
+                    'best_weight_decay': best_weight_decay
+                }, f)
+            logger.info(f"✅ Saved WD results and best_weight_decay to {wd_results_path}")
+            
+            save_pipeline_status('WD_SEARCH_COMPLETE', status_file)
         
         # Check for memory fragmentation after weight decay search
         check_memory_fragmentation()
@@ -2046,15 +2064,16 @@ def main():
     progress_manager.create_status_updater(full_train_key,
         f"[START] STEP 6: Full OneCycle Training - Starting {training_epochs} epochs...")
 
-    logger.info("="*60)
-    logger.info("[START] STEP 6: Full OneCycle Training")
-    logger.info("="*60)
-    logger.info(f"[MEMORY] Final batch size: {args.batch_size}")
-    # Note: gradient_accumulation_steps and effective batch size will be logged after calculation
-    if args.batch_size <= 8:
-        logger.info("[MEMORY] Gradient checkpointing: ENABLED")
-    else:
-        logger.info("[MEMORY] Gradient checkpointing: DISABLED")
+    if is_main_process():
+        logger.info("="*60)
+        logger.info("[START] STEP 6: Full OneCycle Training")
+        logger.info("="*60)
+        logger.info(f"[MEMORY] Final batch size: {args.batch_size}")
+        # Note: gradient_accumulation_steps and effective batch size will be logged after calculation
+        if args.batch_size <= 8:
+            logger.info("[MEMORY] Gradient checkpointing: ENABLED")
+        else:
+            logger.info("[MEMORY] Gradient checkpointing: DISABLED")
 
     model = create_model().to(device)
     # DDP: Wrap model if multi-GPU
