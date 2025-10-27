@@ -1796,8 +1796,8 @@ def main():
     
     progress_manager.close_progress_bar()
     # For WebLoader, .dataset does not exist. Log number of batches and samples instead.
-    num_train_batches = len(train_loader)
-    num_val_batches = len(val_loader)
+    num_train_batches = sum(1 for _ in train_loader)
+    num_val_batches = sum(1 for _ in val_loader)
     try:
         num_train_samples = sum(len(batch[0]) for batch in train_loader)
         num_val_samples = sum(len(batch[0]) for batch in val_loader)
