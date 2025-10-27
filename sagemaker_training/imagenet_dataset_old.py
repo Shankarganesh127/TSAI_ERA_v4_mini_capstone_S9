@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-High-performance ImageNet-1K dataset loader using WebDataset (.tar I/O)
+Minimal ImageNet-1K dataset loader
 """
 
 import os
@@ -10,18 +10,6 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from PIL import Image
 from logger_setup import get_unified_logger
-
-import webdataset as wds 
-import io
-import math
-
-
-# Logger setup
-logger = get_unified_logger("imagenet_dataset")
-
-# Standard ImageNet Constants
-IMAGENET_TRAIN_SIZE = 1281167
-IMAGENET_VAL_SIZE = 50000
 
 
 def get_imagenet_transforms(input_size=224, lightweight=False):
@@ -185,19 +173,8 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     # Use the provided paths directly
     train_dir = train
     val_dir = val
-    
-    # 2. Define URL Glob Patterns (WebDataset input)
-    # SageMaker mounts S3 data at data_dir. Assuming tar files are in a dedicated folder.
-    train_urls = os.path.join(train, 'train_tars', '*.tar')
-    val_urls = os.path.join(val, 'val_tars', '*.tar')
 
     logger.info(f"Checking paths - train_dir={train_dir}, val_dir={val_dir}")
-    
-    logger.info(f"🚀 Using WebDataset for training from: {train_urls}")
-    logger.info(f"🚀 Using WebDataset for validation from: {val_urls}")
-    
-    # Calculate effective epoch size for the scheduler. This is critical.
-    train_batches_per_epoch = math.ceil(IMAGENET_TRAIN_SIZE / batch_size)
 
     if not os.path.exists(train_dir):
         logger.error(f"Training directory does not exist: {train_dir}")
@@ -207,59 +184,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         raise FileNotFoundError(f"Validation data directory not found: {val_dir}")
 
     logger.info("Both directories exist, creating datasets")
-    
-    # --- Training DataLoader (WebDataset) ---
 
-    train_dataset = (
-        wds.WebDataset(train_urls, resample=True) # resample=True ensures shard shuffling
-        .shuffle(1000) # Buffer for inter-shard shuffling
-        # Decode the image: load bytes from 'jpg' key, decode to PIL Image
-        .decode("pil", handler=wds.handlers.ignore_and_continue) 
-        # Rename keys: Image data (jpg) -> "image", Class label (cls) -> "label"
-        .rename(image="jpg", label="cls") 
-        # Apply the main ImageNet data augmentation and conversion (PIL -> Tensor -> Normalized)
-        .map_dict(image=train_transform, handler=wds.handlers.ignore_and_continue)
-        .to_tuple("image", "label") # Select and return only the image and label as a tuple
-        # Set the epoch length (WebDataset internally handles the global distributed sampler)
-        .with_epoch(train_batches_per_epoch)
-        .batched(batch_size, partial=False) # Batch the results, ensures full batches
-    )
-    
-    # WebLoader is necessary to wrap the WebDataset object and correctly handle multi-threading/DDP
-    train_loader = wds.WebLoader(
-        train_dataset,
-        batch_size=None, # batching is done in the dataset pipeline (.batched())
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True
-    ).ddp(timeout=60.0) # Apply DDP shard partitioning and set timeout
-    
-    # --- Validation DataLoader (WebDataset) ---
-
-    val_batches_per_epoch = math.ceil(IMAGENET_VAL_SIZE / batch_size)
-
-    # Note: Validation doesn't need shuffling, but still needs DDP partitioning
-    val_dataset = (
-        wds.WebDataset(val_urls, resample=False) # No shard shuffling for validation
-        .decode("pil", handler=wds.handlers.ignore_and_continue)
-        .rename(image="jpg", label="cls")
-        .map_dict(image=val_transform, handler=wds.handlers.ignore_and_continue)
-        .to_tuple("image", "label")
-        .with_epoch(val_batches_per_epoch)
-        .batched(batch_size, partial=True) # Partial=True allows the last batch to be smaller
-    )
-    
-    val_loader = wds.WebLoader(
-        val_dataset,
-        batch_size=None,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True
-    ).ddp(timeout=60.0)
-
-    return train_loader, val_loader
-
-''''
     # Create datasets
     try:
         logger.info(f"Creating training dataset from {train_dir}")
@@ -323,7 +248,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
 
     logger.info("Both data loaders created, returning")
     return train_loader, val_loader
-'''
+
 
 def get_tiny_imagenet_dataloaders(data_dir, batch_size=32, num_workers=4):
     """

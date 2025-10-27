@@ -55,6 +55,7 @@ def launch_processing_job(role_arn, source_bucket, instance_type='ml.c5.9xlarge'
         role=role_arn,
         # Use spot instances to save cost (highly recommended for processing jobs)
         volume_kms_key=None,
+        volume_size_in_gb=500,
     )
     
     # --- 3. Inputs and Outputs ---
