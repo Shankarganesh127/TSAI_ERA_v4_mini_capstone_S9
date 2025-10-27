@@ -190,6 +190,9 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     # SageMaker mounts S3 data at data_dir. Assuming tar files are in a dedicated folder.
     train_urls = os.path.join(train, '*.tar')
     val_urls = os.path.join(val, '*.tar')
+    
+    #train_urls = wds.shardlists.split_by_node(train_urls)
+    #val_urls = wds.shardlists.split_by_node(val_urls)
 
     logger.info(f"Checking paths - train_dir={train_dir}, val_dir={val_dir}")
     
@@ -211,24 +214,21 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     # --- Training DataLoader (WebDataset) ---
 
     train_dataset = (
-        wds.WebDataset(train_urls) # removed resample argument
-        .shuffle(1000) # Buffer for inter-shard shuffling
-        # Decode the image: load bytes from 'jpg' key, decode to PIL Image
-        .decode("pil", handler=wds.handlers.ignore_and_continue) 
-        # Rename keys: Image data (jpg) -> "image", Class label (cls) -> "label"
-        .rename(image="jpg", label="cls") 
-        # Apply the main ImageNet data augmentation and conversion (PIL -> Tensor -> Normalized)
+        wds.WebDataset(train_urls)
+        .ddp_auto()
+        .shuffle(1000)
+        .decode("pil", handler=wds.handlers.ignore_and_continue)
+        .rename(image="jpg", label="cls")
         .map_dict(image=train_transform, handler=wds.handlers.ignore_and_continue)
-        .to_tuple("image", "label") # Select and return only the image and label as a tuple
-        # Set the epoch length (WebDataset internally handles the global distributed sampler)
+        .to_tuple("image", "label")
         .with_epoch(train_batches_per_epoch)
-        .batched(batch_size, partial=False) # Batch the results, ensures full batches
+        .batched(batch_size, partial=False)
     )
 
     # WebLoader is necessary to wrap the WebDataset object and correctly handle multi-threading/DDP
     train_loader = wds.WebLoader(
         train_dataset,
-        batch_size=None, # batching is done in the dataset pipeline (.batched())
+        batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
@@ -242,18 +242,19 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
 
     # Note: Validation doesn't need shuffling, but still needs DDP partitioning
     val_dataset = (
-        wds.WebDataset(val_urls) # removed resample argument
+        wds.WebDataset(val_urls)
+        .ddp_auto()
         .decode("pil", handler=wds.handlers.ignore_and_continue)
         .rename(image="jpg", label="cls")
         .map_dict(image=val_transform, handler=wds.handlers.ignore_and_continue)
         .to_tuple("image", "label")
         .with_epoch(val_batches_per_epoch)
-        .batched(batch_size, partial=True) # Partial=True allows the last batch to be smaller
+        .batched(batch_size, partial=True)
     )
 
     val_loader = wds.WebLoader(
         val_dataset,
-        batch_size=None,
+        batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,

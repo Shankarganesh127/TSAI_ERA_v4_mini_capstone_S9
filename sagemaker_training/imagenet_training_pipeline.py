@@ -40,6 +40,10 @@ try:
 except ImportError:
     GPUtil = None
 
+# Standard ImageNet Constants
+IMAGENET_TRAIN_SIZE = 1281167
+IMAGENET_VAL_SIZE = 50000
+
 def save_pipeline_status(stage_name, status_file):
     if is_main_process():
         status = {
@@ -915,7 +919,7 @@ class HyperparameterOptimizer:
             train_batches = 0
             
             # Use progress manager for clean progress tracking
-            total_batches = min(100, sum(1 for _ in self.train_loader))  # Limit for speed
+            total_batches = self.train_loader.batch_size  # Calculate effective epoch size for the scheduler. This is critical.
             from tqdm.auto import tqdm
             bar = tqdm(total=total_batches, desc=f"Epoch {epoch+1}/{epochs}", unit="it", ncols=120, disable=TQDM_DISABLE)
             
@@ -953,7 +957,7 @@ class HyperparameterOptimizer:
             val_batches = 0
             
             # Use progress manager for validation progress
-            val_limit = min(50, sum(1 for _ in self.val_loader))  # Limit validation batches for speed
+            val_limit = self.val_loader.batch_size  # Limit validation batches for speed
             from tqdm.auto import tqdm
             bar = tqdm(total=val_limit, desc=f"Validation {epoch+1}/{epochs}", unit="it", ncols=120, disable=TQDM_DISABLE)
             
@@ -1029,7 +1033,7 @@ class HyperparameterOptimizer:
             
             # OneCycle scheduler is essential for fast convergence in short runs
             scheduler = OneCycleLR(optimizer, max_lr=lr_config['max_lr'], 
-                                epochs=epochs, steps_per_epoch=len(self.train_loader))
+                                epochs=epochs, steps_per_epoch=self.train_loader.batch_size)
             
             # Train for a few epochs
             train_losses, val_losses, val_accs = self._quick_train(
@@ -1128,7 +1132,7 @@ class FullTrainer:
                               momentum=0.85, weight_decay=weight_decay, nesterov=True)
         
         # --- CRITICAL CORRECTION: div_factor uses scaled LRs ---
-        steps_per_epoch = len(self.train_loader) // gradient_accumulation_steps
+        steps_per_epoch = self.train_loader.batch_size // gradient_accumulation_steps
         scheduler = OneCycleLR(
             optimizer, 
             max_lr=scaled_max_lr,
@@ -1248,7 +1252,7 @@ class FullTrainer:
         accumulation_counter = 0
         logger = get_unified_logger("FullTrainer - training")
         
-        train_batches = sum(1 for _ in self.train_loader)
+        train_batches = self.train_loader.batch_size
         bar = tqdm(total=train_batches, desc="Training", unit="batch", ncols=120, disable=TQDM_DISABLE)
 
         for batch_idx, (inputs, targets) in enumerate(self.train_loader):
@@ -1335,7 +1339,7 @@ class FullTrainer:
         total = 0
         logger = get_unified_logger("FullTrainer - validation")
         
-        val_batches = sum(1 for _ in self.val_loader)
+        val_batches = self.val_loader.batch_size
         bar = tqdm(total=val_batches, desc="Validation", unit="batch", ncols=120, disable=TQDM_DISABLE)
         
         with torch.no_grad():
@@ -1796,8 +1800,8 @@ def main():
     
     progress_manager.close_progress_bar()
     # For WebLoader, .dataset does not exist. Log number of batches and samples instead.
-    num_train_batches = sum(1 for _ in train_loader)
-    num_val_batches = sum(1 for _ in val_loader)
+    num_train_batches = train_loader.batch_size
+    num_val_batches = val_loader.batch_size
     try:
         num_train_samples = sum(len(batch[0]) for batch in train_loader)
         num_val_samples = sum(len(batch[0]) for batch in val_loader)
