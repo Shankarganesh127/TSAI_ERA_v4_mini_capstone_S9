@@ -228,7 +228,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     train_dir = train
     val_dir = val
     
-    # 1. Define the local glob patterns
+    # 1. Define the local glob patterns (direct directory only)
     train_url_pattern = os.path.join(train, '*.tar')
     val_url_pattern = os.path.join(val, '*.tar')
 

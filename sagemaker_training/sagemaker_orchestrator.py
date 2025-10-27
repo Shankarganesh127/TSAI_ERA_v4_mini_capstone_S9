@@ -56,7 +56,7 @@ class SageMakerPipelineOrchestrator:
                 "source_bucket": "tsai-era-v4-mini-capstone",
                 #"source_prefix": "Datasets/imagenet1k/ILSVRC",
                 "source_prefix": "webdataset_shards",
-                "target_prefix": "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker",
+                #"target_prefix": "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker",
                 "validation_required": True
             },
             "training": {
@@ -172,130 +172,130 @@ class SageMakerPipelineOrchestrator:
             self.logger.error(f"❌ AWS setup failed: {e}")
             return False
     
-    def _validate_and_convert_dataset(self, args):
-        """Step 2: Validate dataset structure and convert if needed"""
-        
-        self.logger.info("📊 Step 2: Validating dataset structure...")
-        
-        try:
-            # Check if source dataset exists
-            source_bucket = args.source_bucket or self.config["dataset"]["source_bucket"]
-            source_prefix = args.source_prefix or self.config["dataset"]["source_prefix"]
-            target_prefix = args.target_prefix or self.config["dataset"]["target_prefix"]
-            
-            if not source_bucket:
-                self.logger.error("❌ Source bucket not specified")
-                return False
-            
-            # Check if conversion is needed
-            conversion_needed = self._check_conversion_needed(source_bucket, source_prefix, target_prefix)
-            
-            if conversion_needed:
-                self.logger.info("🔄 Dataset conversion required, starting conversion...")
-                
-                # Initialize converter
-                converter = S3DatasetConverter(source_bucket, self.config["aws"]["profile"])
-                
-                # Convert dataset
-                success = converter.convert_ilsvrc_to_sagemaker(source_prefix, target_prefix)
-                
-                if success:
-                    self.logger.info("✅ Dataset conversion completed successfully")
-                else:
-                    self.logger.error("❌ Dataset conversion failed")
-                    return False
-            else:
-                self.logger.info("✅ Dataset already in correct structure, skipping conversion")
-            
-            # Final validation
-            if self._validate_sagemaker_dataset_structure(source_bucket, source_prefix, target_prefix):
-                self.logger.info("✅ Dataset structure validation passed")
-                return True
-            else:
-                self.logger.error("❌ Dataset structure validation failed")
-                return False
-                
-        except Exception as e:
-            self.logger.error(f"❌ Dataset validation/conversion failed: {e}")
-            return False
+    #def _validate_and_convert_dataset(self, args):
+    #    """Step 2: Validate dataset structure and convert if needed"""
+    #    
+    #    self.logger.info("📊 Step 2: Validating dataset structure...")
+    #    
+    #    try:
+    #        # Check if source dataset exists
+    #        source_bucket = args.source_bucket or self.config["dataset"]["source_bucket"]
+    #        source_prefix = args.source_prefix or self.config["dataset"]["source_prefix"]
+    #        #target_prefix = args.target_prefix or self.config["dataset"]["target_prefix"]
+    #        
+    #        if not source_bucket:
+    #            self.logger.error("❌ Source bucket not specified")
+    #            return False
+    #        
+    #        # Check if conversion is needed
+    #        conversion_needed = self._check_conversion_needed(source_bucket, source_prefix)
+    #        
+    #        if conversion_needed:
+    #            self.logger.info("🔄 Dataset conversion required, starting conversion...")
+    #            
+    #            # Initialize converter
+    #            converter = S3DatasetConverter(source_bucket, self.config["aws"]["profile"])
+    #            
+    #            # Convert dataset
+    #            success = converter.convert_ilsvrc_to_sagemaker(source_prefix)
+    #            
+    #            if success:
+    #                self.logger.info("✅ Dataset conversion completed successfully")
+    #            else:
+    #                self.logger.error("❌ Dataset conversion failed")
+    #                return False
+    #        else:
+    #            self.logger.info("✅ Dataset already in correct structure, skipping conversion")
+    #        
+    #        # Final validation
+    #        if self._validate_sagemaker_dataset_structure(source_bucket, source_prefix):
+    #            self.logger.info("✅ Dataset structure validation passed")
+    #            return True
+    #        else:
+    #            self.logger.error("❌ Dataset structure validation failed")
+    #            return False
+    #            
+    #    except Exception as e:
+    #        self.logger.error(f"❌ Dataset validation/conversion failed: {e}")
+    #        return False
     
-    def _check_conversion_needed(self, bucket, source_prefix, target_prefix):
-        """Check if dataset conversion is needed"""
-        
-        try:
-            # Check if converted validation data exists
-            val_prefix = f"{target_prefix}/val/"
-            paginator = self.s3_client.get_paginator('list_objects_v2')
-            page_iterator = paginator.paginate(
-                Bucket=bucket, 
-                Prefix=val_prefix,
-                PaginationConfig={'MaxItems': 1}
-            )
-            
-            for page in page_iterator:
-                if 'Contents' in page and len(page['Contents']) > 0:
-                    self.logger.info("Found existing converted validation data")
-                    return False
-            
-            self.logger.info("No converted validation data found, conversion needed")
-            return True
-            
-        except Exception as e:
-            self.logger.warning(f"Error checking conversion status: {e}, assuming conversion needed")
-            return True
+    #def _check_conversion_needed(self, bucket, source_prefix, target_prefix):
+    #    """Check if dataset conversion is needed"""
+    #    
+    #    try:
+    #        # Check if converted validation data exists
+    #        val_prefix = f"{target_prefix}/val/"
+    #        paginator = self.s3_client.get_paginator('list_objects_v2')
+    #        page_iterator = paginator.paginate(
+    #            Bucket=bucket, 
+    #            Prefix=val_prefix,
+    #            PaginationConfig={'MaxItems': 1}
+    #        )
+    #        
+    #        for page in page_iterator:
+    #            if 'Contents' in page and len(page['Contents']) > 0:
+    #                self.logger.info("Found existing converted validation data")
+    #                return False
+    #        
+    #        self.logger.info("No converted validation data found, conversion needed")
+    #        return True
+    #        
+    #    except Exception as e:
+    #        self.logger.warning(f"Error checking conversion status: {e}, assuming conversion needed")
+    #        return True
     
-    def _validate_sagemaker_dataset_structure(self, bucket, source_prefix, target_prefix):
-        """Validate that dataset structure is correct for SageMaker"""
-        
-        try:
-            required_paths = {
-                "training": f"{source_prefix}/Data/CLS-LOC/train/",
-                "validation": f"{target_prefix}/val/"
-            }
-            
-            # Check if test data was converted
-            test_prefix = f"{target_prefix}/test/"
-            paginator = self.s3_client.get_paginator('list_objects_v2')
-            page_iterator = paginator.paginate(
-                Bucket=bucket, 
-                Prefix=test_prefix,
-                PaginationConfig={'MaxItems': 1}
-            )
-            
-            for page in page_iterator:
-                if 'Contents' in page and len(page['Contents']) > 0:
-                    required_paths["test"] = test_prefix
-                    break
-            
-            # Validate each path
-            for name, prefix in required_paths.items():
-                if not self._check_s3_path_exists(bucket, prefix):
-                    self.logger.error(f"❌ {name} data not found at: s3://{bucket}/{prefix}")
-                    return False
-                self.logger.info(f"✅ {name} data validated: s3://{bucket}/{prefix}")
-            
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Error validating dataset structure: {e}")
-            return False
+    #def _validate_sagemaker_dataset_structure(self, bucket, source_prefix, target_prefix):
+    #    """Validate that dataset structure is correct for SageMaker"""
+    #    
+    #    try:
+    #        required_paths = {
+    #            "training": f"{source_prefix}/Data/CLS-LOC/train/",
+    #            "validation": f"{target_prefix}/val/"
+    #        }
+    #        
+    #        # Check if test data was converted
+    #        test_prefix = f"{target_prefix}/test/"
+    #        paginator = self.s3_client.get_paginator('list_objects_v2')
+    #        page_iterator = paginator.paginate(
+    #            Bucket=bucket, 
+    #            Prefix=test_prefix,
+    #            PaginationConfig={'MaxItems': 1}
+    #        )
+    #        
+    #        for page in page_iterator:
+    #            if 'Contents' in page and len(page['Contents']) > 0:
+    #                required_paths["test"] = test_prefix
+    #                break
+    #        
+    #        # Validate each path
+    #        for name, prefix in required_paths.items():
+    #            if not self._check_s3_path_exists(bucket, prefix):
+    #                self.logger.error(f"❌ {name} data not found at: s3://{bucket}/{prefix}")
+    #                return False
+    #            self.logger.info(f"✅ {name} data validated: s3://{bucket}/{prefix}")
+    #        
+    #        return True
+    #        
+    #    except Exception as e:
+    #        self.logger.error(f"Error validating dataset structure: {e}")
+    #        return False
     
-    def _check_s3_path_exists(self, bucket, prefix):
-        """Check if S3 path exists and has content"""
-        try:
-            paginator = self.s3_client.get_paginator('list_objects_v2')
-            page_iterator = paginator.paginate(
-                Bucket=bucket, 
-                Prefix=prefix,
-                PaginationConfig={'MaxItems': 1}
-            )
-            
-            for page in page_iterator:
-                if 'Contents' in page and len(page['Contents']) > 0:
-                    return True
-            return False
-        except Exception:
-            return False
+    #def _check_s3_path_exists(self, bucket, prefix):
+    #    """Check if S3 path exists and has content"""
+    #    try:
+    #        paginator = self.s3_client.get_paginator('list_objects_v2')
+    #        page_iterator = paginator.paginate(
+    #            Bucket=bucket, 
+    #            Prefix=prefix,
+    #            PaginationConfig={'MaxItems': 1}
+    #        )
+    #        
+    #        for page in page_iterator:
+    #            if 'Contents' in page and len(page['Contents']) > 0:
+    #                return True
+    #        return False
+    #    except Exception:
+    #        return False
     
     def _launch_training_pipeline(self, args):
         """Step 3: Launch SageMaker training with 7-stage pipeline"""
@@ -319,13 +319,13 @@ class SageMakerPipelineOrchestrator:
             
             # Configure train and validation data paths based on your specific structure
             source_prefix = training_args.get("source_prefix", "webdataset_shards")
-            target_prefix = training_args.get("target_prefix", "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker")
+            #target_prefix = training_args.get("target_prefix", "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker")
             
             # Your specific dataset paths
             #train_data_path = f"{source_prefix}/Data/CLS-LOC/train/"
             #val_data_path = f"{target_prefix}/val/"
-            train_data_path = f"{source_prefix}"
-            val_data_path = f"{source_prefix}"
+            train_data_path = f"{source_prefix}/train_tars/"
+            val_data_path = f"{source_prefix}/val_tars/"
             
             
             self.logger.info(f"📂 Training data S3 path: {s3_bucket_uri}/{train_data_path}")
@@ -441,7 +441,7 @@ class SageMakerPipelineOrchestrator:
         
         # Build training data S3 path
         source_bucket = args.source_bucket or self.config["dataset"]["source_bucket"]
-        target_prefix = args.target_prefix or self.config["dataset"]["target_prefix"]
+        #target_prefix = args.target_prefix or self.config["dataset"]["target_prefix"]
         
         # Priority: command line args > config defaults
         role_arn = getattr(args, 'role_arn', None) or self.config.get("aws", {}).get("default_role_arn")
@@ -458,7 +458,7 @@ class SageMakerPipelineOrchestrator:
             'job_name': job_name,
             'role_arn': role_arn,
             'source_bucket': source_bucket,
-            'target_prefix': target_prefix,
+            #'target_prefix': target_prefix,
             'instance_type': instance_type,
             'instance_count': instance_count,
             'use_spot': use_spot,
@@ -728,10 +728,10 @@ def main():
     # Optional arguments (can be provided via command line or config)
     parser.add_argument('--role-arn', type=str,
                        help='SageMaker execution role ARN (required - can be set in config)')
-    parser.add_argument('--source-prefix', type=str, default='Datasets/imagenet1k/ILSVRC',
-                       help='S3 prefix of ILSVRC dataset (default: Datasets/imagenet1k/ILSVRC)')
-    parser.add_argument('--target-prefix', type=str, default='Datasets/imagenet1k/ILSVRC/imagenet-sagemaker',
-                       help='S3 prefix for converted dataset (default: Datasets/imagenet1k/ILSVRC/imagenet-sagemaker)')
+    parser.add_argument('--source-prefix', type=str, default='webdataset_shards',
+                       help='S3 prefix of ILSVRC dataset (default: webdataset_shards)')
+#   parser.add_argument('--target-prefix', type=str, default='Datasets/imagenet1k/ILSVRC/imagenet-sagemaker',
+#                   help='S3 prefix for converted dataset (default: Datasets/imagenet1k/ILSVRC/imagenet-sagemaker)')
     parser.add_argument('--instance-type', type=str, default='ml.p3.8xlarge',
                        help='SageMaker instance type (default: ml.p3.8xlarge)')
     parser.add_argument('--instance-count', type=int, default=1,

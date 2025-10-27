@@ -77,7 +77,7 @@ class ImageNetSageMakerTrainer:
         
         # Core training parameters - use SageMaker environment variables as defaults
         parser.add_argument('--data_dir', type=str, 
-                           default=os.environ.get('SM_CHANNEL_IMAGENET', '/opt/ml/input/data/imagenet'))
+                           default=os.environ.get('SM_CHANNEL_TRAINING', '/opt/ml/input/data/training'))
         parser.add_argument('--val_dir', type=str, 
                            default=os.environ.get('SM_CHANNEL_VALIDATION', '/opt/ml/input/data/validation'))
         parser.add_argument('--output_dir', type=str, 
