@@ -1793,7 +1793,17 @@ def main():
         raise
     
     progress_manager.close_progress_bar()
-    logger.info(f"Dataset loaded - Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}")
+    # For WebLoader, .dataset does not exist. Log number of batches and samples instead.
+    num_train_batches = len(train_loader)
+    num_val_batches = len(val_loader)
+    try:
+        num_train_samples = sum(len(batch[0]) for batch in train_loader)
+        num_val_samples = sum(len(batch[0]) for batch in val_loader)
+        logger.info(f"Dataset loaded - Train batches: {num_train_batches}, Val batches: {num_val_batches}")
+        logger.info(f"Dataset loaded - Train samples: {num_train_samples}, Val samples: {num_val_samples}")
+    except Exception as e:
+        logger.info(f"Dataset loaded - Train batches: {num_train_batches}, Val batches: {num_val_batches}")
+        logger.warning(f"Could not count samples in WebLoader: {e}")
     
     # Not required for webloader
     # Initialize Training Performance Optimizer for data loading optimization
