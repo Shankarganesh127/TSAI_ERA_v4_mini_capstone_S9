@@ -812,8 +812,13 @@ class LRFinder:
             try:
                 inputs, targets = next(data_iter)
             except StopIteration:
+                # Restart dataloader when we reach the end
                 data_iter = iter(dataloader)
-                inputs, targets = next(data_iter)
+                try:
+                    inputs, targets = next(data_iter)
+                except StopIteration:
+                    logger.error("Dataloader appears to be empty!")
+                    break
                 
             inputs, targets = inputs.to(self.device), targets.to(self.device)
             
