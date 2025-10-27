@@ -300,7 +300,12 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .with_epoch(train_batches_per_epoch)
         .batched(batch_size, partial=False)
     )
-    logger.info("✅ Training dataset created with WebDataset shard splitting for multi-node training")
+    
+    # Set nodesplitter flag to satisfy WebDataset's multi-node check
+    # Since we pre-split URLs with wds.shardlists.split_by_node(), we manually set the flag
+    train_dataset.nodesplitter = True
+    
+    logger.info("✅ Training dataset created with pre-split URLs for multi-node training")
 
     # WebLoader automatically handles worker splitting when num_workers > 0
     train_loader = wds.WebLoader(
@@ -327,7 +332,11 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .with_epoch(val_batches_per_epoch)
         .batched(batch_size, partial=True)
     )
-    logger.info("✅ Validation dataset created with WebDataset shard splitting for multi-node training")
+    
+    # Set nodesplitter flag to satisfy WebDataset's multi-node check
+    val_dataset.nodesplitter = True
+    
+    logger.info("✅ Validation dataset created with pre-split URLs for multi-node training")
 
     val_loader = wds.WebLoader(
         val_dataset,
