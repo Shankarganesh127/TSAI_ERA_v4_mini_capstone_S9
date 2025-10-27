@@ -50,7 +50,7 @@ def launch_processing_job(role_arn, source_bucket, instance_type='ml.c5.9xlarge'
         # Use a high-CPU, cost-effective instance for heavy data processing
         instance_type=instance_type,
         instance_count=1,
-        image_uri="763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:2.0.1-cpu-py310",
+        image_uri="763104351884.dkr.ecr.eu-west-2.amazonaws.com/pytorch-training:2.0.1-cpu-py310",
         command=['python3'],
         role=role_arn,
         # Use spot instances to save cost (highly recommended for processing jobs)
