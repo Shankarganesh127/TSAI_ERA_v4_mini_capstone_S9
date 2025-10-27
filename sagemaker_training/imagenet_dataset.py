@@ -224,7 +224,9 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .with_epoch(train_batches_per_epoch)
         .batched(batch_size, partial=False) # Batch the results, ensures full batches
     )
-    
+
+    train_dataset = train_dataset.with_ddp()
+
     # WebLoader is necessary to wrap the WebDataset object and correctly handle multi-threading/DDP
     train_loader = wds.WebLoader(
         train_dataset,
@@ -234,7 +236,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         pin_memory=True,
         prefetch_factor=2,
         persistent_workers=True if num_workers > 0 else False
-    ).ddp(timeout=60.0) # Apply DDP shard partitioning and set timeout
+    )
     
     # --- Validation DataLoader (WebDataset) ---
 
@@ -250,7 +252,9 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         .with_epoch(val_batches_per_epoch)
         .batched(batch_size, partial=True) # Partial=True allows the last batch to be smaller
     )
-    
+
+    val_dataset = val_dataset.with_ddp()
+
     val_loader = wds.WebLoader(
         val_dataset,
         batch_size=None,
@@ -259,7 +263,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         pin_memory=True,
         prefetch_factor=2,
         persistent_workers=True if num_workers > 0 else False
-    ).ddp(timeout=60.0)
+    )
 
     return train_loader, val_loader
 
