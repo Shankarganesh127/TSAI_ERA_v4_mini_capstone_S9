@@ -315,7 +315,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         wds.WebDataset(
             train_urls,  # URLs split by node only if multi-node
             nodesplitter=wds.shardlists.split_by_node if use_nodesplitter else None,
-            empty_check=True  # Enable empty check to catch missing samples
+            empty_check=True if use_nodesplitter else False  # Disable empty check for limited shards
         )
         
         .shuffle(1000)
@@ -347,7 +347,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     val_dataset = (
         wds.WebDataset(val_urls,
                        nodesplitter=wds.shardlists.split_by_node if use_nodesplitter else None,
-                       empty_check=True  # Enable empty check to catch missing samples
+                       empty_check=True if use_nodesplitter else False  # Disable empty check for limited shards
                        )
         
         .repeat()

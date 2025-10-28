@@ -1541,8 +1541,17 @@ def main():
         except Exception as e:
             logger.error(f"❌ Failed to load pipeline status: {e}. Starting from scratch.")
 
-    """Main training pipeline"""
-    # Set up unified logging first thing
+    def reload_current_stage():
+        """Reload current stage from status file"""
+        stage = 'START'
+        if os.path.exists(status_file):
+            try:
+                with open(status_file, 'r') as f:
+                    status = json.load(f)
+                stage = status.get('last_completed_stage', 'START')
+            except Exception:
+                pass
+        return stage
     logger = get_unified_logger("imagenet_training_pipeline")
 
     # =============================================================================
@@ -2030,6 +2039,7 @@ def main():
         max_val_batches = 50  # Limit validation to 50 batches per epoch
 
         # Only main process runs weight decay search (similar to LR test)
+        wd_results = None
         if is_main_process():
             if current_stage in ['START', 'LR_TEST_COMPLETE']:
                 # Create data loaders for weight decay search (no distributed splitting)
@@ -2080,17 +2090,31 @@ def main():
                     }, f)
                 logger.info(f"[WEIGHT] Main process saved results to {wd_results_file}")
         else:
-            # Non-main processes wait for results
+            # Non-main processes wait for results with robust error handling
             logger.info("[WEIGHT] Non-main process waiting for weight decay search results...")
-            wd_results_file = os.path.join(checkpoint_dir, 'wd_results.json')
-            while not os.path.exists(wd_results_file):
-                import time
-                time.sleep(1)  # Wait 1 second and check again
-            with open(wd_results_file, 'r') as f:
-                wd_data = json.load(f)
-                wd_results = wd_data['wd_results']
-                best_weight_decay = wd_data['best_weight_decay']
-            logger.info(f"[WEIGHT] Non-main process loaded weight decay results - Best WD: {best_weight_decay:.2e}")
+            best_weight_decay = 1e-4  # Default fallback
+            wd_results = []  # Default fallback
+            
+            try:
+                wd_results_file = os.path.join(checkpoint_dir, 'wd_results.json')
+                wait_time = 0
+                max_wait_time = 3600  # 1 hour timeout
+                
+                while not os.path.exists(wd_results_file) and wait_time < max_wait_time:
+                    import time
+                    time.sleep(1)
+                    wait_time += 1
+                    
+                if os.path.exists(wd_results_file):
+                    with open(wd_results_file, 'r') as f:
+                        wd_data = json.load(f)
+                        wd_results = wd_data.get('wd_results', wd_results)
+                        best_weight_decay = wd_data.get('best_weight_decay', best_weight_decay)
+                    logger.info(f"[WEIGHT] Non-main process loaded weight decay results - Best WD: {best_weight_decay:.2e}")
+                else:
+                    logger.warning(f"[WEIGHT] Timeout waiting for WD results file, using defaults - Best WD: {best_weight_decay:.2e}")
+            except Exception as e:
+                logger.warning(f"[WEIGHT] Error loading WD results, using defaults - Best WD: {best_weight_decay:.2e}, Error: {e}")
 
         progress_manager.update_status(wd_step_key,
             f"[OK] STEP 5: Weight Decay Search Complete - Best: {best_weight_decay:.2e}")
@@ -2144,6 +2168,10 @@ def main():
     
     # STEP 6: Full Training
     training_epochs = 20 if args.quick_mode else args.epochs
+    
+    # Reload current stage to get latest status updates
+    current_stage = reload_current_stage()
+    logger.info(f"🔄 Current pipeline stage before training: {current_stage}")
     
     # Log memory usage before starting full training
     log_detailed_memory_usage("before_full_training")
