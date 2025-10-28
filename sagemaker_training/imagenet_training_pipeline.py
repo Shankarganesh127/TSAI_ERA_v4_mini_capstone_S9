@@ -1896,29 +1896,32 @@ def main():
         lr_step_key = "lr_range_test"
         progress_manager.create_status_updater(lr_step_key, "[DEBUG] STEP 1: LR Range Test - Starting...")
 
-        model = create_model().to(device)
-        optimizer = optim.SGD(model.parameters(), lr=1e-7, momentum=0.9)
-        criterion = nn.CrossEntropyLoss()
-
-        lr_finder = LRFinder(model, optimizer, criterion, device)
-
-        lr_test_batch_size = min(16, initial_batch_size // 4)  # Use much smaller batch size for LR test
-        lr_test_batch_size = max(8, lr_test_batch_size)  # Minimum batch size of 8
-
-        # Optimize num_workers for LR test based on smaller batch size
-        lr_test_num_workers = optimize_num_workers(lr_test_batch_size)
-        lr_test_num_workers = min(lr_test_num_workers, 4)  # Cap at 4 for LR test to avoid overhead
-
-        logger.info(f"[MEMORY] Creating LR range test dataloader with batch_size: {lr_test_batch_size}, num_workers: {lr_test_num_workers}")
-
-        # Only main process creates LR test data loader (with no distributed splitting and limited shards)
+        # Only main process creates model, optimizer, and LR finder for the range test
+        lr_finder = None
         lr_test_loader = None
         if is_main_process():
+            model = resnet50_imagenet_no_ddp(num_classes=1000, pretrained=False)  # Use no-DDP version for LR finder
+            optimizer = optim.SGD(model.parameters(), lr=1e-7, momentum=0.9)
+            criterion = nn.CrossEntropyLoss()
+
+            lr_finder = LRFinder(model, optimizer, criterion, device)
+
+            lr_test_batch_size = min(16, initial_batch_size // 4)  # Use much smaller batch size for LR test
+            lr_test_batch_size = max(8, lr_test_batch_size)  # Minimum batch size of 8
+
+            # Optimize num_workers for LR test based on smaller batch size
+            lr_test_num_workers = optimize_num_workers(lr_test_batch_size)
+            lr_test_num_workers = min(lr_test_num_workers, 4)  # Cap at 4 for LR test to avoid overhead
+
+            logger.info(f"[MEMORY] Creating LR range test dataloader with batch_size: {lr_test_batch_size}, num_workers: {lr_test_num_workers}")
+
             lr_test_loader = get_imagenet_dataloaders(
                 train=args.train, val=args.val, batch_size=lr_test_batch_size,
                 num_workers=lr_test_num_workers, lightweight_augs=True,
                 disable_distributed_splitting=True, max_train_shards=5, max_val_shards=2)  # Limit to few shards for speed
             lr_test_loader = lr_test_loader[0]  # Only need train loader
+        else:
+            logger.info("[LR] Non-main process skipping LR range test initialization...")
 
         num_iter = 100 if args.quick_mode else 200
 
