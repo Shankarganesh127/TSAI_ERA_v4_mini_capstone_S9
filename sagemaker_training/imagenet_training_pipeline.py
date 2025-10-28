@@ -2029,126 +2029,72 @@ def main():
         max_train_batches = 500  # Limit training to 500 batches per epoch
         max_val_batches = 50  # Limit validation to 50 batches per epoch
 
-        if current_stage in ['START', 'LR_TEST_COMPLETE']:
-            # Create separate data loaders for weight decay search (no process splitting)
-            logger.info("[WEIGHT] Creating dedicated data loaders for weight decay search...")
-            try:
-                wd_train_loader, wd_val_loader, wd_train_batches_per_epoch, wd_val_batches_per_epoch = get_imagenet_dataloaders(
-                    train=args.train, val=args.val, batch_size=wd_batch_size, num_workers=args.num_workers, 
-                    lightweight_augs=True, disable_distributed_splitting=True)  # Disable splitting for weight decay search
-                logger.info("[WEIGHT] Dedicated data loaders created for weight decay search")
-            except Exception as e:
-                logger.error(f"[ERROR] Failed to create data loaders for weight decay search: {e}")
-                raise
-
-            # Create model function for weight decay search (no DDP to avoid NCCL conflicts)
-            def create_model_no_ddp():
-                logger.info("[DEBUG] DEBUG: Creating model for weight decay search (no DDP)...")
+        # Only main process runs weight decay search (similar to LR test)
+        if is_main_process():
+            if current_stage in ['START', 'LR_TEST_COMPLETE']:
+                # Create data loaders for weight decay search (no distributed splitting)
+                logger.info("[WEIGHT] Creating data loaders for weight decay search...")
                 try:
-                    model = resnet50_imagenet_no_ddp(num_classes=1000, pretrained=False)
-                    logger.info("[DEBUG] DEBUG: Model created successfully for weight decay search")
-                    return model
+                    wd_train_loader, wd_val_loader, wd_train_batches_per_epoch, wd_val_batches_per_epoch = get_imagenet_dataloaders(
+                        train=args.train, val=args.val, batch_size=wd_batch_size, num_workers=args.num_workers, 
+                        lightweight_augs=True, disable_distributed_splitting=True)  # Disable splitting for weight decay search
+                    logger.info("[WEIGHT] Data loaders created for weight decay search")
                 except Exception as e:
-                    logger.error(f"[ERROR] DEBUG: Error creating model for weight decay search: {e}")
+                    logger.error(f"[ERROR] Failed to create data loaders for weight decay search: {e}")
                     raise
 
-            # Create HyperparameterOptimizer for each process (each needs its own instance)
-            optimizer = HyperparameterOptimizer(
-                model_fn=create_model_no_ddp,  # Use no-DDP version for weight decay search
-                train_loader=wd_train_loader,  # Use dedicated loaders
-                val_loader=wd_val_loader,
-                device=device,
-                train_batches_per_epoch=wd_train_batches_per_epoch,
-                val_batches_per_epoch=wd_val_batches_per_epoch
-            )
+                # Create model function for weight decay search (no DDP to avoid NCCL conflicts)
+                def create_model_no_ddp():
+                    logger.info("[DEBUG] DEBUG: Creating model for weight decay search (no DDP)...")
+                    try:
+                        model = resnet50_imagenet_no_ddp(num_classes=1000, pretrained=False)
+                        logger.info("[DEBUG] DEBUG: Model created successfully for weight decay search")
+                        return model
+                    except Exception as e:
+                        logger.error(f"[ERROR] DEBUG: Error creating model for weight decay search: {e}")
+                        raise
 
-            # Parallel weight decay search: Each GPU tests different weight decay values simultaneously
-            # Each process runs independently and saves results to file - no distributed coordination needed
+                # Create HyperparameterOptimizer for weight decay search
+                optimizer = HyperparameterOptimizer(
+                    model_fn=create_model_no_ddp,  # Use no-DDP version for weight decay search
+                    train_loader=wd_train_loader,  # Use dedicated loaders
+                    val_loader=wd_val_loader,
+                    device=device,
+                    train_batches_per_epoch=wd_train_batches_per_epoch,
+                    val_batches_per_epoch=wd_val_batches_per_epoch
+                )
 
-            # Get distributed training parameters from environment variables (SageMaker/NVIDIA/PyTorch)
-            world_size = int(os.environ.get('WORLD_SIZE', getattr(args, 'world_size', 1)))
-            local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', getattr(args, 'local_rank', 0))))
+                # Main process runs all weight decay values sequentially
+                progress_manager.update_status(wd_step_key, f"[WEIGHT] STEP 5: Testing {len(wd_values)} weight decay values for {search_epochs} epochs each...")
+                wd_results, best_weight_decay = optimizer.weight_decay_search(
+                    lr_config, wd_batch_size, wd_values, epochs=search_epochs, 
+                    max_train_batches=max_train_batches, max_val_batches=max_val_batches)
+                logger.info(f"[WEIGHT] Main process completed weight decay search - Best WD: {best_weight_decay:.2e}")
 
-            # Divide weight decay values among processes (each GPU gets subset)
-            wd_values_per_process = len(wd_values) // world_size
-            remainder = len(wd_values) % world_size
-
-            # Assign values to each process (some get extra if not evenly divisible)
-            start_idx = local_rank * wd_values_per_process + min(local_rank, remainder)
-            end_idx = start_idx + wd_values_per_process + (1 if local_rank < remainder else 0)
-            my_wd_values = wd_values[start_idx:end_idx]
-
-            logger.info(f"[WEIGHT] Process {local_rank} assigned {len(my_wd_values)} weight decay values: {[f'{wd:.2e}' for wd in my_wd_values]}")
-
-            # Each process runs its weight decay search independently (no DDP conflicts since each has its own model)
-            progress_manager.update_status(wd_step_key, f"[WEIGHT] STEP 5: Process {local_rank} testing {len(my_wd_values)} weight decay values for {search_epochs} epochs each...")
-            my_wd_results, my_best_weight_decay = optimizer.weight_decay_search(
-                lr_config, wd_batch_size, my_wd_values, epochs=search_epochs, 
-                max_train_batches=max_train_batches, max_val_batches=max_val_batches)
-            logger.info(f"[WEIGHT] Process {local_rank} completed weight decay search - Best WD: {my_best_weight_decay:.2e}")
-
-            # Save results to file for this process
-            process_results_file = os.path.join(checkpoint_dir, f'wd_results_rank_{local_rank}.json')
-            with open(process_results_file, 'w') as f:
-                json.dump({
-                    'wd_results': my_wd_results,
-                    'best_weight_decay': my_best_weight_decay,
-                    'process_rank': local_rank
-                }, f)
-            logger.info(f"[WEIGHT] Process {local_rank} saved results to {process_results_file}")
-
-            # Wait for all processes to complete (barrier)
-            # Use file-based synchronization since distributed process group may not be initialized yet
-            import time
-            all_results_files = [os.path.join(checkpoint_dir, f'wd_results_rank_{i}.json') for i in range(world_size)]
-            while not all(os.path.exists(f) for f in all_results_files):
-                time.sleep(1)  # Wait 1 second and check again
-
-            # Process 0 collects and combines all results
-            if is_main_process():
-                all_wd_results = []
-                for i in range(world_size):
-                    results_file = os.path.join(checkpoint_dir, f'wd_results_rank_{i}.json')
-                    with open(results_file, 'r') as f:
-                        process_results = json.load(f)
-                        all_wd_results.extend(process_results['wd_results'])
-
-                # Find best weight decay across all processes
-                best_result = max(all_wd_results, key=lambda x: x['best_val_acc'])
-                best_weight_decay = best_result['weight_decay']
-                wd_results = all_wd_results
-
-                logger.info(f"[WEIGHT] Combined results from all {world_size} processes. Best WD: {best_weight_decay:.2e} (acc: {best_result['best_val_acc']:.4f})")
-            else:
-                # Non-main processes get results from main process via file
-                wd_results = my_wd_results  # Fallback
-                best_weight_decay = my_best_weight_decay  # Fallback
-
-                # Wait for main process to write combined results
-                combined_results_file = os.path.join(checkpoint_dir, 'wd_results_combined.json')
-                while not os.path.exists(combined_results_file):
-                    time.sleep(1)
-
-                with open(combined_results_file, 'r') as f:
-                    combined_data = json.load(f)
-                    wd_results = combined_data['wd_results']
-                    best_weight_decay = combined_data['best_weight_decay']
-
-            # Main process saves combined results
-            if is_main_process():
-                combined_results_file = os.path.join(checkpoint_dir, 'wd_results_combined.json')
-                with open(combined_results_file, 'w') as f:
+                # Save results to file
+                wd_results_file = os.path.join(checkpoint_dir, 'wd_results.json')
+                with open(wd_results_file, 'w') as f:
                     json.dump({
                         'wd_results': wd_results,
                         'best_weight_decay': best_weight_decay
                     }, f)
+                logger.info(f"[WEIGHT] Main process saved results to {wd_results_file}")
         else:
-            # Load best_weight_decay from checkpoint_dir
-            wd_results_path = os.path.join(checkpoint_dir, 'wd_results.json')
-            with open(wd_results_path, 'r') as f:
+            # Non-main processes wait for results
+            logger.info("[WEIGHT] Non-main process waiting for weight decay search results...")
+            wd_results_file = os.path.join(checkpoint_dir, 'wd_results.json')
+            while not os.path.exists(wd_results_file):
+                import time
+                time.sleep(1)  # Wait 1 second and check again
+            with open(wd_results_file, 'r') as f:
                 wd_data = json.load(f)
                 wd_results = wd_data['wd_results']
                 best_weight_decay = wd_data['best_weight_decay']
+            logger.info(f"[WEIGHT] Non-main process loaded weight decay results - Best WD: {best_weight_decay:.2e}")
+
+        progress_manager.update_status(wd_step_key,
+            f"[OK] STEP 5: Weight Decay Search Complete - Best: {best_weight_decay:.2e}")
+        progress_manager.finalize_status(wd_step_key)
         
         # Save results (only main process)
         if is_main_process():
