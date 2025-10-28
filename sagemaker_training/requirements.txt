@@ -2,7 +2,7 @@
 GPUtil>=1.4.0
 torchsummary>=1.5.1
 accelerate==0.33.0
-smdistributed-dataparallel==1.8.0
+#smdistributed-dataparallel>=1.8.0
 webdataset>=1.0.0
 # SageMaker Training Pipeline - Complete Requirements
 
