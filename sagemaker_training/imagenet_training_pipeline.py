@@ -10,6 +10,11 @@ CUDA Compatibility Features:
 - --cuda-compat-mode flag for forced compatibility settings
 - --no-compile flag to disable torch.compile entirely
 - PTX error detection with upgrade recommendations
+
+Training Best Practices:
+- Follows PyTorch 1.1.0+ scheduler ordering: optimizer.step() → scheduler.step()
+- Suppresses harmless OneCycleLR warnings with GradScaler (AMP)
+- Proper gradient accumulation with zero_grad() at accumulation cycle start
 """
 
 import os
@@ -41,6 +46,12 @@ import platform
 import subprocess
 import threading
 import sys
+import warnings
+
+# Suppress the specific scheduler warning that occurs with GradScaler + OneCycleLR
+# This is a known PyTorch issue that doesn't affect training correctness
+warnings.filterwarnings("ignore", message="Detected call of.*lr_scheduler.step.*before.*optimizer.step", category=UserWarning)
+
 try:
     import GPUtil
 except ImportError:
@@ -1313,6 +1324,8 @@ class FullTrainer:
             inputs, targets = inputs.to(self.device), targets.to(self.device)
             
             # --- CRITICAL: Zero grad only at the start of accumulation cycle ---
+            # For gradient accumulation, zero_grad() must happen at the beginning of each
+            # accumulation cycle, not at the end. This follows PyTorch best practices.
             if accumulation_counter == 0:
                 optimizer.zero_grad()
             
@@ -1333,6 +1346,7 @@ class FullTrainer:
                 accumulation_counter += 1
                 
                 # --- CRITICAL: Optimizer Step (After Accumulation) ---
+                # PyTorch 1.1.0+ best practice: optimizer.step() BEFORE scheduler.step()
                 if accumulation_counter % gradient_accumulation_steps == 0:
                     
                     if scaler:
@@ -1346,7 +1360,7 @@ class FullTrainer:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                         optimizer.step()
                         
-                    # Step scheduler
+                    # Step scheduler AFTER optimizer.step() - PyTorch 1.1.0+ requirement
                     scheduler.step()
                     accumulation_counter = 0 # Reset counter
 
