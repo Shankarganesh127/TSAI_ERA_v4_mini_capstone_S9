@@ -903,7 +903,7 @@ class HyperparameterOptimizer:
         self.train_batches_per_epoch = train_batches_per_epoch
         self.val_batches_per_epoch = val_batches_per_epoch
         
-    def _quick_train(self, model, optimizer, criterion, scheduler, epochs):
+    def _quick_train(self, model, optimizer, criterion, scheduler, epochs, max_train_batches=None, max_val_batches=50):
         """Quick training for hyperparameter search"""
         train_losses = []
         val_losses = []
@@ -923,12 +923,12 @@ class HyperparameterOptimizer:
             train_batches = 0
             
             # Use progress manager for clean progress tracking
-            total_batches = self.train_batches_per_epoch   # Calculate effective epoch size for the scheduler. This is critical.
+            total_batches = max_train_batches if max_train_batches is not None else self.train_batches_per_epoch
             from tqdm.auto import tqdm
             bar = tqdm(total=total_batches, desc=f"Epoch {epoch+1}/{epochs}", unit="it", ncols=120, disable=TQDM_DISABLE)
             
             for batch_idx, (inputs, targets) in enumerate(self.train_loader):
-                if batch_idx >= total_batches:  # Limit training batches for speed
+                if batch_idx >= total_batches:  # Limit training batches
                     break
                     
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
@@ -961,7 +961,7 @@ class HyperparameterOptimizer:
             val_batches = 0
             
             # Use progress manager for validation progress
-            val_limit = self.val_batches_per_epoch  # Limit validation batches for speed
+            val_limit = max_val_batches if max_val_batches is not None else self.val_batches_per_epoch
             from tqdm.auto import tqdm
             bar = tqdm(total=val_limit, desc=f"Validation {epoch+1}/{epochs}", unit="it", ncols=120, disable=TQDM_DISABLE)
             
@@ -985,8 +985,8 @@ class HyperparameterOptimizer:
                     
                     if (batch_idx + 1) % 10 == 0:
                         logger.info(f"weight_decay_search quick valid | Epoch {epoch+1}/{epochs} | Batch {batch_idx+1}/{total_batches} | Loss: {val_loss/val_batches:.4f}")
-                    # Limit validation batches for speed
-                    if val_batches >= 50:
+                    # Limit validation batches
+                    if val_batches >= val_limit:
                         break
 
             bar.close()
@@ -1017,7 +1017,7 @@ class HyperparameterOptimizer:
         
         return train_losses, val_losses, val_accs 
 
-    def weight_decay_search(self, lr_config, batch_size, wd_values=[1e-5, 5e-5, 1e-4, 5e-4, 1e-3], epochs=5):
+    def weight_decay_search(self, lr_config, batch_size, wd_values=[1e-5, 5e-5, 1e-4, 5e-4, 1e-3], epochs=5, max_train_batches=None, max_val_batches=50):
         """Search for optimal weight decay (Corrected, requires _quick_train)."""
         logger = get_unified_logger("WeightDecaySearch")
         
@@ -1039,12 +1039,13 @@ class HyperparameterOptimizer:
             criterion = nn.CrossEntropyLoss()
             
             # OneCycle scheduler is essential for fast convergence in short runs
+            scheduler_steps = max_train_batches if max_train_batches is not None else self.train_batches_per_epoch
             scheduler = OneCycleLR(optimizer, max_lr=lr_config['max_lr'], 
-                                epochs=epochs, steps_per_epoch=self.train_batches_per_epoch)
+                                epochs=epochs, steps_per_epoch=scheduler_steps)
             
             # Train for a few epochs
             train_losses, val_losses, val_accs = self._quick_train(
-                model, optimizer, criterion, scheduler, epochs)
+                model, optimizer, criterion, scheduler, epochs, max_train_batches, max_val_batches)
 
             logger.info(f"weight_decay_search | Iter {idx+1}/{len(wd_values)} | wd: {wd:.2e} | max accuracy: {max(val_accs):.4f}")
             # Store results
@@ -1932,39 +1933,23 @@ def main():
                 # Non-main processes will receive lr_config via broadcasting below
                 lr_config = None
 
-            # Broadcast lr_config from rank 0 to ensure consistency across all processes
-            if hasattr(args, 'world_size') and args.world_size > 1:
-                import torch.distributed as dist
-                if is_main_process():
-                    lr_config_str = json.dumps(lr_config)
-                    lr_config_bytes = lr_config_str.encode('utf-8')
-                    lr_config_size = len(lr_config_bytes)
-                else:
-                    lr_config_size = 0
-
-                # Broadcast size first
-                lr_config_size_tensor = torch.tensor([lr_config_size], dtype=torch.int32, device=device)
-                dist.broadcast(lr_config_size_tensor, src=0)
-                lr_config_size = lr_config_size_tensor.item()
-
-                # Broadcast data
-                if is_main_process():
-                    lr_config_tensor = torch.frombuffer(lr_config_bytes, dtype=torch.uint8).to(device)
-                else:
-                    lr_config_tensor = torch.zeros(lr_config_size, dtype=torch.uint8, device=device)
-
-                dist.broadcast(lr_config_tensor, src=0)
-
-                # Decode on non-main processes
-                if not is_main_process():
-                    lr_config_bytes = bytes(lr_config_tensor.cpu().numpy())
-                    lr_config_str = lr_config_bytes.decode('utf-8')
-                    lr_config = json.loads(lr_config_str)
-        else:
-             # Load lr_config from checkpoint_dir
-            lr_config_path = os.path.join(checkpoint_dir, 'lr_config.json')
-            with open(lr_config_path, 'r') as f:
-                lr_config = json.load(f)
+            # Main process saves lr_config to file, others wait and read from file
+            # Use file-based sync to avoid torch.distributed calls during LR test
+            lr_config_file = os.path.join(checkpoint_dir, 'lr_config_results.json')
+            if is_main_process():
+                # Save results to file
+                with open(lr_config_file, 'w') as f:
+                    json.dump(lr_config, f, indent=2)
+                logger.info(f"[LR] Main process saved LR config to {lr_config_file}")
+            else:
+                # Non-main processes wait for file and read results
+                logger.info("[LR] Non-main process waiting for LR config file...")
+                while not os.path.exists(lr_config_file):
+                    import time
+                    time.sleep(1)  # Wait 1 second and check again
+                with open(lr_config_file, 'r') as f:
+                    lr_config = json.load(f)
+                logger.info(f"[LR] Non-main process loaded LR config from {lr_config_file}")
 
         
 
@@ -2023,15 +2008,18 @@ def main():
         wd_step_key = "weight_decay_search"
         progress_manager.create_status_updater(wd_step_key, "[WEIGHT] STEP 5: Weight Decay Search - Starting...")
 
-        wd_values = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3] if not args.quick_mode else [1e-4, 5e-4]
-        search_epochs = 3 if args.quick_mode else 5
+        wd_values = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3]  # Always use all 5 weight decay values
+        search_epochs = 5  # Always use 5 epochs
+        wd_batch_size = optimal_batch_size//4  # Fixed batch size for weight decay search
+        max_train_batches = 500  # Limit training to 500 batches per epoch
+        max_val_batches = 50  # Limit validation to 50 batches per epoch
 
         if current_stage in ['START', 'LR_TEST_COMPLETE']:
             # Create separate data loaders for weight decay search (no process splitting)
             logger.info("[WEIGHT] Creating dedicated data loaders for weight decay search...")
             try:
                 wd_train_loader, wd_val_loader, wd_train_batches_per_epoch, wd_val_batches_per_epoch = get_imagenet_dataloaders(
-                    train=args.train, val=args.val, batch_size=optimal_batch_size, num_workers=args.num_workers, 
+                    train=args.train, val=args.val, batch_size=wd_batch_size, num_workers=args.num_workers, 
                     lightweight_augs=True, disable_distributed_splitting=True)  # Disable splitting for weight decay search
                 logger.info("[WEIGHT] Dedicated data loaders created for weight decay search")
             except Exception as e:
@@ -2080,7 +2068,8 @@ def main():
             # Each process runs its weight decay search independently (no DDP conflicts since each has its own model)
             progress_manager.update_status(wd_step_key, f"[WEIGHT] STEP 5: Process {local_rank} testing {len(my_wd_values)} weight decay values for {search_epochs} epochs each...")
             my_wd_results, my_best_weight_decay = optimizer.weight_decay_search(
-                lr_config, optimal_batch_size, my_wd_values, epochs=search_epochs)
+                lr_config, wd_batch_size, my_wd_values, epochs=search_epochs, 
+                max_train_batches=max_train_batches, max_val_batches=max_val_batches)
             logger.info(f"[WEIGHT] Process {local_rank} completed weight decay search - Best WD: {my_best_weight_decay:.2e}")
 
             # Save results to file for this process
