@@ -2,8 +2,14 @@
 """
 Complete ImageNet Training Pipeline
 7-Step Systematic Approach:
-1) LR Range Test → 2) Pick LR bounds → 3) Set OneCycle LR + cyclical momentum 
+1) LR Range Test → 2) Pick LR bounds → 3) Set OneCycle LR + cyclical momentum
 → 4) Choose batch size → 5) Tune weight-decay & regularizers → 6) Full OneCycle training → 7) Monitor & iterate
+
+CUDA Compatibility Features:
+- Automatic GPU architecture detection (Ada Lovelace+ uses reduce-overhead compilation mode)
+- --cuda-compat-mode flag for forced compatibility settings
+- --no-compile flag to disable torch.compile entirely
+- PTX error detection with upgrade recommendations
 """
 
 import os
@@ -13,7 +19,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import OneCycleLR
-import torch.distributed as dist
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
@@ -1166,10 +1171,48 @@ class FullTrainer:
         # torch.compile (Requires PyTorch 2.0+)
         if hasattr(torch, 'compile') and is_cuda_available and args is not None and not getattr(args, 'no_compile', False):
              try:
-                 self.model = torch.compile(self.model)
-                 logger.info("[SPEED] torch.compile enabled")
+                 # Set CUDA compatibility environment variables
+                 if getattr(args, 'cuda_compat_mode', False):
+                     os.environ['TORCH_USE_CUDA_DSA'] = '1'  # Device-side assertions
+                     os.environ['CUDA_LAUNCH_BLOCKING'] = '0'  # Non-blocking launches
+                     logger.info("[SPEED] CUDA compatibility mode enabled")
+
+                 # Check GPU architecture for compatibility
+                 gpu_arch = None
+                 force_compat_mode = getattr(args, 'cuda_compat_mode', False)
+
+                 if torch.cuda.is_available() and not force_compat_mode:
+                     try:
+                         gpu_name = torch.cuda.get_device_name(0).lower()
+                         # Ada Lovelace (sm_89) and newer architectures may have PTX compatibility issues
+                         if 'rtx 40' in gpu_name or 'l4' in gpu_name or 'l40' in gpu_name or 'a100' in gpu_name or 'h100' in gpu_name:
+                             gpu_arch = 'ada_or_newer'
+                         elif 'v100' in gpu_name or 't4' in gpu_name:
+                             gpu_arch = 'turing_or_older'
+                     except Exception:
+                         pass
+
+                 # Use different compilation modes based on GPU architecture or force compatibility
+                 if gpu_arch == 'ada_or_newer' or force_compat_mode:
+                     # For newer GPUs or when compatibility mode is forced, use reduce-overhead mode
+                     self.model = torch.compile(self.model, mode='reduce-overhead')
+                     logger.info("[SPEED] torch.compile enabled with reduce-overhead mode (Ada Lovelace+ GPU or compatibility mode)")
+                 else:
+                     # For older GPUs or unknown architectures, try default mode
+                     self.model = torch.compile(self.model)
+                     logger.info("[SPEED] torch.compile enabled with default mode")
+
              except Exception as e:
-                 logger.warning(f"[SPEED] torch.compile failed: {e}")
+                 error_msg = str(e)
+                 if 'PTX' in error_msg and 'does not support' in error_msg:
+                     logger.warning(f"[SPEED] torch.compile failed due to PTX compatibility: {e}")
+                     logger.warning("[SPEED] This indicates CUDA toolkit/GPU driver mismatch")
+                     logger.warning("[SPEED] Recommendation: Upgrade to CUDA 12.x container (pytorch-training:2.1.0-gpu-py310-cu121)")
+                     logger.warning("[SPEED] Or use --no-compile flag to disable torch.compile")
+                     logger.warning("[SPEED] Alternative: Try --cuda-compat-mode flag")
+                 else:
+                     logger.warning(f"[SPEED] torch.compile failed: {e}")
+                     logger.warning("[SPEED] Continuing without torch.compile optimization")
 
         # Mixed Precision Training (AMP)
         scaler = None
@@ -1585,6 +1628,7 @@ def main():
     parser.add_argument('--num-workers', type=int, default=4, help='Number of data loading workers')
     parser.add_argument('--no-amp', action='store_true', default=False, help='Disable mixed precision training')
     parser.add_argument('--no-compile', action='store_true', default=False, help='Disable torch.compile optimization')
+    parser.add_argument('--cuda-compat-mode', action='store_true', default=False, help='Enable CUDA compatibility mode for newer GPUs (automatically detects Ada Lovelace+ and uses compatible settings)')
     parser.add_argument('--lightweight-augs', action='store_true', default=False, help='Use lightweight augmentations for maximum speed')
     parser.add_argument('--skip-lr-test', action='store_true', default=False, help='Skip LR range test')
     parser.add_argument('--skip-wd-search', action='store_true', default=False, help='Skip weight decay search')
@@ -1622,7 +1666,8 @@ def main():
             'no_compile': args.no_compile,
             'lightweight_augs': args.lightweight_augs,
             'skip_lr_test': args.skip_lr_test,
-            'skip_wd_search': args.skip_wd_search
+            'skip_wd_search': args.skip_wd_search,
+            'cuda_compat_mode': getattr(args, 'cuda_compat_mode', False)
         }
     }
     log_config_json(config_path, run_config)

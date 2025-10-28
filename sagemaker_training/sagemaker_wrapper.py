@@ -166,7 +166,8 @@ class ImageNetSageMakerTrainer:
             "--train", str(args.data_dir),
             "--val", str(args.val_dir),
             "--output", str(args.output_dir), 
-            "--epochs", str(args.epochs)
+            "--epochs", str(args.epochs),
+            "--cuda-compat-mode"
         ]
         
         self.logger.info(f"✅ Command built: {' '.join(cmd)}")
