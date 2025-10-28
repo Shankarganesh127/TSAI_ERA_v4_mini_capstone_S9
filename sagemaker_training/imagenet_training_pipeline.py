@@ -2026,27 +2026,11 @@ def main():
             )
 
             # Parallel weight decay search: Each GPU tests different weight decay values simultaneously
-            import torch.distributed as dist
+            # Each process runs independently and saves results to file - no distributed coordination needed
 
             # Get distributed training parameters from environment variables (SageMaker/NVIDIA/PyTorch)
             world_size = int(os.environ.get('WORLD_SIZE', getattr(args, 'world_size', 1)))
             local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', getattr(args, 'local_rank', 0))))
-
-            # Initialize distributed process group if not already initialized and world_size > 1
-            if world_size > 1 and not dist.is_initialized():
-                logger.info(f"[DDP] Initializing distributed process group for weight decay search (world_size={world_size}, local_rank={local_rank})")
-                try:
-                    # Set CUDA device for this process
-                    if torch.cuda.is_available():
-                        torch.cuda.set_device(local_rank)
-                        logger.info(f"[DDP] Set CUDA device to {local_rank} for weight decay search")
-
-                    # Use NCCL backend for GPU communication
-                    dist.init_process_group(backend='nccl', init_method='env://')
-                    logger.info("[DDP] Distributed process group initialized for weight decay search")
-                except Exception as e:
-                    logger.error(f"[DDP] Failed to initialize distributed process group: {e}")
-                    raise
 
             # Divide weight decay values among processes (each GPU gets subset)
             wd_values_per_process = len(wd_values) // world_size
@@ -2065,42 +2049,31 @@ def main():
                 lr_config, optimal_batch_size, my_wd_values, epochs=search_epochs)
             logger.info(f"[WEIGHT] Process {local_rank} completed weight decay search - Best WD: {my_best_weight_decay:.2e}")
 
-            # Gather results from all processes
-            # Prepare data for gathering
-            my_results_data = {
-                'wd_results': my_wd_results,
-                'best_weight_decay': my_best_weight_decay,
-                'process_rank': local_rank
-            }
+            # Save results to file for this process
+            process_results_file = os.path.join(checkpoint_dir, f'wd_results_rank_{local_rank}.json')
+            with open(process_results_file, 'w') as f:
+                json.dump({
+                    'wd_results': my_wd_results,
+                    'best_weight_decay': my_best_weight_decay,
+                    'process_rank': local_rank
+                }, f)
+            logger.info(f"[WEIGHT] Process {local_rank} saved results to {process_results_file}")
 
-            # Serialize for transmission
-            import pickle
-            my_data_bytes = pickle.dumps(my_results_data)
-            my_data_size = len(my_data_bytes)
-
-            # Gather sizes first
-            size_tensor = torch.tensor([my_data_size], dtype=torch.int32, device=device)
-            all_sizes = [torch.tensor([0], dtype=torch.int32, device=device) for _ in range(world_size)]
-            dist.all_gather(all_sizes, size_tensor)
-
-            # Gather data
-            max_size = max(size.item() for size in all_sizes)
-            my_padded_data = my_data_bytes + b'\0' * (max_size - my_data_size)
-
-            all_data = [torch.zeros(max_size, dtype=torch.uint8, device=device) for _ in range(world_size)]
-            my_tensor_data = torch.frombuffer(my_padded_data, dtype=torch.uint8).to(device)
-            dist.all_gather(all_data, my_tensor_data)
+            # Wait for all processes to complete (barrier)
+            # Use file-based synchronization since distributed process group may not be initialized yet
+            import time
+            all_results_files = [os.path.join(checkpoint_dir, f'wd_results_rank_{i}.json') for i in range(world_size)]
+            while not all(os.path.exists(f) for f in all_results_files):
+                time.sleep(1)  # Wait 1 second and check again
 
             # Process 0 collects and combines all results
             if is_main_process():
                 all_wd_results = []
-                for i, data_tensor in enumerate(all_data):
-                    data_bytes = bytes(data_tensor.cpu().numpy())
-                    # Remove padding
-                    actual_size = all_sizes[i].item()
-                    clean_data_bytes = data_bytes[:actual_size]
-                    process_results = pickle.loads(clean_data_bytes)
-                    all_wd_results.extend(process_results['wd_results'])
+                for i in range(world_size):
+                    results_file = os.path.join(checkpoint_dir, f'wd_results_rank_{i}.json')
+                    with open(results_file, 'r') as f:
+                        process_results = json.load(f)
+                        all_wd_results.extend(process_results['wd_results'])
 
                 # Find best weight decay across all processes
                 best_result = max(all_wd_results, key=lambda x: x['best_val_acc'])
@@ -2109,14 +2082,28 @@ def main():
 
                 logger.info(f"[WEIGHT] Combined results from all {world_size} processes. Best WD: {best_weight_decay:.2e} (acc: {best_result['best_val_acc']:.4f})")
             else:
-                # Non-main processes get results from main process
+                # Non-main processes get results from main process via file
                 wd_results = my_wd_results  # Fallback
                 best_weight_decay = my_best_weight_decay  # Fallback
 
-            # Broadcast final best_weight_decay to ensure all processes have it
-            best_weight_decay_tensor = torch.tensor([best_weight_decay], dtype=torch.float32, device=device)
-            dist.broadcast(best_weight_decay_tensor, src=0)
-            best_weight_decay = best_weight_decay_tensor.item()
+                # Wait for main process to write combined results
+                combined_results_file = os.path.join(checkpoint_dir, 'wd_results_combined.json')
+                while not os.path.exists(combined_results_file):
+                    time.sleep(1)
+
+                with open(combined_results_file, 'r') as f:
+                    combined_data = json.load(f)
+                    wd_results = combined_data['wd_results']
+                    best_weight_decay = combined_data['best_weight_decay']
+
+            # Main process saves combined results
+            if is_main_process():
+                combined_results_file = os.path.join(checkpoint_dir, 'wd_results_combined.json')
+                with open(combined_results_file, 'w') as f:
+                    json.dump({
+                        'wd_results': wd_results,
+                        'best_weight_decay': best_weight_decay
+                    }, f)
         else:
             # Load best_weight_decay from checkpoint_dir
             wd_results_path = os.path.join(checkpoint_dir, 'wd_results.json')
