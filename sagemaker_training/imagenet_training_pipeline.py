@@ -2032,6 +2032,22 @@ def main():
             world_size = int(os.environ.get('WORLD_SIZE', getattr(args, 'world_size', 1)))
             local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', getattr(args, 'local_rank', 0))))
 
+            # Initialize distributed process group if not already initialized and world_size > 1
+            if world_size > 1 and not dist.is_initialized():
+                logger.info(f"[DDP] Initializing distributed process group for weight decay search (world_size={world_size}, local_rank={local_rank})")
+                try:
+                    # Set CUDA device for this process
+                    if torch.cuda.is_available():
+                        torch.cuda.set_device(local_rank)
+                        logger.info(f"[DDP] Set CUDA device to {local_rank} for weight decay search")
+
+                    # Use NCCL backend for GPU communication
+                    dist.init_process_group(backend='nccl', init_method='env://')
+                    logger.info("[DDP] Distributed process group initialized for weight decay search")
+                except Exception as e:
+                    logger.error(f"[DDP] Failed to initialize distributed process group: {e}")
+                    raise
+
             # Divide weight decay values among processes (each GPU gets subset)
             wd_values_per_process = len(wd_values) // world_size
             remainder = len(wd_values) % world_size
