@@ -1785,105 +1785,164 @@ def main():
             logger.error(f"[ERROR] DEBUG: Error creating model: {e}")
             raise
     
-    # STEP 0: Batch Size Detection (if not specified)
-    logger.info("[DEBUG] DEBUG: No batch size specified, starting batch size detection")
+    # STEP 0: Batch Size Detection (coordinated across all processes)
+    logger.info("[DEBUG] DEBUG: Batch size detection starting...")
     logger.info("="*60)
     logger.info("[CONFIG] STEP 0: Batch Size Detection")
     logger.info("="*60)
-    
-    
-    try:
-        # Clear GPU cache if available
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            logger.info(f"[DEVICE]  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
-        
-        # Create temporary model and optimizer for batch size detection using TrainingPerformanceOptimizer
-        logger.info("[DEBUG] DEBUG: About to create temporary model for batch size detection")
-        temp_model = create_model().to(device)
-        temp_optimizer = optim.SGD(temp_model.parameters(), lr=1e-3, momentum=0.9)
-        temp_criterion = nn.CrossEntropyLoss()
-        
-        # Create temporary optimizer instance for batch size detection
-        temp_performance_optimizer = TrainingPerformanceOptimizer(
-            model=temp_model,
-            optimizer=temp_optimizer,
-            criterion=temp_criterion,
-            train_loader=None,  # Not needed for batch size detection
-            val_loader=None,
-            device=device,
-            enable_amp=True,
-            enable_profiling=False  # Disable profiling for batch size detection
-        )
-        
-        # Use optimizer's batch size detection method with actual GPU memory
-        if torch.cuda.is_available():
-            actual_gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-            # Set the memory limit for a single GPU process (90% heuristic)
-            max_memory_gb = actual_gpu_memory_gb * 0.90
-            num_gpus = torch.cuda.device_count()
-            if num_gpus > 1:
-                logger.info(f"[BATCH] Multi-GPU ({num_gpus} GPUs): Using {max_memory_gb:.1f}GB limit per GPU (Total VRAM: {actual_gpu_memory_gb*num_gpus:.1f}GB)")
+
+    # CRITICAL: Batch size must be the same across all processes in distributed training
+    if is_main_process():
+        logger.info("[BATCH] Main process performing batch size detection...")
+
+        try:
+            # Clear GPU cache if available
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info(f"[DEVICE] GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
+
+            # Create temporary model and optimizer for batch size detection using TrainingPerformanceOptimizer
+            logger.info("[DEBUG] DEBUG: Creating temporary model for batch size detection")
+            temp_model = create_model().to(device)
+            temp_optimizer = optim.SGD(temp_model.parameters(), lr=1e-3, momentum=0.9)
+            temp_criterion = nn.CrossEntropyLoss()
+
+            # Create temporary optimizer instance for batch size detection
+            temp_performance_optimizer = TrainingPerformanceOptimizer(
+                model=temp_model,
+                optimizer=temp_optimizer,
+                criterion=temp_criterion,
+                train_loader=None,  # Not needed for batch size detection
+                val_loader=None,
+                device=device,
+                enable_amp=True,
+                enable_profiling=False  # Disable profiling for batch size detection
+            )
+
+            # Use optimizer's batch size detection method with actual GPU memory
+            if torch.cuda.is_available():
+                actual_gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                # Set the memory limit for a single GPU process (90% heuristic)
+                max_memory_gb = actual_gpu_memory_gb * 0.90
+                num_gpus = torch.cuda.device_count()
+                if num_gpus > 1:
+                    logger.info(f"[BATCH] Multi-GPU ({num_gpus} GPUs): Using {max_memory_gb:.1f}GB limit per GPU")
+                else:
+                    logger.info(f"[BATCH] Single GPU: Using {max_memory_gb:.1f}GB limit")
             else:
-                logger.info(f"[BATCH] Single GPU: Using {max_memory_gb:.1f}GB limit out of {actual_gpu_memory_gb:.1f}GB VRAM")
-        else:
-            max_memory_gb = 4.0  # Conservative for CPU
-            logger.info(f"[BATCH] CPU mode: Using {max_memory_gb:.1f}GB memory limit")
+                max_memory_gb = 4.0  # Conservative for CPU
+                logger.info(f"[BATCH] CPU mode: Using {max_memory_gb:.1f}GB memory limit")
 
-        # PIPELINE 1 : Find optimal batch size
-        logger.info("="*60)
-        logger.info("[PIPELINE] 1: Detecting optimal batch size...")
-        logger.info("="*60)
-        optimal_batch_size = temp_performance_optimizer.get_optimal_batch_size(max_memory_gb=max_memory_gb)
-        
-        # 1. Determine Safety Factor
-        safety_factor = 0.5 if args.quick_mode else 0.8
-        logger.info(f"[BATCH] Applying safety factor of {safety_factor}")
+            # Perform batch size detection on main process
+            optimal_batch_size = temp_performance_optimizer.get_optimal_batch_size(max_memory_gb=max_memory_gb)
 
-        # 2. Apply Safety Factor
-        safe_batch_size = int(optimal_batch_size * safety_factor)
+            # Apply safety factor
+            safety_factor = 0.5 if args.quick_mode else 0.8
+            logger.info(f"[BATCH] Applying safety factor of {safety_factor}")
+            safe_batch_size = int(optimal_batch_size * safety_factor)
 
-        # 3. Round down to the nearest Power of 2 for GPU efficiency, ensuring a minimum of 1
-        if safe_batch_size > 0:
-            # This finds the largest power of 2 <= safe_batch_size
-            training_batch_size = max(1, 2 ** int(np.floor(np.log2(safe_batch_size))))
-        else:
-            training_batch_size = 1
-            
-        initial_batch_size = training_batch_size
+            # Round down to nearest power of 2
+            if safe_batch_size > 0:
+                training_batch_size = max(1, 2 ** int(np.floor(np.log2(safe_batch_size))))
+            else:
+                training_batch_size = 1
 
-        logger.info(f"[COMPLETE] Optimal batch size (CPU/GPU if exists): {initial_batch_size} (optimizer: {optimal_batch_size}, safety: {safety_factor})")
+            initial_batch_size = training_batch_size
+            logger.info(f"[BATCH] Main process determined batch size: {initial_batch_size}")
 
-        # Clean up temporary resources
-        #del temp_model, temp_optimizer, temp_criterion, temp_performance_optimizer
-        torch.cuda.empty_cache()
-        
-    except Exception as e:
-        logger.error(f"[ERROR] DEBUG: Error in batch size detection: {e}")
-        # Fallback to default batch size
-        initial_batch_size = 32
-        logger.warning(f"[FALLBACK] Using default batch size: {initial_batch_size}")
-    
+            # Save batch size to file for other processes
+            batch_size_file = os.path.join(checkpoint_dir, 'batch_size_config.json')
+            with open(batch_size_file, 'w') as f:
+                json.dump({
+                    'batch_size': initial_batch_size,
+                    'optimal_batch_size': optimal_batch_size,
+                    'safety_factor': safety_factor,
+                    'max_memory_gb': max_memory_gb
+                }, f)
+            logger.info(f"[BATCH] Main process saved batch size config to {batch_size_file}")
+
+        except Exception as e:
+            logger.error(f"[ERROR] Main process batch size detection failed: {e}")
+            # Fallback batch size
+            initial_batch_size = 32
+            logger.warning(f"[FALLBACK] Using default batch size: {initial_batch_size}")
+            raise
+
+    else:
+        # Non-main processes wait for batch size determination
+        logger.info("[BATCH] Non-main process waiting for batch size determination...")
+        batch_size_file = os.path.join(checkpoint_dir, 'batch_size_config.json')
+        import time
+        wait_start = time.time()
+        timeout = 300  # 5 minutes timeout
+        while not os.path.exists(batch_size_file):
+            if time.time() - wait_start > timeout:
+                logger.error(f"[BATCH] Timeout waiting for batch size config after {timeout} seconds")
+                raise TimeoutError(f"Batch size config not created within {timeout} seconds")
+            time.sleep(1)
+
+        try:
+            with open(batch_size_file, 'r') as f:
+                batch_config = json.load(f)
+            initial_batch_size = batch_config['batch_size']
+            logger.info(f"[BATCH] Non-main process loaded batch size: {initial_batch_size}")
+        except Exception as e:
+            logger.error(f"[BATCH] Failed to load batch size config: {e}")
+            initial_batch_size = 32  # Fallback
+            logger.warning(f"[FALLBACK] Using default batch size: {initial_batch_size}")
+
+    # All processes now have the same batch size
     args.batch_size = initial_batch_size
+    logger.info(f"[BATCH] All processes using batch size: {initial_batch_size}")
     
-    # PIPELINE 2 : DataLoader num_workers optimization
-    # Optimize num_workers for balanced CPU/GPU utilization and memory usage
+    # PIPELINE 2 : DataLoader num_workers optimization (coordinated)
     logger.info("="*60)
     logger.info("[PIPELINE] 2: DataLoader num_workers Optimization")
     logger.info("="*60)
-    logger.info("[OPTIMIZE] Optimizing num_workers for DataLoader...")
-    optimized_num_workers_i = optimize_num_workers(initial_batch_size)
-    logger.info(f"[OPTIMIZE] Using optimized_num_workers: {optimized_num_workers_i} (batch_size: {initial_batch_size})")
 
-    # Monitor GPU utilization to validate optimization
-    if torch.cuda.is_available():
+    if is_main_process():
+        logger.info("[OPTIMIZE] Main process optimizing num_workers for DataLoader...")
+        optimized_num_workers_i = optimize_num_workers(initial_batch_size)
+        logger.info(f"[OPTIMIZE] Main process determined num_workers: {optimized_num_workers_i}")
+
+        # Save num_workers config for other processes
+        workers_file = os.path.join(checkpoint_dir, 'workers_config.json')
+        with open(workers_file, 'w') as f:
+            json.dump({'num_workers': optimized_num_workers_i}, f)
+        logger.info(f"[OPTIMIZE] Main process saved workers config to {workers_file}")
+    else:
+        # Non-main processes wait for num_workers determination
+        logger.info("[OPTIMIZE] Non-main process waiting for num_workers determination...")
+        workers_file = os.path.join(checkpoint_dir, 'workers_config.json')
+        import time
+        wait_start = time.time()
+        timeout = 60  # 1 minute timeout for workers
+        while not os.path.exists(workers_file):
+            if time.time() - wait_start > timeout:
+                logger.error(f"[OPTIMIZE] Timeout waiting for workers config after {timeout} seconds")
+                raise TimeoutError(f"Workers config not created within {timeout} seconds")
+            time.sleep(1)
+
+        try:
+            with open(workers_file, 'r') as f:
+                workers_config = json.load(f)
+            optimized_num_workers_i = workers_config['num_workers']
+            logger.info(f"[OPTIMIZE] Non-main process loaded num_workers: {optimized_num_workers_i}")
+        except Exception as e:
+            logger.error(f"[OPTIMIZE] Failed to load workers config: {e}")
+            optimized_num_workers_i = 4  # Fallback
+            logger.warning(f"[FALLBACK] Using default num_workers: {optimized_num_workers_i}")
+
+    # All processes now have the same num_workers setting
+    args.num_workers = optimized_num_workers_i
+    logger.info(f"[OPTIMIZE] All processes using num_workers: {optimized_num_workers_i}")
+
+    # Monitor GPU utilization to validate optimization (only main process for logging)
+    if is_main_process() and torch.cuda.is_available():
         gpu_stats = monitor_gpu_utilization(duration_seconds=2)
         logger.info(f"[GPU] Initial GPU utilization: {gpu_stats['avg_utilization']:.1f}% (bottleneck: {gpu_stats['is_bottleneck']})")
         if gpu_stats['is_bottleneck']:
             logger.warning("[GPU] GPU utilization low - data loading may be bottleneck, num_workers optimization should help")
-    
-    # Override args.num_workers with optimized value
-    args.num_workers = optimized_num_workers_i
     
     logger.info("="*60)
     logger.info("[PIPELINE] 3: Data Loading")
@@ -2761,20 +2820,22 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        if (is_main_process()):
-            # Setup unified logger for error reporting if main logger fails
-            try:
-                from logger_setup import setup_unified_logger
-                logger = setup_unified_logger()
-            except ImportError:
-                import logging
-                logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-                logger = logging.getLogger(__name__)
-            logger.error(f"[ERROR] CRITICAL ERROR: Pipeline failed with exception: {e}")
-            logger.error(f"[ERROR] Exception type: {type(e).__name__}")
-            import traceback
-            logger.error("[ERROR] Full traceback:")
-            for line in traceback.format_exc().split('\n'):
-                if line.strip():
-                    logger.error(f"   {line}")
-            raise
+        # ALL processes should log errors and exit with failure
+        try:
+            from logger_setup import setup_unified_logger
+            logger = setup_unified_logger()
+        except ImportError:
+            import logging
+            logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+            logger = logging.getLogger(__name__)
+
+        logger.error(f"[ERROR] CRITICAL ERROR in process (rank {os.environ.get('RANK', 'unknown')}): Pipeline failed with exception: {e}")
+        logger.error(f"[ERROR] Exception type: {type(e).__name__}")
+        import traceback
+        logger.error("[ERROR] Full traceback:")
+        for line in traceback.format_exc().split('\n'):
+            if line.strip():
+                logger.error(f"   {line}")
+
+        # CRITICAL: All processes must exit with non-zero code for proper error handling
+        sys.exit(1)
