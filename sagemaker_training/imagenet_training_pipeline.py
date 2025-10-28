@@ -2018,6 +2018,17 @@ def main():
         search_epochs = 3 if args.quick_mode else 5
 
         if current_stage in ['START', 'LR_TEST_COMPLETE']:
+            # Create separate data loaders for weight decay search (no process splitting)
+            logger.info("[WEIGHT] Creating dedicated data loaders for weight decay search...")
+            try:
+                wd_train_loader, wd_val_loader, wd_train_batches_per_epoch, wd_val_batches_per_epoch = get_imagenet_dataloaders(
+                    train=args.train, val=args.val, batch_size=optimal_batch_size, num_workers=args.num_workers, 
+                    lightweight_augs=True, disable_distributed_splitting=True)  # Disable splitting for weight decay search
+                logger.info("[WEIGHT] Dedicated data loaders created for weight decay search")
+            except Exception as e:
+                logger.error(f"[ERROR] Failed to create data loaders for weight decay search: {e}")
+                raise
+
             # Create model function for weight decay search (no DDP to avoid NCCL conflicts)
             def create_model_no_ddp():
                 logger.info("[DEBUG] DEBUG: Creating model for weight decay search (no DDP)...")
@@ -2032,11 +2043,11 @@ def main():
             # Create HyperparameterOptimizer for each process (each needs its own instance)
             optimizer = HyperparameterOptimizer(
                 model_fn=create_model_no_ddp,  # Use no-DDP version for weight decay search
-                train_loader=train_loader,
-                val_loader=val_loader,
+                train_loader=wd_train_loader,  # Use dedicated loaders
+                val_loader=wd_val_loader,
                 device=device,
-                train_batches_per_epoch=train_batches_per_epoch,
-                val_batches_per_epoch=val_batches_per_epoch
+                train_batches_per_epoch=wd_train_batches_per_epoch,
+                val_batches_per_epoch=wd_val_batches_per_epoch
             )
 
             # Parallel weight decay search: Each GPU tests different weight decay values simultaneously

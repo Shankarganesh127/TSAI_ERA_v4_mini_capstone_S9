@@ -151,7 +151,7 @@ def get_test_time_augmentation_transforms(input_size=224, num_augmentations=10):
     return augmentation_transforms
 
 
-def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memory=True, lightweight_augs=False):
+def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memory=True, lightweight_augs=False, disable_distributed_splitting=False):
     """
     Create ImageNet-1K data loaders
     
@@ -162,19 +162,21 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         num_workers: Number of worker processes for data loading
         pin_memory: Whether to pin memory for faster GPU transfer
         lightweight_augs: Use lightweight augmentations for maximum speed
+        disable_distributed_splitting: Disable distributed data splitting (for independent hyperparameter search)
     
     Returns:
         train_loader, val_loader, train_batches_per_epoch, val_batches_per_epoch
     """
     
     logger = get_unified_logger("imagenet_dataset")
-    logger.info(f"get_imagenet_dataloaders called with:")
+    logger.info("get_imagenet_dataloaders called with:")
     logger.info(f"  train={train}")
     logger.info(f"  val={val}")
     logger.info(f"  batch_size={batch_size}")
     logger.info(f"  num_workers={num_workers}")
     logger.info(f"  pin_memory={pin_memory}")
     logger.info(f"  lightweight_augs={lightweight_augs}")
+    logger.info(f"  disable_distributed_splitting={disable_distributed_splitting}")
 
     train_transform, val_transform = get_imagenet_transforms(lightweight=lightweight_augs)
     if lightweight_augs:
@@ -183,34 +185,42 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         logger.info("Using advanced augmentations for better accuracy")
     logger.info("Transforms created")
 
-    # Check distributed training environment variables
+    # Check distributed training environment variables (but respect disable_distributed_splitting)
     import os
     rank = os.environ.get('RANK', '0')
     world_size = os.environ.get('WORLD_SIZE', '1')
     local_rank = os.environ.get('LOCAL_RANK', '0')
     local_world_size = os.environ.get('LOCAL_WORLD_SIZE', '1')
     
-    logger.info(f"Distributed training environment:")
+    logger.info("Distributed training environment:")
     logger.info(f"  RANK: {rank}")
     logger.info(f"  WORLD_SIZE: {world_size}")
     logger.info(f"  LOCAL_RANK: {local_rank}")
     logger.info(f"  LOCAL_WORLD_SIZE: {local_world_size}")
     
-    # Validate multi-node setup (multiple physical nodes, not just multi-GPU on single node)
-    is_multi_node = int(world_size) > int(local_world_size)
-    if is_multi_node:
-        logger.info(f"🔄 Multi-node training detected: {world_size} total processes across {int(world_size)//int(local_world_size)} nodes")
-        logger.info("Using nodesplitter() for shard distribution across nodes")
-        
-        # Additional validation for multi-node setup
-        if rank == '0':
-            logger.info("This is the master node (RANK=0)")
-        else:
-            logger.info(f"This is worker node (RANK={rank})")
-            
+    # Determine if distributed splitting should be used
+    if disable_distributed_splitting:
+        logger.info("🔄 Distributed splitting DISABLED - each process will see all data")
+        is_multi_node = False
+        use_nodesplitter = False
     else:
-        logger.info(f"🔄 Single-node training detected ({world_size} processes on 1 node)")
-        logger.info("All processes will see all shards (no node-level splitting)")
+        # Validate multi-node setup (multiple physical nodes, not just multi-GPU on single node)
+        is_multi_node = int(world_size) > int(local_world_size)
+        use_nodesplitter = is_multi_node
+        
+        if is_multi_node:
+            logger.info(f"🔄 Multi-node training detected: {world_size} total processes across {int(world_size)//int(local_world_size)} nodes")
+            logger.info("Using nodesplitter() for shard distribution across nodes")
+            
+            # Additional validation for multi-node setup
+            if rank == '0':
+                logger.info("This is the master node (RANK=0)")
+            else:
+                logger.info(f"This is worker node (RANK={rank})")
+                
+        else:
+            logger.info(f"🔄 Single-node training detected ({world_size} processes on 1 node)")
+            logger.info("All processes will see all shards (no node-level splitting)")
     
     # Ensure environment variables are properly set for WebDataset
     if is_multi_node:
@@ -294,7 +304,8 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     train_dataset = (
         wds.WebDataset(
             train_urls,  # URLs split by node only if multi-node
-            nodesplitter=wds.shardlists.split_by_node if is_multi_node else None
+            nodesplitter=wds.shardlists.split_by_node if use_nodesplitter else None,
+            empty_check=True  # Enable empty check to catch missing samples
         )
         
         .shuffle(1000)
@@ -325,7 +336,8 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
 
     val_dataset = (
         wds.WebDataset(val_urls,
-                       nodesplitter=wds.shardlists.split_by_node if is_multi_node else None
+                       nodesplitter=wds.shardlists.split_by_node if use_nodesplitter else None,
+                       empty_check=True  # Enable empty check to catch missing samples
                        )
         
         .repeat()
@@ -342,7 +354,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     )
     
     # Validation doesn't need nodesplitter (uses fewer workers, no sync issues)
-    if is_multi_node:
+    if use_nodesplitter:
         logger.info("✅ Validation dataset created with node-split URLs for multi-node training")
     else:
         logger.info("✅ Validation dataset created for single-node training")
