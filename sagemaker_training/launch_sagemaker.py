@@ -181,7 +181,7 @@ def create_sagemaker_estimator(args, hyperparameters):
         entry_point='sagemaker_wrapper.py',
         source_dir=str(current_dir),
         role=args.role_arn,
-        framework_version='2.1.2',
+        framework_version='2.1.0',
         py_version='py310',
         instance_count=args.instance_count,
         instance_type=args.instance_type,
