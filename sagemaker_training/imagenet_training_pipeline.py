@@ -1652,9 +1652,9 @@ def main():
         logger.info(f"[DEBUG] DEBUG: CUDA available: {torch.cuda.is_available()}")
         if torch.cuda.is_available():
             logger.info(f"[DEBUG] DEBUG: CUDA device count: {torch.cuda.device_count()}")
-        # DDP setup
-        world_size = getattr(args, 'world_size', 1)
-        local_rank = getattr(args, 'local_rank', 0)
+        # DDP setup - Get values from environment variables (SageMaker/NVIDIA/PyTorch)
+        world_size = int(os.environ.get('WORLD_SIZE', getattr(args, 'world_size', 1)))
+        local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', getattr(args, 'local_rank', 0))))
         logger.info(f"[DDP] world_size: {world_size}, local_rank: {local_rank}")
     except Exception as e:
         logger.error(f"[ERROR] DEBUG: Error setting up device: {e}")
@@ -2028,8 +2028,9 @@ def main():
             # Parallel weight decay search: Each GPU tests different weight decay values simultaneously
             import torch.distributed as dist
 
-            world_size = getattr(args, 'world_size', 1)
-            local_rank = getattr(args, 'local_rank', 0)
+            # Get distributed training parameters from environment variables (SageMaker/NVIDIA/PyTorch)
+            world_size = int(os.environ.get('WORLD_SIZE', getattr(args, 'world_size', 1)))
+            local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', getattr(args, 'local_rank', 0))))
 
             # Divide weight decay values among processes (each GPU gets subset)
             wd_values_per_process = len(wd_values) // world_size
