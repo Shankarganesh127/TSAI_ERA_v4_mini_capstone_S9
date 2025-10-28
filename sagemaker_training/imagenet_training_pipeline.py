@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import OneCycleLR
+import torch.distributed as dist
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
@@ -1968,18 +1969,29 @@ def main():
             else:
                 # Non-main processes wait for file and read results
                 logger.info("[LR] Non-main process waiting for LR config file...")
+                import time
+                wait_start = time.time()
+                timeout = 300  # 5 minutes timeout
                 while not os.path.exists(lr_config_file):
-                    import time
+                    if time.time() - wait_start > timeout:
+                        logger.error(f"[LR] Timeout waiting for LR config file after {timeout} seconds")
+                        raise TimeoutError(f"LR config file not created within {timeout} seconds")
                     time.sleep(1)  # Wait 1 second and check again
-                with open(lr_config_file, 'r') as f:
-                    lr_config = json.load(f)
-                logger.info(f"[LR] Non-main process loaded LR config from {lr_config_file}")
+                try:
+                    with open(lr_config_file, 'r') as f:
+                        lr_config = json.load(f)
+                    logger.info(f"[LR] Non-main process loaded LR config from {lr_config_file}")
+                except Exception as e:
+                    logger.error(f"[LR] Failed to load LR config from file: {e}")
+                    raise
 
         
 
-        progress_manager.update_status(lr_step_key,
-            f"[OK] STEP 1: LR Range Test Complete - Min: {lr_config['min_lr']:.2e}, Max: {lr_config['max_lr']:.2e}")
-        progress_manager.finalize_status(lr_step_key)
+        # Update progress (only main process to avoid conflicts)
+        if is_main_process():
+            progress_manager.update_status(lr_step_key,
+                f"[OK] STEP 1: LR Range Test Complete - Min: {lr_config['min_lr']:.2e}, Max: {lr_config['max_lr']:.2e}")
+            progress_manager.finalize_status(lr_step_key)
 
         # Save results (only main process to avoid conflicts)
         if is_main_process():
@@ -2007,10 +2019,14 @@ def main():
                 json.dump(lr_config, f)
             logger.info(f"✅ Saved LR config to {lr_config_path}")
             
-            save_pipeline_status('LR_TEST_COMPLETE', status_file)    
+            del model, optimizer, criterion, lr_finder, lr_test_loader
+            save_pipeline_status('LR_TEST_COMPLETE', status_file)
+        else:
+            logger.info("[LR] Non-main process skipping LR config saving...")
+                
         # Clean up GPU memory to prevent OOM
-        del model, optimizer, criterion, lr_finder, lr_test_loader
         aggressive_memory_cleanup()
+        
         
     else:
         # Default LR config
@@ -2116,9 +2132,11 @@ def main():
             except Exception as e:
                 logger.warning(f"[WEIGHT] Error loading WD results, using defaults - Best WD: {best_weight_decay:.2e}, Error: {e}")
 
-        progress_manager.update_status(wd_step_key,
-            f"[OK] STEP 5: Weight Decay Search Complete - Best: {best_weight_decay:.2e}")
-        progress_manager.finalize_status(wd_step_key)
+        # Update progress (only main process to avoid conflicts)
+        if is_main_process():
+            progress_manager.update_status(wd_step_key,
+                f"[OK] STEP 5: Weight Decay Search Complete - Best: {best_weight_decay:.2e}")
+            progress_manager.finalize_status(wd_step_key)
         
         # Save results (only main process)
         if is_main_process():
