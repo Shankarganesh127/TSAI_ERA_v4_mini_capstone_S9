@@ -38,7 +38,7 @@ import psutil
 import multiprocessing as mp
 import math
 from utils import is_main_process
-from imagenet_models import resnet50_imagenet, resnet50_imagenet_no_ddp
+from imagenet_models import resnet50_imagenet_no_ddp
 from imagenet_dataset import get_imagenet_dataloaders
 from training_performance_optimizer import TrainingPerformanceOptimizer
 from logger_setup import get_unified_logger
@@ -1308,91 +1308,105 @@ class FullTrainer:
     # ----------------------------------------------------------------------
 
     def _train_epoch(self, optimizer, criterion, scheduler, scaler=None, gradient_accumulation_steps=1):
-        """Train one epoch with AMP, Gradient Accumulation, and standard PyTorch pattern."""
-        
+        """Train one epoch with AMP, gradient accumulation, and proper scheduler order."""
+
         self.model.train()
-        running_loss = 0.0
-        correct = 0
-        total = 0
+        running_loss, correct, total = 0.0, 0, 0
         accumulation_counter = 0
         logger = get_unified_logger("FullTrainer - training")
-        
+
         train_batches = self.train_batches_per_epoch
         bar = tqdm(total=train_batches, desc="Training", unit="batch", ncols=120, disable=TQDM_DISABLE)
 
         for batch_idx, (inputs, targets) in enumerate(self.train_loader):
             inputs, targets = inputs.to(self.device), targets.to(self.device)
-            
-            # --- CRITICAL: Zero grad only at the start of accumulation cycle ---
-            # For gradient accumulation, zero_grad() must happen at the beginning of each
-            # accumulation cycle, not at the end. This follows PyTorch best practices.
+
             if accumulation_counter == 0:
                 optimizer.zero_grad()
-            
+
             try:
-                # Forward pass with AMP (autocast) if scaler is available
-                with autocast(enabled=self.enable_amp):
+                # Forward pass with AMP (autocast) - specify device_type for better performance
+                with autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu',
+                              enabled=self.enable_amp):
                     outputs = self.model(inputs)
                     loss = criterion(outputs, targets)
-                
-                # Backward pass: Scale loss for accumulation
+
+                # CRITICAL: Check for non-finite loss to prevent gradient corruption
+                if not torch.isfinite(loss):
+                    logger.error(f"[TRAIN] Non-finite loss detected: {loss.item()}. Skipping batch.")
+                    optimizer.zero_grad(set_to_none=True)
+                    continue
+
                 scaled_loss = loss / gradient_accumulation_steps
-                
                 if scaler:
                     scaler.scale(scaled_loss).backward()
                 else:
                     scaled_loss.backward()
-                
+
                 accumulation_counter += 1
-                
-                # --- CRITICAL: Optimizer Step (After Accumulation) ---
-                # PyTorch 1.1.0+ best practice: optimizer.step() BEFORE scheduler.step()
+
                 if accumulation_counter % gradient_accumulation_steps == 0:
-                    
+                    # CRITICAL: Ensure gradient contiguity before optimizer operations
+                    for name, p in self.model.named_parameters():
+                        if p.grad is not None and not p.grad.data.is_contiguous():
+                            p.grad.data = p.grad.data.contiguous()
+
                     if scaler:
-                        # Unscale before clipping
-                        scaler.unscale_(optimizer) 
+                        scaler.unscale_(optimizer)
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                        
                         scaler.step(optimizer)
-                        scaler.update() # Update scaler
+                        scaler.update()
                     else:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                         optimizer.step()
-                        
-                    # Step scheduler AFTER optimizer.step() - PyTorch 1.1.0+ requirement
-                    scheduler.step()
-                    accumulation_counter = 0 # Reset counter
 
-                # --- Metric Update ---
-                running_loss += loss.item() # Use un-scaled loss for metric
+                    scheduler.step()
+                    accumulation_counter = 0
+
+                running_loss += loss.item()
                 _, predicted = outputs.max(1)
                 total += targets.size(0)
                 correct += predicted.eq(targets).sum().item()
-                
-                # Update progress
-                bar.set_description(f"Training | B: {batch_idx+1}/{train_batches} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}% | LR: {optimizer.param_groups[0]['lr']:.2e}")
+
+                bar.set_description(f"Training | B:{batch_idx+1}/{train_batches} "
+                                    f"| L:{running_loss/(batch_idx+1):.4f} "
+                                    f"| A:{100.*correct/total:.2f}% "
+                                    f"| LR:{optimizer.param_groups[0]['lr']:.2e}")
                 bar.update(1)
 
-                # Clean up memory
-                del inputs, targets, outputs, loss, predicted
-                if (batch_idx + 1) % 50 == 0:
-                     aggressive_memory_cleanup()
                 if (batch_idx + 1) % 10 == 0:
-                    logger.info(f"💾 Full Training - Training | B: {batch_idx+1}/{train_batches} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}% | LR: {optimizer.param_groups[0]['lr']:.2e}")
-                     
+                    logger.info(f"Training progress: Batch {batch_idx+1}/{train_batches}, "
+                                f"Loss {running_loss/(batch_idx+1):.4f}, "
+                                f"Acc {100.*correct/total:.2f}%, "
+                                f"LR {optimizer.param_groups[0]['lr']:.2e}")
+
+                if (batch_idx + 1) % 50 == 0:
+                    aggressive_memory_cleanup()
+
             except RuntimeError as e:
-                # Catch OOM errors if they still occur
                 if "out of memory" in str(e).lower():
                     logger.error(f"❌ OOM in training step {batch_idx}: {e}")
                     aggressive_memory_cleanup()
                     raise e
                 else:
                     raise e
-                    
+
+        # CRITICAL FIX: Handle leftover gradients from incomplete accumulation cycles
+        # This ensures no gradients are wasted when dataset size isn't perfectly divisible
+        # by gradient_accumulation_steps
+        if accumulation_counter > 0:
+            logger.info(f"Handling {accumulation_counter} leftover accumulated gradients")
+            if scaler:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                optimizer.step()
+            scheduler.step()
+
         bar.close()
-        # Final step check: If accumulation_counter > 0, the last batch was too small for a full step
-        # This is expected and typically ignored in standard training loops.
         return running_loss / train_batches, 100. * correct / total
     
     # ----------------------------------------------------------------------
@@ -1402,34 +1416,37 @@ class FullTrainer:
     def _validate_epoch(self, criterion):
         """Validate one epoch with AMP support."""
         self.model.eval()
-        running_loss = 0.0
-        correct = 0
-        total = 0
+        running_loss, correct, total = 0.0, 0, 0
         logger = get_unified_logger("FullTrainer - validation")
-        
+
         val_batches = self.val_batches_per_epoch
         bar = tqdm(total=val_batches, desc="Validation", unit="batch", ncols=120, disable=TQDM_DISABLE)
-        
+
         with torch.no_grad():
-            with autocast(enabled=self.enable_amp):
+            with autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu',
+                          enabled=self.enable_amp):
                 for batch_idx, (inputs, targets) in enumerate(self.val_loader):
                     inputs, targets = inputs.to(self.device), targets.to(self.device)
-                    
+
                     outputs = self.model(inputs)
                     loss = criterion(outputs, targets)
                     running_loss += loss.item()
                     _, predicted = outputs.max(1)
                     total += targets.size(0)
                     correct += predicted.eq(targets).sum().item()
-                    
-                    bar.set_description(f"Validation | B: {batch_idx+1}/{val_batches} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}%")
+
+                    bar.set_description(f"Validation | B:{batch_idx+1}/{val_batches} "
+                                        f"| L:{running_loss/(batch_idx+1):.4f} "
+                                        f"| A:{100.*correct/total:.2f}%")
                     bar.update(1)
 
-                    del inputs, targets, outputs, loss, predicted
+                    if (batch_idx + 1) % 10 == 0:
+                        logger.info(f"Validation progress: Batch {batch_idx+1}/{val_batches}, "
+                                    f"Loss {running_loss/(batch_idx+1):.4f}, "
+                                    f"Acc {100.*correct/total:.2f}%")
+
                     if (batch_idx + 1) % 25 == 0:
                         aggressive_memory_cleanup()
-                    if (batch_idx + 1) % 10 == 0:
-                        logger.info(f"💾 Full Training - Validation | B: {batch_idx+1}/{val_batches} | L: {running_loss/(batch_idx+1):.4f} | A: {100.*correct/total:.2f}%")
 
         bar.close()
         return running_loss / val_batches, 100. * correct / total
@@ -1748,7 +1765,20 @@ def main():
     def create_model():
         logger.info("[DEBUG] DEBUG: Creating model...")
         try:
-            model = resnet50_imagenet(num_classes=1000, pretrained=False)
+            # Determine target device based on training setup
+            will_use_ddp = torch.cuda.is_available() and getattr(args, 'world_size', 1) > 1
+
+            if will_use_ddp:
+                # For DDP: model must be on CPU, DDP handles device placement
+                target_device = 'cpu'
+                logger.info("[DEBUG] DEBUG: Will use DDP, creating model on CPU")
+            else:
+                # For single-GPU: create directly on GPU to avoid transfer
+                target_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                logger.info(f"[DEBUG] DEBUG: Single-GPU training, creating model on {target_device}")
+
+            # Use the no_ddp version to avoid conflicts with main pipeline DDP setup
+            model = resnet50_imagenet_no_ddp(num_classes=1000, pretrained=False, device=target_device)
             logger.info("[DEBUG] DEBUG: Model created successfully")
             return model
         except Exception as e:
@@ -2366,12 +2396,91 @@ def main():
         else:
             logger.info("[MEMORY] Gradient checkpointing: DISABLED")
 
-    model = create_model().to(device)
+    # Create model (device placement handled intelligently in create_model)
+    model = create_model()
+
+    # CRITICAL: Check for non-contiguous parameters immediately after model creation
+    non_contiguous_count = 0
+    for name, p in model.named_parameters():
+        if not p.data.is_contiguous():
+            logger.warning(f"[MODEL] Non-contiguous parameter detected: {name}")
+            non_contiguous_count += 1
+
+    if non_contiguous_count > 0:
+        logger.warning(f"[MODEL] Found {non_contiguous_count} non-contiguous parameters after model creation")
+    else:
+        logger.info("[MODEL] All parameters are contiguous after model creation")
+
     # DDP: Wrap model if multi-GPU
     if torch.cuda.is_available() and getattr(args, 'world_size', 1) > 1:
-        import torch.nn.parallel
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
-        logger.info("[DDP] Model wrapped with DistributedDataParallel")
+        try:
+            import torch.distributed as dist
+            import torch.nn.parallel
+
+            # Set debug environment variables for DDP troubleshooting
+            import os
+            os.environ.setdefault('TORCH_DISTRIBUTED_DEBUG', 'DETAIL')
+            os.environ.setdefault('NCCL_DEBUG', 'INFO')
+            os.environ.setdefault('NCCL_ASYNC_ERROR_HANDLING', '1')
+
+            # Initialize distributed backend if not already initialized
+            if not dist.is_initialized():
+                # Use NCCL backend for GPU training
+                dist.init_process_group(backend='nccl', init_method='env://')
+                logger.info("[DDP] Initialized distributed process group with NCCL backend")
+
+            # Set CUDA device for this process
+            torch.cuda.set_device(args.local_rank)
+            logger.info(f"[DDP] Set CUDA device to: cuda:{args.local_rank}")
+
+            # CRITICAL: Model must be on CPU before DDP wrapping
+            # DDP will handle device placement internally
+            if model.device != torch.device('cpu'):
+                logger.warning(f"[DDP] Model was on {model.device}, moving back to CPU for DDP")
+                model = model.cpu()
+
+            # CRITICAL: Ensure all parameters are contiguous to prevent gradient stride mismatches
+            logger.info("[DDP] Ensuring parameter contiguity before DDP wrapping...")
+            non_contiguous_params = []
+            for name, p in model.named_parameters():
+                if not p.data.is_contiguous():
+                    logger.warning(f"[DDP] Making parameter contiguous: {name}")
+                    p.data = p.data.contiguous()
+                    non_contiguous_params.append(name)
+
+            if non_contiguous_params:
+                logger.info(f"[DDP] Made {len(non_contiguous_params)} parameters contiguous")
+            else:
+                logger.info("[DDP] All parameters already contiguous")
+
+            # Clear any existing gradients to ensure clean state
+            for p in model.parameters():
+                if p.grad is not None:
+                    p.grad = None
+
+            # Wrap with DDP - let DDP handle device placement
+            model = torch.nn.parallel.DistributedDataParallel(
+                model,
+                device_ids=[args.local_rank],
+                output_device=args.local_rank
+            )
+            logger.info("[DDP] Model wrapped with DistributedDataParallel")
+
+            # Update device to match DDP device
+            device = torch.device(f'cuda:{args.local_rank}')
+
+        except Exception as e:
+            logger.error(f"[DDP] Failed to initialize DDP: {e}")
+            logger.warning("[DDP] Falling back to single-GPU training")
+            # Move model to original device
+            model = model.to(device)
+    else:
+        # Single GPU or CPU - move model to device only if not already there
+        if model.device != device:
+            model = model.to(device)
+            logger.info(f"[DEVICE] Moved model to {device}")
+        else:
+            logger.info(f"[DEVICE] Model already on correct device: {device}")
     
     # Log memory usage after model creation
     log_detailed_memory_usage("after_model_creation")
