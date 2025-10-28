@@ -1898,19 +1898,28 @@ def main():
 
         logger.info(f"[MEMORY] Creating LR range test dataloader with batch_size: {lr_test_batch_size}, num_workers: {lr_test_num_workers}")
 
-        lr_test_loader = get_imagenet_dataloaders(
-            train=args.train, val=args.val, batch_size=lr_test_batch_size,
-            num_workers=lr_test_num_workers, lightweight_augs=True  # Use lightweight augs for speed
-        )[0]  # Only need train loader
+        # Only main process creates LR test data loader (with no distributed splitting)
+        lr_test_loader = None
+        if is_main_process():
+            lr_test_loader = get_imagenet_dataloaders(
+                train=args.train, val=args.val, batch_size=lr_test_batch_size,
+                num_workers=lr_test_num_workers, lightweight_augs=True,  # Use lightweight augs for speed
+                disable_distributed_splitting=True  # No distributed splitting for LR test
+            )[0]  # Only need train loader
 
         num_iter = 100 if args.quick_mode else 200
 
         progress_manager.update_status(lr_step_key, f"[DEBUG] STEP 1: LR Range Test - Running {num_iter} iterations...")
         if current_stage == 'START':
-            # All processes run LR range test simultaneously to maintain NCCL synchronization
-            lrs, losses = lr_finder.range_test(lr_test_loader, num_iter=num_iter)
+            # Only main process runs LR range test (others wait)
+            if is_main_process():
+                lrs, losses = lr_finder.range_test(lr_test_loader, num_iter=num_iter)
+                logger.info("[LR] Main process completed LR range test")
+            else:
+                logger.info("[LR] Non-main process waiting for LR range test results...")
+                lrs, losses = None, None  # Non-main processes don't run the test
 
-            # Only main process plots and suggests LR config
+            # Main process plots and suggests LR config, then broadcasts to others
             if is_main_process():
                 # Plot results
                 fig, min_lr = lr_finder.plot()
@@ -1920,8 +1929,8 @@ def main():
                 # Get suggestions
                 lr_config = lr_finder.suggest_lr()
             else:
-                # Non-main processes get lr_config via broadcasting
-                lr_config = lr_finder.suggest_lr()
+                # Non-main processes will receive lr_config via broadcasting below
+                lr_config = None
 
             # Broadcast lr_config from rank 0 to ensure consistency across all processes
             if hasattr(args, 'world_size') and args.world_size > 1:
