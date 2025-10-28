@@ -2048,15 +2048,37 @@ def main():
         wd_step_key = "weight_decay_search"
         progress_manager.create_status_updater(wd_step_key, "[WEIGHT] STEP 5: Weight Decay Search - Starting...")
 
+        # PARALLEL Weight Decay Search: Distribute across all processes
         wd_values = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3]  # Always use all 5 weight decay values
         search_epochs = 5  # Always use 5 epochs
         wd_batch_size = optimal_batch_size//4  # Fixed batch size for weight decay search
         max_train_batches = 500  # Limit training to 500 batches per epoch
-        max_val_batches = 50  # Limit validation to 50 batches per epoch
+        max_val_batches = 100  # Limit validation to 100 batches per epoch
 
-        # Only main process runs weight decay search (similar to LR test)
-        wd_results = None
-        if is_main_process():
+        # Get distributed info for parallel execution
+        world_size = int(os.environ.get('WORLD_SIZE', 1))
+        local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', 0)))
+
+        # Distribute WD values across available processes
+        num_wd_values = len(wd_values)
+        wd_values_per_process = max(1, num_wd_values // world_size)
+        start_idx = local_rank * wd_values_per_process
+        end_idx = min(start_idx + wd_values_per_process, num_wd_values)
+        assigned_wd_values = wd_values[start_idx:end_idx]
+
+        # Handle remainder - assign extra values to first process if needed
+        if local_rank == 0 and num_wd_values % world_size != 0:
+            remainder = num_wd_values % world_size
+            assigned_wd_values.extend(wd_values[-remainder:])
+
+        logger.info(f"[WEIGHT] Process {local_rank}/{world_size} assigned WD values: {[f'{wd:.2e}' for wd in assigned_wd_values]}")
+
+        # Each process runs its assigned weight decay search in parallel
+        local_wd_results = []
+        local_best_wd = None
+        local_best_acc = 0.0
+
+        if assigned_wd_values:  # Only run if this process has WD values assigned
             if current_stage in ['START', 'LR_TEST_COMPLETE']:
                 # Create data loaders for weight decay search (no distributed splitting)
                 logger.info("[WEIGHT] Creating data loaders for weight decay search...")
@@ -2090,47 +2112,123 @@ def main():
                     val_batches_per_epoch=wd_val_batches_per_epoch
                 )
 
-                # Main process runs all weight decay values sequentially
-                progress_manager.update_status(wd_step_key, f"[WEIGHT] STEP 5: Testing {len(wd_values)} weight decay values for {search_epochs} epochs each...")
-                wd_results, best_weight_decay = optimizer.weight_decay_search(
-                    lr_config, wd_batch_size, wd_values, epochs=search_epochs, 
+                # Each process runs its assigned subset of weight decay values
+                progress_manager.update_status(wd_step_key, f"[WEIGHT] Process {local_rank} testing {len(assigned_wd_values)} weight decay values for {search_epochs} epochs each...")
+                local_wd_results, local_best_wd = optimizer.weight_decay_search(
+                    lr_config, wd_batch_size, assigned_wd_values, epochs=search_epochs,
                     max_train_batches=max_train_batches, max_val_batches=max_val_batches)
-                logger.info(f"[WEIGHT] Main process completed weight decay search - Best WD: {best_weight_decay:.2e}")
+                logger.info(f"[WEIGHT] Process {local_rank} completed weight decay search - Best WD: {local_best_wd:.2e}")
 
-                # Save results to file
-                wd_results_file = os.path.join(checkpoint_dir, 'wd_results.json')
-                with open(wd_results_file, 'w') as f:
-                    json.dump({
-                        'wd_results': wd_results,
-                        'best_weight_decay': best_weight_decay
-                    }, f)
-                logger.info(f"[WEIGHT] Main process saved results to {wd_results_file}")
+                # Find best accuracy from local results
+                for result in local_wd_results:
+                    if result['best_val_acc'] > local_best_acc:
+                        local_best_acc = result['best_val_acc']
+                        local_best_wd = result['weight_decay']
+
+            # Save local results to process-specific file
+            local_results_file = os.path.join(checkpoint_dir, f'wd_results_rank_{local_rank}.json')
+            with open(local_results_file, 'w') as f:
+                json.dump({
+                    'rank': local_rank,
+                    'wd_results': local_wd_results,
+                    'best_weight_decay': local_best_wd,
+                    'best_accuracy': local_best_acc,
+                    'assigned_wd_values': assigned_wd_values
+                }, f)
+            logger.info(f"[WEIGHT] Process {local_rank} saved local results to {local_results_file}")
+        # Synchronization: All processes wait for each other to complete
+        if world_size > 1:
+            # Use file-based barrier - each process creates a completion flag
+            completion_flag = os.path.join(checkpoint_dir, f'wd_complete_rank_{local_rank}')
+            with open(completion_flag, 'w') as f:
+                f.write('completed')
+
+            # Wait for all other processes to complete
+            logger.info(f"[WEIGHT] Process {local_rank} waiting for all processes to complete WD search...")
+            all_completed = False
+            wait_time = 0
+            max_wait_time = 7200  # 2 hour timeout for parallel search
+
+            while not all_completed and wait_time < max_wait_time:
+                all_completed = True
+                for rank in range(world_size):
+                    flag_file = os.path.join(checkpoint_dir, f'wd_complete_rank_{rank}')
+                    if not os.path.exists(flag_file):
+                        all_completed = False
+                        break
+                if not all_completed:
+                    import time
+                    time.sleep(5)  # Check every 5 seconds
+                    wait_time += 5
+
+            if not all_completed:
+                logger.error(f"[WEIGHT] Process {local_rank} timeout waiting for other processes to complete WD search")
+                raise TimeoutError("Parallel weight decay search timeout")
+
+            logger.info(f"[WEIGHT] Process {local_rank} detected all processes completed WD search")
+
+        # Aggregate results from all processes (main process only)
+        if is_main_process():
+            all_wd_results = []
+            global_best_wd = None
+            global_best_acc = 0.0
+
+            # Collect results from all ranks
+            for rank in range(world_size):
+                results_file = os.path.join(checkpoint_dir, f'wd_results_rank_{rank}.json')
+                if os.path.exists(results_file):
+                    with open(results_file, 'r') as f:
+                        rank_data = json.load(f)
+                        all_wd_results.extend(rank_data['wd_results'])
+
+                        # Track global best
+                        if rank_data['best_accuracy'] > global_best_acc:
+                            global_best_acc = rank_data['best_accuracy']
+                            global_best_wd = rank_data['best_weight_decay']
+
+            # Update global variables
+            wd_results = all_wd_results
+            best_weight_decay = global_best_wd
+
+            logger.info(f"[WEIGHT] Aggregated results from {world_size} processes - Global Best WD: {best_weight_decay:.2e}")
+
+            # Save final aggregated results
+            final_results_file = os.path.join(checkpoint_dir, 'wd_results.json')
+            with open(final_results_file, 'w') as f:
+                json.dump({
+                    'wd_results': wd_results,
+                    'best_weight_decay': best_weight_decay,
+                    'parallel_search': True,
+                    'world_size': world_size
+                }, f)
+            logger.info(f"[WEIGHT] Main process saved aggregated results to {final_results_file}")
+
         else:
-            # Non-main processes wait for results with robust error handling
-            logger.info("[WEIGHT] Non-main process waiting for weight decay search results...")
+            # Non-main processes wait for final aggregated results
+            logger.info("[WEIGHT] Non-main process waiting for aggregated weight decay results...")
             best_weight_decay = 1e-4  # Default fallback
             wd_results = []  # Default fallback
-            
+
             try:
-                wd_results_file = os.path.join(checkpoint_dir, 'wd_results.json')
+                final_results_file = os.path.join(checkpoint_dir, 'wd_results.json')
                 wait_time = 0
                 max_wait_time = 3600  # 1 hour timeout
-                
-                while not os.path.exists(wd_results_file) and wait_time < max_wait_time:
+
+                while not os.path.exists(final_results_file) and wait_time < max_wait_time:
                     import time
-                    time.sleep(1)
-                    wait_time += 1
-                    
-                if os.path.exists(wd_results_file):
-                    with open(wd_results_file, 'r') as f:
-                        wd_data = json.load(f)
-                        wd_results = wd_data.get('wd_results', wd_results)
-                        best_weight_decay = wd_data.get('best_weight_decay', best_weight_decay)
-                    logger.info(f"[WEIGHT] Non-main process loaded weight decay results - Best WD: {best_weight_decay:.2e}")
+                    time.sleep(5)  # Check every 5 seconds
+                    wait_time += 5
+
+                if os.path.exists(final_results_file):
+                    with open(final_results_file, 'r') as f:
+                        final_data = json.load(f)
+                        wd_results = final_data.get('wd_results', wd_results)
+                        best_weight_decay = final_data.get('best_weight_decay', best_weight_decay)
+                    logger.info(f"[WEIGHT] Non-main process loaded final results - Best WD: {best_weight_decay:.2e}")
                 else:
-                    logger.warning(f"[WEIGHT] Timeout waiting for WD results file, using defaults - Best WD: {best_weight_decay:.2e}")
+                    logger.warning(f"[WEIGHT] Non-main process timeout waiting for final WD results, using defaults - Best WD: {best_weight_decay:.2e}")
             except Exception as e:
-                logger.warning(f"[WEIGHT] Error loading WD results, using defaults - Best WD: {best_weight_decay:.2e}, Error: {e}")
+                logger.warning(f"[WEIGHT] Non-main process error loading WD results, using defaults - Best WD: {best_weight_decay:.2e}, Error: {e}")
 
         # Update progress (only main process to avoid conflicts)
         if is_main_process():
