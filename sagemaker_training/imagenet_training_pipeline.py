@@ -27,7 +27,7 @@ import psutil
 import multiprocessing as mp
 import math
 from utils import is_main_process
-from imagenet_models import resnet50_imagenet
+from imagenet_models import resnet50_imagenet, resnet50_imagenet_no_ddp
 from imagenet_dataset import get_imagenet_dataloaders
 from training_performance_optimizer import TrainingPerformanceOptimizer
 from logger_setup import get_unified_logger
@@ -1028,7 +1028,10 @@ class HyperparameterOptimizer:
             logger.info(f"[ANALYSIS] Testing Weight Decay: {wd:.2e} ({idx+1}/{len(wd_values)})")
             
             # Create fresh model for each run (CRITICAL)
-            model = self.model_fn().to(self.device)
+            model = self.model_fn()
+            # Only move to device if not already there (no_ddp version handles device placement)
+            if next(model.parameters()).device != self.device:
+                model = model.to(self.device)
             
             # Use SGD as it is common, momentum=0.9, nesterov=True is typical for CV
             optimizer = optim.SGD(model.parameters(), lr=lr_config['min_lr'], 
@@ -2015,9 +2018,20 @@ def main():
         search_epochs = 3 if args.quick_mode else 5
 
         if current_stage in ['START', 'LR_TEST_COMPLETE']:
+            # Create model function for weight decay search (no DDP to avoid NCCL conflicts)
+            def create_model_no_ddp():
+                logger.info("[DEBUG] DEBUG: Creating model for weight decay search (no DDP)...")
+                try:
+                    model = resnet50_imagenet_no_ddp(num_classes=1000, pretrained=False)
+                    logger.info("[DEBUG] DEBUG: Model created successfully for weight decay search")
+                    return model
+                except Exception as e:
+                    logger.error(f"[ERROR] DEBUG: Error creating model for weight decay search: {e}")
+                    raise
+
             # Create HyperparameterOptimizer for each process (each needs its own instance)
             optimizer = HyperparameterOptimizer(
-                model_fn=create_model,  # Function to create fresh models
+                model_fn=create_model_no_ddp,  # Use no-DDP version for weight decay search
                 train_loader=train_loader,
                 val_loader=val_loader,
                 device=device,

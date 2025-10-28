@@ -222,19 +222,56 @@ def model_device_setup_for_ddp(model):
 
     return model
 
+def resnet50_imagenet_no_ddp(num_classes=1000, pretrained=False, device=None):
+    """
+    ResNet-50 model for ImageNet-1K without DDP setup (for hyperparameter search)
+
+    Args:
+        num_classes: Number of output classes (default: 1000 for ImageNet)
+        pretrained: Whether to load pretrained weights
+        device: Specific device to move model to (if None, uses CUDA if available)
+    """
+    model = ResNetImageNet(Bottleneck, [3, 4, 6, 3], num_classes)
+
+    # Simple device setup without DDP
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = model.to(device)
+
+    if pretrained:
+        # Load pretrained weights from torchvision
+        import torchvision.models as models
+        pretrained_model = models.resnet50(pretrained=True)
+
+        # Copy weights (excluding final FC layer if num_classes != 1000)
+        model_dict = model.state_dict()
+        pretrained_dict = pretrained_model.state_dict()
+
+        # Filter out unnecessary keys and mismatched fc layer
+        if num_classes != 1000:
+            pretrained_dict = {k: v for k, v in pretrained_dict.items()
+                             if k in model_dict and not k.startswith('fc.')}
+
+        # Load the filtered weights
+        model_dict.update(pretrained_dict)
+        model.load_state_dict(model_dict)
+        logger.info("✅ Loaded pretrained ResNet-50 weights (no DDP)")
+
+    return model
+
 def resnet50_imagenet(num_classes=1000, pretrained=False):
     """
     ResNet-50 model for ImageNet-1K
-    
+
     Args:
         num_classes: Number of output classes (default: 1000 for ImageNet)
         pretrained: Whether to load pretrained weights
     """
     model = ResNetImageNet(Bottleneck, [3, 4, 6, 3], num_classes)
-    
+
     # Setup device and optionally configure distributed training
     model = model_device_setup_for_ddp(model)
-    
+
     if pretrained:
         # Load pretrained weights from torchvision
         import torchvision.models as models
