@@ -151,7 +151,7 @@ def get_test_time_augmentation_transforms(input_size=224, num_augmentations=10):
     return augmentation_transforms
 
 
-def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memory=True, lightweight_augs=False, disable_distributed_splitting=False):
+def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memory=True, lightweight_augs=False, disable_distributed_splitting=False, max_train_shards=None, max_val_shards=None):
     """
     Create ImageNet-1K data loaders
     
@@ -163,6 +163,8 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         pin_memory: Whether to pin memory for faster GPU transfer
         lightweight_augs: Use lightweight augmentations for maximum speed
         disable_distributed_splitting: Disable distributed data splitting (for independent hyperparameter search)
+        max_train_shards: Maximum number of training shards to use (for quick testing)
+        max_val_shards: Maximum number of validation shards to use (for quick testing)
     
     Returns:
         train_loader, val_loader, train_batches_per_epoch, val_batches_per_epoch
@@ -246,9 +248,17 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
     train_urls_all = sorted(glob.glob(train_url_pattern))
     val_urls_all = sorted(glob.glob(val_url_pattern))
 
+    # 3. Limit shards if requested (for quick testing)
+    if max_train_shards is not None and len(train_urls_all) > max_train_shards:
+        logger.info(f"Limiting training shards from {len(train_urls_all)} to {max_train_shards}")
+        train_urls_all = train_urls_all[:max_train_shards]
+    if max_val_shards is not None and len(val_urls_all) > max_val_shards:
+        logger.info(f"Limiting validation shards from {len(val_urls_all)} to {max_val_shards}")
+        val_urls_all = val_urls_all[:max_val_shards]
+
     logger.info(f"Found {len(train_urls_all)} total training shards and {len(val_urls_all)} validation shards locally.")
 
-    # 3. Split URLs across nodes ONLY for actual multi-node training
+    # 4. Split URLs across nodes ONLY for actual multi-node training
     if is_multi_node:
         logger.info("Splitting shards across nodes using wds.shardlists.split_by_node()")
         train_urls = wds.shardlists.split_by_node(train_urls_all)

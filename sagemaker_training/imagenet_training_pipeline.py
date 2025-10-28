@@ -1731,6 +1731,10 @@ def main():
             max_memory_gb = 4.0  # Conservative for CPU
             logger.info(f"[BATCH] CPU mode: Using {max_memory_gb:.1f}GB memory limit")
 
+        # PIPELINE 1 : Find optimal batch size
+        logger.info("="*60)
+        logger.info("[PIPELINE] 1: Detecting optimal batch size...")
+        logger.info("="*60)
         optimal_batch_size = temp_performance_optimizer.get_optimal_batch_size(max_memory_gb=max_memory_gb)
         
         # 1. Determine Safety Factor
@@ -1763,11 +1767,15 @@ def main():
     
     args.batch_size = initial_batch_size
     
+    # PIPELINE 2 : DataLoader num_workers optimization
     # Optimize num_workers for balanced CPU/GPU utilization and memory usage
+    logger.info("="*60)
+    logger.info("[PIPELINE] 2: DataLoader num_workers Optimization")
+    logger.info("="*60)
     logger.info("[OPTIMIZE] Optimizing num_workers for DataLoader...")
     optimized_num_workers_i = optimize_num_workers(initial_batch_size)
-    logger.info(f"[OPTIMIZE] Using optimized num_workers: {optimized_num_workers_i} (batch_size: {initial_batch_size})")
-    
+    logger.info(f"[OPTIMIZE] Using optimized_num_workers: {optimized_num_workers_i} (batch_size: {initial_batch_size})")
+
     # Monitor GPU utilization to validate optimization
     if torch.cuda.is_available():
         gpu_stats = monitor_gpu_utilization(duration_seconds=2)
@@ -1778,6 +1786,9 @@ def main():
     # Override args.num_workers with optimized value
     args.num_workers = optimized_num_workers_i
     
+    logger.info("="*60)
+    logger.info("[PIPELINE] 3: Data Loading")
+    logger.info("="*60)
     # Load data
     logger.info("[DATASET] Loading ImageNet dataset...")
     logger.debug("[DEBUG] DEBUG: About to load dataset")
@@ -1877,6 +1888,7 @@ def main():
     sys.stdout.flush()
     
     
+    logger.info("="*60)
     
     # STEP 1: LR Range Test
     lr_config = None
@@ -1899,14 +1911,14 @@ def main():
 
         logger.info(f"[MEMORY] Creating LR range test dataloader with batch_size: {lr_test_batch_size}, num_workers: {lr_test_num_workers}")
 
-        # Only main process creates LR test data loader (with no distributed splitting)
+        # Only main process creates LR test data loader (with no distributed splitting and limited shards)
         lr_test_loader = None
         if is_main_process():
             lr_test_loader = get_imagenet_dataloaders(
                 train=args.train, val=args.val, batch_size=lr_test_batch_size,
-                num_workers=lr_test_num_workers, lightweight_augs=True,  # Use lightweight augs for speed
-                disable_distributed_splitting=True  # No distributed splitting for LR test
-            )[0]  # Only need train loader
+                num_workers=lr_test_num_workers, lightweight_augs=True,
+                disable_distributed_splitting=True, max_train_shards=5, max_val_shards=2)  # Limit to few shards for speed
+            lr_test_loader = lr_test_loader[0]  # Only need train loader
 
         num_iter = 100 if args.quick_mode else 200
 

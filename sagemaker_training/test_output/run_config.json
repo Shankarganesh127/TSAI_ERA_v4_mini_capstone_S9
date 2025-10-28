@@ -1,0 +1,35 @@
+{
+  "start_time": "2025-10-28 11:43:12",
+  "python_version": "3.10.9 | packaged by Anaconda, Inc. | (main, Mar  1 2023, 18:18:15) [MSC v.1916 64 bit (AMD64)]",
+  "pytorch_version": "1.12.1+cpu",
+  "working_directory": "D:\\TSAI\\ERAv4\\ERAv4_class_S9\\ERAv4_mini_capstone_S9\\ERAv4_mini_capstone_S9\\TSAI_ERAv4_mini_capstone_S9\\sagemaker_training",
+  "script_path": "imagenet_training_pipeline.py",
+  "command_line_args": [
+    "--train",
+    "/fake/train",
+    "--val",
+    "/fake/val",
+    "--quick-mode",
+    "--epochs",
+    "1",
+    "--batch-size",
+    "8",
+    "--output",
+    "./test_output",
+    "--skip-lr-test"
+  ],
+  "hyperparameters": {
+    "train_data": "/fake/train",
+    "val_data": "/fake/val",
+    "output_dir": "./test_output",
+    "epochs": 1,
+    "batch_size": 8,
+    "num_workers": 4,
+    "quick_mode": true,
+    "no_amp": false,
+    "no_compile": false,
+    "lightweight_augs": false,
+    "skip_lr_test": true,
+    "skip_wd_search": false
+  }
+}
