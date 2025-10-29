@@ -180,44 +180,84 @@ class BatchSizeFinder:
         """
         1) Geometric growth until OOM (or max)
         2) Binary search between last OK and first OOM
+        Adds live progress logging for CloudWatch visibility.
         """
+        import torch
+        import gc
+        import time
+
         curve = []
         bs = max(1, int(start_bs))
         last_ok = 0
         first_oom = None
+        rank = _rank()
+        logger = getattr(self, "logger", None)
+        if logger is None:
+            from utils import get_unified_logger
+            logger = get_unified_logger("BatchSizeFinder")
 
-        # ramp-up
+        logger.info(f"[BSF][RANK {rank}] 🚀 Starting BatchSizeFinder: start={start_bs}, max={max_bs}, steps={steps}")
+
+        # ramp-up phase
         while bs <= max_bs:
-            r = self._probe(bs, steps=steps)
-            curve.append(r)
-            if r["ok"]:
-                last_ok = bs
-                bs *= 2
-            else:
-                first_oom = bs
-                break
+            torch.cuda.empty_cache()
+            gc.collect()
+            t0 = time.time()
+            try:
+                r = self._probe(bs, steps=steps)
+                curve.append(r)
+
+                # Log memory usage and success
+                mem = torch.cuda.memory_allocated(self.device) / (1024 ** 3)
+                logger.info(f"[BSF][RANK {rank}] ✅ bs={bs:<4d} | mem={mem:.2f}GB | ok={r['ok']} | time={time.time()-t0:.1f}s")
+
+                if r["ok"]:
+                    last_ok = bs
+                    bs *= 2
+                else:
+                    first_oom = bs
+                    logger.warning(f"[BSF][RANK {rank}] ❌ OOM at bs={bs}. Switching to binary search.")
+                    break
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    first_oom = bs
+                    logger.warning(f"[BSF][RANK {rank}] ❌ OOM exception at bs={bs}. Switching to binary search.")
+                    break
+                else:
+                    logger.error(f"[BSF][RANK {rank}] Unexpected error at bs={bs}: {e}")
+                    raise e
 
         if last_ok == 0:
-            # even start_bs failed; return conservative choice
-            return {"best_batch_size": start_bs, "curve": curve, "device": str(self.device), "rank": _rank()}
+            logger.warning(f"[BSF][RANK {rank}] ⚠️ Even start_bs={start_bs} failed. Returning conservative default.")
+            return {"best_batch_size": start_bs, "curve": curve, "device": str(self.device), "rank": rank}
 
-        # binary search
-        lo, hi = last_ok, (first_oom if first_oom is not None else last_ok)
+        # If never OOM'd up to max_bs
         if first_oom is None:
-            # never OOM'ed up to max_bs; accept last_ok
-            return {"best_batch_size": last_ok, "curve": curve, "device": str(self.device), "rank": _rank()}
+            logger.info(f"[BSF][RANK {rank}] ✅ No OOM up to max_bs={max_bs}, best={last_ok}")
+            return {"best_batch_size": last_ok, "curve": curve, "device": str(self.device), "rank": rank}
+
+        # binary search refinement
+        lo, hi = last_ok, first_oom
+        logger.info(f"[BSF][RANK {rank}] 🔍 Binary search range: lo={lo}, hi={hi}")
 
         while hi - lo > 1:
             mid = (lo + hi) // 2
+            torch.cuda.empty_cache()
+            gc.collect()
+            t0 = time.time()
             r = self._probe(mid, steps=steps)
             curve.append(r)
+            mem = torch.cuda.memory_allocated(self.device) / (1024 ** 3)
+            logger.info(f"[BSF][RANK {rank}] 🔄 mid={mid} | mem={mem:.2f}GB | ok={r['ok']} | time={time.time()-t0:.1f}s")
             if r["ok"]:
                 lo = mid
             else:
                 hi = mid
 
-        return {"best_batch_size": lo, "curve": curve, "device": str(self.device), "rank": _rank()}
-
+        logger.info(f"[BSF][RANK {rank}] 🏁 Completed. Best batch size = {lo}")
+        return {"best_batch_size": lo, "curve": curve, "device": str(self.device), "rank": rank}
 
 # ----------------------------
 # LR Finder
@@ -241,29 +281,63 @@ class LRFinder:
         self.device = torch.device(device if torch.cuda.is_available() and device.startswith("cuda") else "cpu")
         self.num_workers = num_workers
 
-    def find(self, start_lr: float = 1e-6, end_lr: float = 1.0, iters: int = 200, mode: str = "exp") -> Dict[str, Any]:
+    def find(
+        self,
+        start_lr: float = 1e-6,
+        end_lr: float = 1.0,
+        iters: int = 200,
+        mode: str = "exp"
+    ) -> Dict[str, Any]:
+        """
+        Runs LR range test with live progress logging for SageMaker.
+        """
+        import time
+        from torch.cuda.amp import autocast, GradScaler
+        import torch.nn as nn
+        import torch
+        from utils import get_unified_logger
+
+        rank = _rank()
+        logger = getattr(self, "logger", None)
+        if logger is None:
+            logger = get_unified_logger(f"LRFinder-R{rank}")
+
         train_loader, _, train_batches, _ = get_imagenet_dataloaders(
-            self.train_dir, self.train_dir,
+            self.train_dir,
+            self.train_dir,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=True,
-            # LR finder runs standalone; do not split across ranks
-            disable_distributed_splitting=True,
+            disable_distributed_splitting=True,  # always single-process
         )
 
         model = self.model.to(self.device)
         model.train()
 
-        opt = optim.SGD(model.parameters(), lr=start_lr, momentum=0.9)
+        opt = torch.optim.SGD(model.parameters(), lr=start_lr, momentum=0.9)
         scaler = GradScaler(enabled=torch.cuda.is_available())
 
         curve = []
         lr = start_lr
-        gamma = (end_lr / start_lr) ** (1.0 / max(1, iters)) if mode == "exp" else (end_lr - start_lr) / max(1, iters)
+        gamma = (
+            (end_lr / start_lr) ** (1.0 / max(1, iters))
+            if mode == "exp"
+            else (end_lr - start_lr) / max(1, iters)
+        )
+
+        logger.info(
+            f"[LRF][RANK {rank}] 🚀 Starting LR Finder: start_lr={start_lr:.2e}, end_lr={end_lr:.2e}, "
+            f"iters={iters}, mode={mode}"
+        )
 
         it_count = 0
-        for x, y in train_loader:
+        t0 = time.time()
+        for batch_idx, (x, y) in enumerate(train_loader):
+            if it_count >= iters:
+                break
+
             x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
+
             # set LR for this step
             for pg in opt.param_groups:
                 pg["lr"] = lr
@@ -284,8 +358,13 @@ class LRFinder:
             opt.zero_grad(set_to_none=True)
 
             it_count += 1
-            if it_count >= iters:
-                break
+
+            # --- logging every N steps ---
+            if it_count % 10 == 0 or it_count == 1:
+                logger.info(
+                    f"[LRF][RANK {rank}] step={it_count:03d}/{iters} | lr={lr:.4e} | loss={loss.item():.4f} | "
+                    f"mem={torch.cuda.memory_allocated(self.device)/(1024**3):.2f}GB"
+                )
 
             # update LR
             if mode == "exp":
@@ -293,14 +372,22 @@ class LRFinder:
             else:
                 lr += gamma
 
-        # suggest LR
+        total_time = time.time() - t0
         suggested = _suggest_max_lr_from_curve(curve)
+        logger.info(
+            f"[LRF][RANK {rank}] 🏁 Completed LR Finder in {total_time:.1f}s | suggested_max_lr={suggested:.4e}"
+        )
+
         del model, opt
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        return {"curve": curve, "suggested_max_lr": float(suggested), "rank": _rank()}
-
+        return {
+            "curve": curve,
+            "suggested_max_lr": float(suggested),
+            "rank": rank,
+            "total_time": total_time,
+        }
 
 # ----------------------------
 # Weight Decay Search (DDP-parallel)
@@ -376,38 +463,63 @@ class HyperparameterOptimizer:
         steps: int = 200,
     ):
         """
-        Distributed strategy:
-        - Build small train/val loaders per process
-        - Split candidates among ranks: each rank trains/evaluates only its subset
-        - all_gather_object to rank 0; choose best_wd; broadcast if caller needs
-
-        lr_config: {"min_lr": ..., "max_lr": ...} -> we'll just use max_lr as constant LR here
+        Distributed Weight Decay Search with live logging.
+        Each rank tests a subset of WD candidates, evaluates, and sends results to rank 0.
         """
+        import time
+        import torch
+        import torch.nn as nn
+        import torch.optim as optim
+        from torch.cuda.amp import autocast, GradScaler
+        from utils import get_unified_logger
+
+        logger = getattr(self, "logger", None)
+        if logger is None:
+            logger = get_unified_logger("WeightDecaySearch")
+
         if candidates is None:
-            # sensible defaults spanning common WD orders
             candidates = [1e-5, 3e-5, 1e-4, 3e-4, 1e-3]
 
         world = _world()
         rank = _rank()
-        # partition
         my_cands = [c for i, c in enumerate(candidates) if i % world == rank]
+
+        logger.info(
+            f"[WDS][RANK {rank}] 🚀 Starting Weight Decay Search | candidates={my_cands} | lr={lr_config.get('max_lr', 0.1):.2e} | "
+            f"batch_size={batch_size} | steps={steps}"
+        )
 
         train_loader, val_loader, train_batches, _ = self._build_loaders(batch_size=batch_size)
         max_iter = min(steps, train_batches)
 
         results_local = []
+
         for wd in my_cands:
+            t0 = time.time()
+            logger.info(f"[WDS][RANK {rank}] 🔍 Testing weight_decay={wd:.1e}")
+
             model = self.model_fn().to(self.device)
             model.train()
-            opt = optim.SGD(model.parameters(), lr=float(lr_config.get("max_lr", 0.1)), momentum=0.9, weight_decay=wd, nesterov=True)
+            opt = optim.SGD(
+                model.parameters(),
+                lr=float(lr_config.get("max_lr", 0.1)),
+                momentum=0.9,
+                weight_decay=wd,
+                nesterov=True,
+            )
             scaler = GradScaler(enabled=torch.cuda.is_available())
 
-            it = 0
-            for x, y in train_loader:
+            losses = []
+            for it, (x, y) in enumerate(train_loader):
+                if it >= max_iter:
+                    break
+
                 x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
                 with autocast(enabled=scaler.is_enabled()):
                     out = model(x)
                     loss = nn.functional.cross_entropy(out, y)
+                losses.append(float(loss.item()))
+
                 if scaler.is_enabled():
                     scaler.scale(loss).backward()
                     scaler.step(opt)
@@ -416,38 +528,59 @@ class HyperparameterOptimizer:
                     loss.backward()
                     opt.step()
                 opt.zero_grad(set_to_none=True)
-                it += 1
-                if it >= max_iter:
-                    break
+
+                if (it + 1) % 10 == 0:
+                    logger.info(
+                        f"[WDS][RANK {rank}] step={it+1:03d}/{max_iter} | wd={wd:.1e} | loss={loss.item():.4f} | "
+                        f"mem={torch.cuda.memory_allocated(self.device)/(1024**3):.2f}GB"
+                    )
 
             # quick val
             metrics = self._validate(model, val_loader)
-            res = {"weight_decay": float(wd), "rank": rank}
-            res.update(metrics)
+            val_top1 = metrics.get("val_top1", 0.0)
+            val_loss = metrics.get("val_loss", 0.0)
+            res = {"weight_decay": float(wd), "val_top1": val_top1, "val_loss": val_loss, "rank": rank}
             results_local.append(res)
+
+            logger.info(
+                f"[WDS][RANK {rank}] ✅ Done wd={wd:.1e} | val_top1={val_top1:.2f}% | val_loss={val_loss:.4f} | "
+                f"time={time.time()-t0:.1f}s"
+            )
 
             del model, opt
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        # Gather to rank 0
+        # Gather all results to rank 0
         results_all = _gather_dicts_local_to_rank0({"results": results_local})
+
         if rank == 0:
             merged = []
             for pack in results_all:
                 merged.extend(pack.get("results", []))
-            # pick best by val_top1 (desc)
-            if merged:
-                merged_sorted = sorted(merged, key=lambda r: (r.get("val_top1", 0.0), -r.get("val_loss", 1e9)), reverse=True)
-                best_wd = float(merged_sorted[0]["weight_decay"])
-            else:
-                best_wd = candidates[0]
-            return merged, best_wd
+            if not merged:
+                logger.warning("[WDS][RANK 0] ⚠️ No results received from workers.")
+                return [], candidates[0]
+
+            merged_sorted = sorted(
+                merged,
+                key=lambda r: (r.get("val_top1", 0.0), -r.get("val_loss", 1e9)),
+                reverse=True,
+            )
+            best_wd = float(merged_sorted[0]["weight_decay"])
+
+            logger.info("[WDS][RANK 0] 🏁 Completed WD Search Results:")
+            for r in merged_sorted:
+                logger.info(
+                    f"    wd={r['weight_decay']:.1e} | val_top1={r['val_top1']:.2f}% | val_loss={r['val_loss']:.4f} | rank={r['rank']}"
+                )
+
+            logger.info(f"[WDS][RANK 0] ✅ Best weight_decay={best_wd:.1e}")
+            return merged_sorted, best_wd
         else:
-            # return local — caller on non-rank0 can ignore or expect broadcast from pipeline
-            return results_local, candidates[0]
-
-
+            logger.info(f"[WDS][RANK {rank}] 🔚 Finished local WD trials ({len(results_local)} results)")
+            return results_local, my_cands[0]
+   
 # ----------------------------
 # num_workers optimizer
 # ----------------------------
