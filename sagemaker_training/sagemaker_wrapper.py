@@ -14,7 +14,6 @@ with SageMaker cloud deployment while preserving all advanced capabilities.
 
 import os
 import sys
-import subprocess
 import json
 import argparse
 import shutil
@@ -31,8 +30,36 @@ from utils import is_main_process
 try:
     from imagenet_training_pipeline import main as training_pipeline_main
     TRAINING_PIPELINE_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    print(f"Warning: Could not import training pipeline: {e}")
     TRAINING_PIPELINE_AVAILABLE = False
+
+# Import distributed utilities for synchronization
+try:
+    import torch.distributed as dist
+    DISTRIBUTED_AVAILABLE = True
+except ImportError:
+    DISTRIBUTED_AVAILABLE = False
+
+def synchronize_processes():
+    """Synchronize all distributed processes using barriers or file-based sync"""
+    if DISTRIBUTED_AVAILABLE and dist.is_initialized():
+        dist.barrier()
+    else:
+        # File-based synchronization for non-distributed environments
+        sync_file = Path("/tmp/sagemaker_sync_barrier")
+        if is_main_process():
+            sync_file.touch()
+        else:
+            # Non-main processes wait for the file
+            import time
+            while not sync_file.exists():
+                time.sleep(0.01)
+            # Clean up after all processes have seen it
+            try:
+                sync_file.unlink()
+            except Exception:
+                pass
 
 # Import unified logger - all files are in same directory now
 try:
@@ -122,7 +149,7 @@ class ImageNetSageMakerTrainer:
         if args.val_dir:
             self.logger.info(f"📁 Validation directory: {args.val_dir}")
         else:
-            self.logger.info(f"📁 Validation: Using subdirectory of data_dir")
+            self.logger.info("📁 Validation: Using subdirectory of data_dir")
         self.logger.info(f"📁 Output directory: {args.output_dir}")
         
         return args
@@ -164,7 +191,7 @@ class ImageNetSageMakerTrainer:
             # List files in /opt/ml/code/ for debugging
             code_dir = Path("/opt/ml/code")
             if code_dir.exists():
-                self.logger.error(f"   Files in /opt/ml/code/:")
+                self.logger.error("   Files in /opt/ml/code/:")
                 for f in code_dir.iterdir():
                     if f.is_file():
                         self.logger.error(f"     {f.name}")
@@ -265,7 +292,7 @@ class ImageNetSageMakerTrainer:
             
             self.logger.info(f"💾 Model saving configuration created: {config_file}")
             self.logger.info(f"📁 Models directory: {models_dir}")
-            self.logger.info(f"🔄 Replace mode: Enabled (overwrites previous epoch model)")
+            self.logger.info("🔄 Replace mode: Enabled (overwrites previous epoch model)")
             
         except Exception as e:
             self.logger.warning(f"⚠️ Could not create model config: {e}")
@@ -348,8 +375,14 @@ class ImageNetSageMakerTrainer:
         # Setup model saving directories (only main process logs)
         self._setup_model_saving_directories(args)
         
+        # Synchronize: Ensure main process has finished directory setup before other processes proceed
+        synchronize_processes()
+        
         # Start model replacement monitoring (only main process logs)
         self._start_model_replacement_monitoring(args)
+        
+        # Synchronize: Ensure main process has finished monitoring setup before other processes proceed
+        synchronize_processes()
         
         # Build and execute pipeline command
         cmd = self.build_pipeline_command(args)
@@ -357,7 +390,7 @@ class ImageNetSageMakerTrainer:
             self.logger.info(f"🎯 Executing: {' '.join(cmd)}")
             
             # CRITICAL DEBUGGING - Show what's in the command
-            self.logger.info(f"🔍 Command breakdown:")
+            self.logger.info("🔍 Command breakdown:")
             self.logger.info(f"   Python: {cmd[0]}")  
             self.logger.info(f"   Script: {cmd[1]}")
             self.logger.info(f"   Args: {cmd[2:]}")
@@ -365,7 +398,7 @@ class ImageNetSageMakerTrainer:
             # Check if we're using relative path correctly
             if cmd[1].startswith('/opt/ml/') and not cmd[1].startswith('/opt/ml/code/'):
                 self.logger.error(f"❌ WRONG PATH! Script path: {cmd[1]}")
-                self.logger.error(f"❌ Should be relative or start with /opt/ml/code/")
+                self.logger.error("❌ Should be relative or start with /opt/ml/code/")
                 # Force fix the path
                 if cmd[1] == '/opt/ml/imagenet_training_pipeline.py':
                     cmd[1] = 'imagenet_training_pipeline.py'
@@ -389,7 +422,7 @@ class ImageNetSageMakerTrainer:
                     self.logger.info(f"✅ Target script found: {target_script}")
                 else:
                     self.logger.error(f"❌ Target script NOT found: {target_script}")
-                    self.logger.error(f"❌ This will cause 'No such file or directory' error")
+                    self.logger.error("❌ This will cause 'No such file or directory' error")
                 # Debug: Show what files are in the SageMaker code directory
                 if sagemaker_code_dir.exists():
                     self.logger.info(f"📁 Files in {sagemaker_code_dir}:")
@@ -410,14 +443,14 @@ class ImageNetSageMakerTrainer:
         except Exception as e:
             if is_main_process():
                 self.logger.error(f"❌ Exception during SageMaker code/script checks: {e}")
-                self.logger.info("🎬 SUBPROCESS OUTPUT STREAMING BELOW:")
+                self.logger.info("🎬 DIRECT EXECUTION OUTPUT STREAMING BELOW:")
                 self.logger.info("=" * 80)
             sys.stdout.flush()
             
         # Detailed logging to unified log file
         if is_main_process():
             self.logger.info("="*60)
-            self.logger.info("� SUBPROCESS: Launching imagenet_training_pipeline.py")
+            self.logger.info("🚀 DIRECT EXECUTION: Launching imagenet_training_pipeline.py")
             self.logger.info("="*60)
             self.logger.info(f"📞 Caller script: {__file__}")
             self.logger.info(f"🎯 Target script: {cmd[1]}")
@@ -433,111 +466,84 @@ class ImageNetSageMakerTrainer:
             start_time = datetime.now()
             self.logger.info("🔥 Starting training pipeline execution...")
 
-        # DIRECT EXECUTION: Call training pipeline directly instead of subprocess
+        # DIRECT EXECUTION: Call training pipeline directly
         # This ensures all distributed processes run the same code
-        if TRAINING_PIPELINE_AVAILABLE:
+        if is_main_process():
+            self.logger.info("🚀 Calling training_pipeline_main()...")
+
+        # Set necessary environment variables for the training pipeline
+        # PYTHONUNBUFFERED=1 forces unbuffered output for real-time logging
+        # TQDM_DISABLE=1 disables progress bars in non-main processes
+        original_env = {}
+        env_vars_to_set = {
+            'PYTHONUNBUFFERED': '1',
+            'TQDM_DISABLE': '1' if not is_main_process() else '0'
+        }
+        
+        for key, value in env_vars_to_set.items():
+            original_env[key] = os.environ.get(key)
+            os.environ[key] = value
+
+        # Synchronize all processes before calling training_pipeline_main()
+        # This ensures all processes have the updated args and environment
+        synchronize_processes()
+
+        # Set sys.argv to simulate command line arguments for the training pipeline
+        original_argv = sys.argv.copy()
+        sys.argv = cmd  # cmd contains the full command including script path and args
+
+        try:
+            # Call the training pipeline main function directly
+            training_pipeline_main()
+            return_code = 0
             if is_main_process():
-                self.logger.info("✅ Training pipeline available - calling directly")
-            
-            # Set sys.argv to simulate command line arguments for the training pipeline
-            original_argv = sys.argv.copy()
-            sys.argv = cmd  # cmd contains the full command including script path and args
-            
-            try:
-                # Call the training pipeline main function directly
-                if is_main_process():
-                    self.logger.info("🚀 Calling training_pipeline_main()...")
-                training_pipeline_main()
-                return_code = 0
-                if is_main_process():
-                    self.logger.info("✅ Training pipeline completed successfully")
-            except SystemExit as e:
-                # Handle sys.exit() calls from the training pipeline
-                return_code = e.code if e.code is not None else 0
-                if is_main_process():
-                    if return_code != 0:
-                        self.logger.error(f"❌ Training pipeline exited with code: {return_code}")
-                    else:
-                        self.logger.info("✅ Training pipeline completed normally")
-            except Exception as e:
-                if is_main_process():
-                    self.logger.error(f"❌ Training pipeline failed with exception: {e}")
-                return_code = 1
-            finally:
-                # Restore original sys.argv
-                sys.argv = original_argv
-        else:
+                self.logger.info("✅ Training pipeline completed successfully")
+        except SystemExit as e:
+            # Handle sys.exit() calls from the training pipeline
+            return_code = e.code if e.code is not None else 0
             if is_main_process():
-                self.logger.error("❌ Training pipeline not available - falling back to subprocess")
-            # Fallback to subprocess if direct import fails
-            subprocess_env = os.environ.copy()
-            subprocess_env['TQDM_DISABLE'] = '1'
-            subprocess_env['PYTHONUNBUFFERED'] = '1'
-            
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=str(run_cwd),
-                bufsize=1,
-                env=subprocess_env,
-                universal_newlines=True
-            )
-            
+                if return_code != 0:
+                    self.logger.error(f"❌ Training pipeline exited with code: {return_code}")
+                else:
+                    self.logger.info("✅ Training pipeline completed normally")
+        except Exception as e:
             if is_main_process():
-                self.logger.info(f"🚀 Subprocess started with PID: {process.pid}")
-            
-            # Stream output line by line
-            line_counter = 0
-            try:
-                for line in process.stdout:
-                    line_counter += 1
-                    line = line.rstrip()
-                    if is_main_process():
-                        self.logger.info(f"[PIPELINE] {line}")
-            except Exception as stream_exc:
-                if is_main_process():
-                    self.logger.error(f"❌ Error streaming subprocess output: {stream_exc}")
-            finally:
-                try:
-                    return_code = process.wait()
-                    end_time = datetime.now()
-                    duration = end_time - start_time
-                except Exception as wait_exc:
-                    if is_main_process():
-                        self.logger.error(f"❌ Error waiting for subprocess: {wait_exc}")
-                    return_code = 1
+                self.logger.error(f"❌ Training pipeline failed with exception: {e}")
+            return_code = 1
+        finally:
+            # Restore original sys.argv
+            sys.argv = original_argv
+            # Restore original environment variables
+            for key, original_value in original_env.items():
+                if original_value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = original_value
 
         # =============================================================================
         # TRAINING PIPELINE COMPLETED
         # =============================================================================
         end_time = datetime.now()
         duration = end_time - start_time
-        
+
         if is_main_process():
             self.logger.info("=" * 80)
-            if TRAINING_PIPELINE_AVAILABLE:
-                self.logger.info("✅ IMAGENET_TRAINING_PIPELINE.PY DIRECT EXECUTION COMPLETED")
-            else:
-                self.logger.info("✅ IMAGENET_TRAINING_PIPELINE.PY SUBPROCESS COMPLETED")
+            self.logger.info("✅ IMAGENET_TRAINING_PIPELINE.PY DIRECT EXECUTION COMPLETED")
             self.logger.info("=" * 80)
             self.logger.info(f"📊 Return Code: {return_code}")
             self.logger.info(f"⏰ Completion Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
             self.logger.info(f"⌛ Total Duration: {duration}")
-            if not TRAINING_PIPELINE_AVAILABLE:
-                self.logger.info(f"📝 Total output lines: {line_counter}")
             self.logger.info("=" * 80)
 
             if return_code == 0:
-                self.logger.info("✅ Subprocess completed successfully")
+                self.logger.info("✅ Training completed successfully")
             else:
-                self.logger.error(f"❌ Subprocess failed with return code: {return_code}")
+                self.logger.error(f"❌ Training failed with return code: {return_code}")
 
-            # Check if subprocess failed
+            # Check if pipeline failed
             if return_code != 0:
                 self.logger.error(f"❌ Pipeline failed with return code: {return_code}")
-                raise subprocess.CalledProcessError(return_code, cmd)
+                raise RuntimeError(f"Training pipeline failed with return code: {return_code}")
 
             self.logger.info("✅ 7-Step Pipeline completed successfully!")
 
@@ -588,7 +594,7 @@ class ImageNetSageMakerTrainer:
                 model_files = list(models_dir.glob("*.pth")) + list(models_dir.glob("*.pt"))
                 
                 if model_files:
-                    self.logger.info(f"✅ Model saving verification:")
+                    self.logger.info("✅ Model saving verification:")
                     for model_file in sorted(model_files):
                         file_size = model_file.stat().st_size / (1024 * 1024)  # MB
                         self.logger.info(f"   📦 {model_file.name} ({file_size:.1f} MB)")
@@ -683,7 +689,7 @@ def main():
             logger.error(f"❌ Training failed: {e}")
             logger.error(f"❌ Exception type: {type(e).__name__}")
             import traceback
-            logger.error(f"❌ Full traceback:")
+            logger.error("❌ Full traceback:")
             for line in traceback.format_exc().split('\n'):
                 if line.strip():
                     logger.error(f"   {line}")

@@ -1597,11 +1597,9 @@ def main():
                 status = json.load(f)
             current_stage = status.get('last_completed_stage', 'START')
             global logger
-            if is_main_process():
-                logger.info(f"🔄 Resuming pipeline. Last completed stage: {current_stage}")
+            logger.info(f"🔄 Resuming pipeline. Last completed stage: {current_stage}")
         except Exception as e:
-            if is_main_process():
-                logger.error(f"❌ Failed to load pipeline status: {e}. Starting from scratch.")
+            logger.error(f"❌ Failed to load pipeline status: {e}. Starting from scratch.")
 
     def reload_current_stage():
         """Reload current stage from status file"""
@@ -1779,12 +1777,10 @@ def main():
         # Clear GPU cache if available
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            if is_main_process():
-                logger.info(f"[DEVICE]  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
+            logger.info(f"[DEVICE]  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
         
         # Create temporary model and optimizer for batch size detection using TrainingPerformanceOptimizer
-        if is_main_process():
-            logger.info("[DEBUG] DEBUG: About to create temporary model for batch size detection")
+        logger.info("[DEBUG] DEBUG: About to create temporary model for batch size detection")
         temp_model = create_model().to(device)
         temp_optimizer = optim.SGD(temp_model.parameters(), lr=1e-3, momentum=0.9)
         temp_criterion = nn.CrossEntropyLoss()
@@ -2418,7 +2414,8 @@ def main():
         progress_manager.finalize_status(wd_skip_key)
     
     # Aggressive memory cleanup before full training to prevent fragmentation
-    logger.info("[MEMORY] Performing aggressive memory cleanup before full training...")
+    if is_main_process():
+        logger.info("[MEMORY] Performing aggressive memory cleanup before full training...")
     aggressive_memory_cleanup()
     
     # Final memory check and cleanup
@@ -2441,22 +2438,24 @@ def main():
     progress_manager.create_status_updater(full_train_key,
         f"[START] STEP 6: Full OneCycle Training - Starting {training_epochs} epochs...")
 
-    logger.info("="*60)
-    logger.info("[START] STEP 6: Full OneCycle Training")
-    logger.info("="*60)
-    logger.info(f"[MEMORY] Final batch size: {args.batch_size}")
-    # Note: gradient_accumulation_steps and effective batch size will be logged after calculation
-    if args.batch_size <= 8:
-        logger.info("[MEMORY] Gradient checkpointing: ENABLED")
-    else:
-        logger.info("[MEMORY] Gradient checkpointing: DISABLED")
+    if is_main_process():
+        logger.info("="*60)
+        logger.info("[START] STEP 6: Full OneCycle Training")
+        logger.info("="*60)
+        logger.info(f"[MEMORY] Final batch size: {args.batch_size}")
+        # Note: gradient_accumulation_steps and effective batch size will be logged after calculation
+        if args.batch_size <= 8:
+            logger.info("[MEMORY] Gradient checkpointing: ENABLED")
+        else:
+            logger.info("[MEMORY] Gradient checkpointing: DISABLED")
 
     model = create_model().to(device)
     # DDP: Wrap model if multi-GPU
     if torch.cuda.is_available() and getattr(args, 'world_size', 1) > 1:
         import torch.nn.parallel
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
-        logger.info("[DDP] Model wrapped with DistributedDataParallel")
+        if is_main_process():
+            logger.info("[DDP] Model wrapped with DistributedDataParallel")
     
     # Log memory usage after model creation
     log_detailed_memory_usage("after_model_creation")
@@ -2466,7 +2465,8 @@ def main():
     should_checkpoint = instance_profile['enable_gradient_checkpointing'] or optimal_batch_size <= 8
 
     if should_checkpoint:
-        logger.info("[MEMORY] Enabling gradient checkpointing for memory efficiency")
+        if is_main_process():
+            logger.info("[MEMORY] Enabling gradient checkpointing for memory efficiency")
         try:
             # Import checkpoint utilities
             # Removed unused import checkpoint_sequential
@@ -2481,16 +2481,20 @@ def main():
                     model.layer2 = torch.nn.Sequential(*[torch.nn.utils.checkpoint.checkpoint_wrapper(module) for module in model.layer2])
                     model.layer3 = torch.nn.Sequential(*[torch.nn.utils.checkpoint.checkpoint_wrapper(module) for module in model.layer3])
                     model.layer4 = torch.nn.Sequential(*[torch.nn.utils.checkpoint.checkpoint_wrapper(module) for module in model.layer4])
-                    logger.info("[MEMORY] Applied gradient checkpointing to ResNet layers")
+                    if is_main_process():
+                        logger.info("[MEMORY] Applied gradient checkpointing to ResNet layers")
                 else:
                     # Fallback: try to checkpoint the entire model if it's sequential
-                    logger.warning("[MEMORY] Could not identify ResNet layers, attempting sequential checkpointing")
+                    if is_main_process():
+                        logger.warning("[MEMORY] Could not identify ResNet layers, attempting sequential checkpointing")
                     if isinstance(model, torch.nn.Sequential):
                         model = torch.nn.utils.checkpoint.checkpoint_wrapper(model)
-                        logger.info("[MEMORY] Applied sequential gradient checkpointing")
+                        if is_main_process():
+                            logger.info("[MEMORY] Applied sequential gradient checkpointing")
 
             apply_checkpointing(model)
-            logger.info("[MEMORY] Gradient checkpointing enabled - expect ~50% memory reduction")
+            if is_main_process():
+                logger.info("[MEMORY] Gradient checkpointing enabled - expect ~50% memory reduction")
         except Exception as e:
             logger.warning(f"[MEMORY] Could not enable gradient checkpointing: {e}")
             logger.warning("[MEMORY] Continuing without gradient checkpointing")
@@ -2524,15 +2528,14 @@ def main():
         logger.info(f"[GRAD] Low batch size detected, using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
     elif optimal_batch_size <= 16:
         gradient_accumulation_steps = base_accumulation
-        if is_main_process():
-            logger.info(f"[GRAD] Using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
+        logger.info(f"[GRAD] Using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
     elif optimal_batch_size <= 32:
         gradient_accumulation_steps = max(1, base_accumulation // 2)
-        if is_main_process() and gradient_accumulation_steps > 1:
+        if gradient_accumulation_steps > 1:
             logger.info(f"[GRAD] Using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
-        elif is_main_process():
+        else:
             logger.info(f"[GRAD] No gradient accumulation needed (batch size: {optimal_batch_size})")
-    elif is_main_process():
+    else:
         logger.info(f"[GRAD] No gradient accumulation needed (batch size: {optimal_batch_size})")
 
     # Now log the gradient accumulation details after calculation
@@ -2558,9 +2561,8 @@ def main():
             gradient_accumulation_steps=gradient_accumulation_steps
         )
     
-    if is_main_process():
-        progress_manager.update_status(full_train_key, f"[OK] STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")
-        progress_manager.finalize_status(full_train_key)
+    progress_manager.update_status(full_train_key, f"[OK] STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")
+    progress_manager.finalize_status(full_train_key)
     
     # Performance Optimization Summary
     #if performance_optimizer:
@@ -2664,12 +2666,12 @@ def main():
         # =============================================================================
         # TRAINING PIPELINE COMPLETED!
         # =============================================================================
-        if is_main_process():
-            completion_key = "pipeline_complete"
-            progress_manager.create_status_updater(completion_key,
-                f"[SUCCESS] ImageNet Training Pipeline Completed! Best Val Acc: {final_results['best_val_acc']:.2f}%")
-            progress_manager.finalize_status(completion_key)
+        completion_key = "pipeline_complete"
+        progress_manager.create_status_updater(completion_key,
+            f"[SUCCESS] ImageNet Training Pipeline Completed! Best Val Acc: {final_results['best_val_acc']:.2f}%")
+        progress_manager.finalize_status(completion_key)
 
+        if is_main_process():
             logger.info("[SUCCESS] Pipeline Complete!")
             logger.info("[ANALYSIS] Final Results:")
             logger.info(f"   Best Validation Accuracy: {final_results['best_val_acc']:.2f}%")
@@ -2681,8 +2683,7 @@ def main():
             logger.info(f"[DIR] Results saved to: {args.output}")
 
         # Step 2: Stop resource monitor and save metrics after training
-        monitor.stop()
-        if is_main_process():
+            monitor.stop()
             resource_metrics_path = os.path.join(args.output, 'resource_metrics.json')
             monitor.save(resource_metrics_path)
             logger.info(f"[RESOURCE MONITOR] Resource utilization metrics saved to: {resource_metrics_path}")
@@ -2746,19 +2747,20 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # Setup unified logger for error reporting if main logger fails
-        try:
-            from logger_setup import setup_unified_logger
-            logger = setup_unified_logger()
-        except ImportError:
-            import logging
-            logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-            logger = logging.getLogger(__name__)
-        logger.error(f"[ERROR] CRITICAL ERROR: Pipeline failed with exception: {e}")
-        logger.error(f"[ERROR] Exception type: {type(e).__name__}")
-        import traceback
-        logger.error("[ERROR] Full traceback:")
-        for line in traceback.format_exc().split('\n'):
-            if line.strip():
-                logger.error(f"   {line}")
-        raise
+        if (is_main_process()):
+            # Setup unified logger for error reporting if main logger fails
+            try:
+                from logger_setup import setup_unified_logger
+                logger = setup_unified_logger()
+            except ImportError:
+                import logging
+                logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+                logger = logging.getLogger(__name__)
+            logger.error(f"[ERROR] CRITICAL ERROR: Pipeline failed with exception: {e}")
+            logger.error(f"[ERROR] Exception type: {type(e).__name__}")
+            import traceback
+            logger.error("[ERROR] Full traceback:")
+            for line in traceback.format_exc().split('\n'):
+                if line.strip():
+                    logger.error(f"   {line}")
+            raise
