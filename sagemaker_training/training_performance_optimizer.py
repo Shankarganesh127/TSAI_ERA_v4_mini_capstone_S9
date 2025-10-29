@@ -598,7 +598,12 @@ def optimize_num_workers(dataset_path: str, max_workers: int = 8, probe_batches:
 
     for nw in range(1, max(2, max_workers) + 1):
         loader, _, steps, _ = get_imagenet_dataloaders(
-            dataset_path, dataset_path, batch_size=batch_size, num_workers=nw, pin_memory=True
+            dataset_path, 
+            dataset_path, 
+            batch_size=batch_size, 
+            num_workers=nw, 
+            pin_memory=True,
+            disable_distributed_splitting=True,
         )
 
         t0 = perf_counter()
