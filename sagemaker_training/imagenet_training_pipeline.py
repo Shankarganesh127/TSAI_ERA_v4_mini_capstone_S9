@@ -320,6 +320,25 @@ def parse_args():
     return p.parse_args()
 
 
+# --- Disable DDP temporarily so rank0 can test batch sizes safely ---
+def disable_ddp_model(model: nn.Module) -> nn.Module:
+    was_ddp = dist.is_initialized()
+    if was_ddp:
+        if hasattr(model, "module"):  # DDP-wrapped model
+            model_to_use = model.module
+        else:
+            model_to_use = model
+        dist.barrier()  # sync before disabling
+    else:
+        model_to_use = model
+    return was_ddp, model_to_use
+
+def enable_ddp_model(model: nn.Module, was_ddp: bool, local_rank: int) -> nn.Module:
+    if was_ddp:
+        dist.barrier()  # sync before re-enabling
+        model = ddp_wrap(model, local_rank)
+    return model
+
 # ---------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------
@@ -378,15 +397,18 @@ def main():
 
     # (B) BatchSize Finder
     if use_bsf:
+        
+        model = resnet50_imagenet(
+                        num_classes=1000, pretrained=args.pretrained
+                    ).to("cuda" if torch.cuda.is_available() else "cpu")
+        was_ddp, noddp_model = disable_ddp_model(model)
         reports_dir.mkdir(parents=True, exist_ok=True)
 
         if is_main_process():
             log.info("[AUTO] Running BatchSizeFinder...")
             try:
                 bsf = _BSF(
-                    model=resnet50_imagenet(
-                        num_classes=1000, pretrained=args.pretrained
-                    ).to("cuda" if torch.cuda.is_available() else "cpu"),
+                    model=noddp_model,
                     optimizer_cls=optim.SGD,
                     lr=args.lr,
                     momentum=args.momentum,
@@ -430,6 +452,10 @@ def main():
             dist.broadcast(tensor, src=0)
             best_bs = tensor.item()
 
+        # --- Re-enable DDP (all ranks re-sync) ---
+        if was_ddp:
+            dist.barrier()
+        best_bs = broadcast_scalar(best_bs, torch.int32, device)
         args.batch_size = int(best_bs)
         log.info(f"[AUTO] batch_size set to {args.batch_size}")
 
@@ -441,7 +467,7 @@ def main():
             try:
                 temp_device = "cuda" if torch.cuda.is_available() else "cpu"
                 lrf = _LRF(
-                    model=resnet50_imagenet(num_classes=1000, pretrained=args.pretrained).to(temp_device),
+                    model=noddp_model,
                     train_dir=args.train,
                     batch_size=args.batch_size,
                     device=temp_device,
@@ -471,6 +497,9 @@ def main():
             dist.broadcast(tensor, src=0)
             best_lr = float(tensor.item())
 
+        # --- Re-enable DDP (all ranks re-sync) ---
+        if was_ddp:
+            dist.barrier()
         args.lr = float(best_lr)
         log.info(f"[AUTO] lr set to {args.lr}")
 
@@ -483,7 +512,7 @@ def main():
                 temp_device = "cuda" if torch.cuda.is_available() else "cpu"
                 # This HPO runs per-rank independent trials internally when DDP is active
                 wds = _WDS(
-                    model_fn=lambda: resnet50_imagenet(num_classes=1000, pretrained=args.pretrained),
+                    model_fn=lambda: noddp_model,
                     train_dir=args.train,
                     val_dir=args.val,
                     device=temp_device,
@@ -508,6 +537,9 @@ def main():
             dist.broadcast(tensor, src=0)
             best_wd = float(tensor.item())
     
+        # --- Re-enable DDP (all ranks re-sync) ---
+        if was_ddp:
+            dist.barrier()
         args.weight_decay = float(best_wd)
         log.info(f"[AUTO] weight_decay set to {args.weight_decay}")
 
