@@ -331,6 +331,11 @@ def main():
     use_wds = (str(args.use_wd_search).lower() == "true") and (_WDS is not None)
     use_workers_auto = (str(args.use_workers_auto).lower() == "true") and (_OPTW is not None)
 
+    if dist.is_initialized():
+        world_size = dist.get_world_size()
+    else:
+        world_size = 1
+
     Path(args.output).mkdir(parents=True, exist_ok=True)
     reports_dir = ensure_reports_dir(args.output)
     (Path(args.output) / "run_args.json").write_text(json.dumps(vars(args), indent=2))
@@ -354,19 +359,34 @@ def main():
             # Report & persist
             save_json(reports_dir / "num_workers.json", {"optimal_workers_global": int(optimal_workers)})
         else:
+            # Non-main ranks: just wait for rank-0 to finish
+            if dist.is_initialized():
+                dist.barrier()  # ✅ wait for main process to complete optimization
             optimal_workers = args.num_workers
+            
+        # Broadcast to all ranks so everyone uses the same worker count
+        if dist.is_initialized():
+            dist.barrier()  # ensure rank-0 wrote the file before broadcast
+            tensor = torch.tensor(int(optimal_workers) if is_main_process() else 0, dtype=torch.int32, device=device)
+            dist.broadcast(tensor, src=0)
+            optimal_workers = tensor.item()
 
-        optimal_workers = broadcast_scalar(optimal_workers, torch.int32, device)
-        args.num_workers = int(optimal_workers)
-        log.info(f"[AUTO] num_workers set to {args.num_workers} (global)")
+            args.num_workers = int(optimal_workers)
+            log.info(f"[AUTO] num_workers set to {args.num_workers} (global)")
+    else:
+        log.info(f"[AUTO] Skipping num_workers auto-tuning (using {args.num_workers})")
 
-    # (B) BatchSize Finder (rank 0 only)
+    # (B) BatchSize Finder
     if use_bsf:
+        reports_dir.mkdir(parents=True, exist_ok=True)
+
         if is_main_process():
             log.info("[AUTO] Running BatchSizeFinder...")
             try:
                 bsf = _BSF(
-                    model=resnet50_imagenet(num_classes=1000, pretrained=args.pretrained).to("cuda" if torch.cuda.is_available() else "cpu"),
+                    model=resnet50_imagenet(
+                        num_classes=1000, pretrained=args.pretrained
+                    ).to("cuda" if torch.cuda.is_available() else "cpu"),
                     optimizer_cls=optim.SGD,
                     lr=args.lr,
                     momentum=args.momentum,
@@ -374,80 +394,123 @@ def main():
                     train_dir=args.train,
                     device="cuda" if torch.cuda.is_available() else "cpu",
                 )
-                bsf_result = bsf.find_max_batch(start_bs=max(32, args.batch_size//2), max_bs=2048)
+
+                bsf_result = bsf.find_max_batch(
+                    start_bs=max(32, args.batch_size // 2), max_bs=2048
+                )
                 best_bs = int(bsf_result.get("best_batch_size", args.batch_size))
-                # Save report
+
+                # Save report + plot
                 save_json(reports_dir / "batchsize_finder.json", bsf_result)
                 if "curve" in bsf_result:
                     xs = [p["bs"] for p in bsf_result["curve"]]
                     ys = [p["alloc_gb"] for p in bsf_result["curve"]]
-                    plot_xy(xs, ys, "batch_size", "allocated_GB", "Batch Size vs Allocated VRAM", reports_dir / "batchsize_finder.png")
+                    plot_xy(
+                        xs,
+                        ys,
+                        "batch_size",
+                        "allocated_GB",
+                        "Batch Size vs Allocated VRAM",
+                        reports_dir / "batchsize_finder.png",
+                    )
+
             except Exception as e:
                 log.warning(f"[AUTO] BatchSizeFinder failed, keeping batch_size={args.batch_size}: {e}")
                 best_bs = args.batch_size
         else:
-            best_bs = args.batch_size
+            # Non-main ranks wait for rank 0 to finish
+            if dist.is_initialized():
+                dist.barrier()
 
-        best_bs = broadcast_scalar(best_bs, torch.int32, device)
+        # --- ✅ Reliable broadcast replaces broadcast_scalar ---
+        if dist.is_initialized():
+            dist.barrier()  # ensure file written before broadcast
+            tensor = torch.tensor(int(best_bs) if is_main_process() else 0,
+                                  dtype=torch.int32, device=device)
+            dist.broadcast(tensor, src=0)
+            best_bs = tensor.item()
+
         args.batch_size = int(best_bs)
         log.info(f"[AUTO] batch_size set to {args.batch_size}")
+
 
     # (C) LR Finder (rank 0 only)
     if use_lrf:
         if is_main_process():
             log.info("[AUTO] Running LRFinder...")
             try:
+                temp_device = "cuda" if torch.cuda.is_available() else "cpu"
                 lrf = _LRF(
-                    model=resnet50_imagenet(num_classes=1000, pretrained=args.pretrained).to("cuda" if torch.cuda.is_available() else "cpu"),
+                    model=resnet50_imagenet(num_classes=1000, pretrained=args.pretrained).to(temp_device),
                     train_dir=args.train,
                     batch_size=args.batch_size,
-                    device="cuda" if torch.cuda.is_available() else "cpu",
+                    device=temp_device,
+                    num_workers=args.num_workers,
                 )
                 lr_report = lrf.find(start_lr=1e-6, end_lr=1.0, iters=200)
                 best_lr = float(lr_report.get("suggested_max_lr", args.lr))
-                # Save report + plot
+
+                # Save report + plot (rank 0 only)
                 save_json(reports_dir / "lr_finder.json", lr_report)
                 if "curve" in lr_report:
                     xs = [p["lr"] for p in lr_report["curve"]]
                     ys = [p["loss"] for p in lr_report["curve"]]
-                    plot_xy(xs, ys, "learning_rate", "loss", "LR Range Test", reports_dir / "lr_finder.png")
+                    plot_xy(xs, ys, "learning_rate", "loss",
+                            "LR Range Test", reports_dir / "lr_finder.png")
             except Exception as e:
                 log.warning(f"[AUTO] LRFinder failed, keeping lr={args.lr}: {e}")
                 best_lr = args.lr
         else:
             best_lr = args.lr
 
-        best_lr = broadcast_scalar(best_lr, torch.float32, device)
+        # --- Sync + broadcast scalar from rank 0 ---
+        if dist.is_initialized():
+            dist.barrier()
+            tensor = torch.tensor(float(best_lr) if is_main_process() else 0.0,
+                                  dtype=torch.float32, device=device)
+            dist.broadcast(tensor, src=0)
+            best_lr = float(tensor.item())
+
         args.lr = float(best_lr)
         log.info(f"[AUTO] lr set to {args.lr}")
+
 
     # (D) Weight-decay search (rank 0 only)
     if use_wds:
         if is_main_process():
             log.info("[AUTO] Running Weight-Decay Search...")
             try:
+                temp_device = "cuda" if torch.cuda.is_available() else "cpu"
+                # This HPO runs per-rank independent trials internally when DDP is active
                 wds = _WDS(
                     model_fn=lambda: resnet50_imagenet(num_classes=1000, pretrained=args.pretrained),
-                    train_loader=None, val_loader=None, device="cuda" if torch.cuda.is_available() else "cpu"
+                    train_dir=args.train,
+                    val_dir=args.val,
+                    device=temp_device,
+                    num_workers=args.num_workers,
                 )
-                # minimal stub — wds.weight_decay_search expects lr_config & loaders in your project; if not, you already have other helpers.
-                # We save a placeholder result if the class signature differs.
-                try:
-                    lr_config = {"min_lr": max(1e-5, args.lr/10.0), "max_lr": args.lr}
-                    results, best_wd = wds.weight_decay_search(lr_config, batch_size=args.batch_size)
-                    save_json(reports_dir / "weight_decay_search.json", {"results": results, "best_weight_decay": best_wd})
-                except Exception:
-                    best_wd = args.weight_decay
-                    save_json(reports_dir / "weight_decay_search.json", {"best_weight_decay": best_wd, "note": "fallback/no-op"})
+                lr_config = {"min_lr": max(1e-5, args.lr / 10.0), "max_lr": args.lr}
+                results, best_wd = wds.weight_decay_search(lr_config, batch_size=args.batch_size)
+    
+                save_json(reports_dir / "weight_decay_search.json",
+                          {"results": results, "best_weight_decay": float(best_wd)})
             except Exception as e:
                 log.warning(f"[AUTO] WD search failed, keeping weight_decay={args.weight_decay}: {e}")
                 best_wd = args.weight_decay
         else:
             best_wd = args.weight_decay
-
-        best_wd = broadcast_scalar(best_wd, torch.float32, device)
+    
+        # --- Sync + broadcast scalar from rank 0 ---
+        if dist.is_initialized():
+            dist.barrier()
+            tensor = torch.tensor(float(best_wd) if is_main_process() else 0.0,
+                                  dtype=torch.float32, device=device)
+            dist.broadcast(tensor, src=0)
+            best_wd = float(tensor.item())
+    
         args.weight_decay = float(best_wd)
         log.info(f"[AUTO] weight_decay set to {args.weight_decay}")
+
 
     # ----------------- Build final model & DDP wrap -----------------
     model = resnet50_imagenet(num_classes=1000, pretrained=args.pretrained)
@@ -469,7 +532,13 @@ def main():
         log.info(f"[DATALOADER] global_workers={args.num_workers} world_size={dist.get_world_size() if dist.is_initialized() else 1} → per_proc={per_proc_workers}")
 
     train_loader, val_loader, train_batches_per_epoch, _ = get_imagenet_dataloaders(
-        args.train, args.val, batch_size=args.batch_size, num_workers=per_proc_workers, pin_memory=True
+        args.train,
+        args.val,
+        batch_size=args.batch_size,
+        num_workers=per_proc_workers,
+        pin_memory=True,
+        # IMPORTANT: for full DDP training we want per-rank splitting
+        disable_distributed_splitting=False,
     )
 
     # ----------------- Optimizer / Scheduler / AMP -----------------
