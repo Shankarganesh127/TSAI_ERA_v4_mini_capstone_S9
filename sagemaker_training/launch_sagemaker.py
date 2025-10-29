@@ -323,9 +323,9 @@ def main():
     # Prepare hyperparameters for 7-step training
     hyperparameters = {
         'epochs': str(args.epochs),
-        'run_lr_finder': str(not args.skip_lr_finder).lower(),
-        'run_wd_search': str(not args.skip_wd_search).lower(),
-        'quick_mode': str(args.quick_mode).lower(),
+        #'run_lr_finder': str(not args.skip_lr_finder).lower(),
+        #'run_wd_search': str(not args.skip_wd_search).lower(),
+        #'quick_mode': str(args.quick_mode).lower(),
     }
     
     logger.info("🔧 7-Step Training Configuration:")
