@@ -47,20 +47,56 @@ def synchronize_processes():
         dist.barrier()
     else:
         # File-based synchronization for non-distributed environments
-        sync_file = Path("/tmp/sagemaker_sync_barrier")
-        if is_main_process():
-            sync_file.touch()
-        else:
-            # Non-main processes wait for the file
-            import time
-            while not sync_file.exists():
-                time.sleep(0.01)
-            # Clean up after all processes have seen it
-            try:
-                sync_file.unlink()
-            except Exception:
-                pass
+        # Get world size from environment - try multiple variable names
+        world_size = int(os.environ.get('WORLD_SIZE', os.environ.get('SM_NUM_GPUS', 1)))
+        rank = int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', 0)))
 
+        if world_size <= 1:
+            # Single process, no synchronization needed
+            return
+
+        # If we can't reliably determine rank, skip synchronization to avoid deadlocks
+        if rank < 0 or rank >= world_size:
+            return
+
+        sync_dir = Path("/tmp")
+        sync_file = sync_dir / f"sagemaker_sync_barrier_{world_size}"
+
+        if rank == 0:
+            # Main process: wait for all others to signal readiness
+            try:
+                # Reset the file
+                sync_file.write_text("0")
+            except Exception:
+                return
+            
+            # Wait for all processes to signal readiness
+            while True:
+                try:
+                    content = sync_file.read_text().strip()
+                    ready_count = int(content)
+                    if ready_count >= world_size:
+                        # All processes ready, clean up and continue
+                        sync_file.unlink()
+                        break
+                except (FileNotFoundError, ValueError):
+                    pass
+                import time
+                time.sleep(0.01)
+        else:
+            # Non-main processes: signal readiness and wait for main to clean up
+            while True:
+                try:
+                    content = sync_file.read_text().strip()
+                    ready_count = int(content)
+                    # Increment the count
+                    new_count = ready_count + 1
+                    sync_file.write_text(str(new_count))
+                    break
+                except (FileNotFoundError, ValueError):
+                    import time
+                    time.sleep(0.01)
+            # Wait for main process to clean up the file
 # Import unified logger - all files are in same directory now
 try:
     from logger_setup import setup_unified_logger, get_unified_logger
@@ -372,17 +408,11 @@ class ImageNetSageMakerTrainer:
             # Non-main processes still need args for directory setup
             args = self.parse_hyperparameters()
         
-        # Setup model saving directories (only main process logs)
+        # Setup model saving directories (only main process does this)
         self._setup_model_saving_directories(args)
         
-        # Synchronize: Ensure main process has finished directory setup before other processes proceed
-        synchronize_processes()
-        
-        # Start model replacement monitoring (only main process logs)
+        # Start model replacement monitoring (only main process does this)
         self._start_model_replacement_monitoring(args)
-        
-        # Synchronize: Ensure main process has finished monitoring setup before other processes proceed
-        synchronize_processes()
         
         # Build and execute pipeline command
         cmd = self.build_pipeline_command(args)
@@ -483,10 +513,6 @@ class ImageNetSageMakerTrainer:
         for key, value in env_vars_to_set.items():
             original_env[key] = os.environ.get(key)
             os.environ[key] = value
-
-        # Synchronize all processes before calling training_pipeline_main()
-        # This ensures all processes have the updated args and environment
-        synchronize_processes()
 
         # Set sys.argv to simulate command line arguments for the training pipeline
         # Skip the Python executable (cmd[0]) and use script path (cmd[1]) as argv[0]
