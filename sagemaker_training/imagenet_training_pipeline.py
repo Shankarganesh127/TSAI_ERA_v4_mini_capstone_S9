@@ -1612,27 +1612,59 @@ def main():
             except Exception:
                 pass
         return stage
-    logger = get_unified_logger("imagenet_training_pipeline")
+    # Get process rank early for logging
+    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', 0)))
+
+    # Create logger with rank information for debugging all processes
+    logger = get_unified_logger(f"imagenet_training_pipeline_rank_{local_rank}")
+
+    # Add rank information to all log messages
+    class RankLogger:
+        def __init__(self, base_logger, rank, world_size):
+            self.base_logger = base_logger
+            self.rank = rank
+            self.world_size = world_size
+            self.rank_prefix = f"[RANK {rank}/{world_size}] "
+
+        def _add_rank_prefix(self, message):
+            return self.rank_prefix + str(message)
+
+        def info(self, message, *args, **kwargs):
+            self.base_logger.info(self._add_rank_prefix(message), *args, **kwargs)
+
+        def debug(self, message, *args, **kwargs):
+            self.base_logger.debug(self._add_rank_prefix(message), *args, **kwargs)
+
+        def warning(self, message, *args, **kwargs):
+            self.base_logger.warning(self._add_rank_prefix(message), *args, **kwargs)
+
+        def error(self, message, *args, **kwargs):
+            self.base_logger.error(self._add_rank_prefix(message), *args, **kwargs)
+
+        def critical(self, message, *args, **kwargs):
+            self.base_logger.critical(self._add_rank_prefix(message), *args, **kwargs)
+
+    logger = RankLogger(logger, local_rank, world_size)
 
     # =============================================================================
     # SAGEMAKER TRAINING STARTED - SIMPLE STATUS LOG
     # =============================================================================
-    if is_main_process():
-        logger.info("=" * 80)
-        logger.info("[START] SAGEMAKER IMAGENET TRAINING PIPELINE STARTED")
-        logger.info("=" * 80)
-        logger.info(f"[TIME] Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"[PYTHON] Python: {sys.version}")
-        logger.info(f"[PYTORCH] PyTorch: {torch.__version__}")
-        logger.info(f"[SYSTEM] Working Directory: {os.getcwd()}")
-        logger.info("=" * 80)
-        # Log to unified log file
-        logger.info("="*80)
-        logger.info(f"[PYTHON] Python version: {sys.version}")
-        logger.info(f"[PYTORCH] PyTorch version: {torch.__version__}")
-        logger.info(f"[SYSTEM] Working directory: {os.getcwd()}")
-        logger.info(f"[FILE] Script path: {sys.argv[0]}")
-        logger.info(f"[ARGS] Command line args: {sys.argv[1:] if len(sys.argv) > 1 else 'None'}")
+    logger.info("=" * 80)
+    logger.info("[START] SAGEMAKER IMAGENET TRAINING PIPELINE STARTED")
+    logger.info("=" * 80)
+    logger.info(f"[TIME] Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"[PYTHON] Python: {sys.version}")
+    logger.info(f"[PYTORCH] PyTorch: {torch.__version__}")
+    logger.info(f"[SYSTEM] Working Directory: {os.getcwd()}")
+    logger.info("=" * 80)
+    # Log to unified log file
+    logger.info("="*80)
+    logger.info(f"[PYTHON] Python version: {sys.version}")
+    logger.info(f"[PYTORCH] PyTorch version: {torch.__version__}")
+    logger.info(f"[SYSTEM] Working directory: {os.getcwd()}")
+    logger.info(f"[FILE] Script path: {sys.argv[0]}")
+    logger.info(f"[ARGS] Command line args: {sys.argv[1:] if len(sys.argv) > 1 else 'None'}")
     
     parser = argparse.ArgumentParser(description='ImageNet Training Pipeline')
     parser.add_argument('--train', type=str, required=True, help='ImageNet training dataset path')
@@ -1729,11 +1761,10 @@ def main():
     # Setup
     try:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        if is_main_process():
-            logger.info(f"[DEVICE]  Using device: {device}")
-            logger.info(f"[DEBUG] DEBUG: CUDA available: {torch.cuda.is_available()}")
-            if torch.cuda.is_available():
-                logger.info(f"[DEBUG] DEBUG: CUDA device count: {torch.cuda.device_count()}")
+        logger.info(f"[DEVICE]  Using device: {device}")
+        logger.info(f"[DEBUG] DEBUG: CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            logger.info(f"[DEBUG] DEBUG: CUDA device count: {torch.cuda.device_count()}")
         # DDP setup - Get values from environment variables (SageMaker/NVIDIA/PyTorch)
         world_size = int(os.environ.get('WORLD_SIZE', getattr(args, 'world_size', 1)))
         local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', getattr(args, 'local_rank', 0))))
@@ -1743,9 +1774,8 @@ def main():
         raise
     
     try:
-        if is_main_process():
-            os.makedirs(args.output, exist_ok=True)
-            logger.info(f"[DEBUG] DEBUG: Output directory created: {args.output}")
+        os.makedirs(args.output, exist_ok=True)
+        logger.info(f"[DEBUG] DEBUG: Output directory created: {args.output}")
     except Exception as e:
         logger.error(f"[ERROR] DEBUG: Error creating output directory: {e}")
         raise
@@ -1766,11 +1796,10 @@ def main():
             raise
     
     # STEP 0: Batch Size Detection (if not specified) - Only main process
-    if is_main_process():
-        logger.info("[DEBUG] DEBUG: No batch size specified, starting batch size detection")
-        logger.info("="*60)
-        logger.info("[CONFIG] STEP 0: Batch Size Detection")
-        logger.info("="*60)
+    logger.info("[DEBUG] DEBUG: No batch size specified, starting batch size detection")
+    logger.info("="*60)
+    logger.info("[CONFIG] STEP 0: Batch Size Detection")
+    logger.info("="*60)
     
     
     try:
@@ -1881,11 +1910,10 @@ def main():
     
     # PIPELINE 2 : DataLoader num_workers optimization
     # Optimize num_workers for balanced CPU/GPU utilization and memory usage
-    if is_main_process():
-        logger.info("="*60)
-        logger.info("[PIPELINE] 2: DataLoader num_workers Optimization")
-        logger.info("="*60)
-        logger.info("[OPTIMIZE] Optimizing num_workers for DataLoader...")
+    logger.info("="*60)
+    logger.info("[PIPELINE] 2: DataLoader num_workers Optimization")
+    logger.info("="*60)
+    logger.info("[OPTIMIZE] Optimizing num_workers for DataLoader...")
     
     # Only main process runs num_workers optimization to avoid duplicate logging
     num_workers_file = os.path.join(checkpoint_dir, 'num_workers_results.json')
@@ -2414,8 +2442,7 @@ def main():
         progress_manager.finalize_status(wd_skip_key)
     
     # Aggressive memory cleanup before full training to prevent fragmentation
-    if is_main_process():
-        logger.info("[MEMORY] Performing aggressive memory cleanup before full training...")
+    logger.info("[MEMORY] Performing aggressive memory cleanup before full training...")
     aggressive_memory_cleanup()
     
     # Final memory check and cleanup
@@ -2438,24 +2465,22 @@ def main():
     progress_manager.create_status_updater(full_train_key,
         f"[START] STEP 6: Full OneCycle Training - Starting {training_epochs} epochs...")
 
-    if is_main_process():
-        logger.info("="*60)
-        logger.info("[START] STEP 6: Full OneCycle Training")
-        logger.info("="*60)
-        logger.info(f"[MEMORY] Final batch size: {args.batch_size}")
-        # Note: gradient_accumulation_steps and effective batch size will be logged after calculation
-        if args.batch_size <= 8:
-            logger.info("[MEMORY] Gradient checkpointing: ENABLED")
-        else:
-            logger.info("[MEMORY] Gradient checkpointing: DISABLED")
+    logger.info("="*60)
+    logger.info("[START] STEP 6: Full OneCycle Training")
+    logger.info("="*60)
+    logger.info(f"[MEMORY] Final batch size: {args.batch_size}")
+    # Note: gradient_accumulation_steps and effective batch size will be logged after calculation
+    if args.batch_size <= 8:
+        logger.info("[MEMORY] Gradient checkpointing: ENABLED")
+    else:
+        logger.info("[MEMORY] Gradient checkpointing: DISABLED")
 
     model = create_model().to(device)
     # DDP: Wrap model if multi-GPU
     if torch.cuda.is_available() and getattr(args, 'world_size', 1) > 1:
         import torch.nn.parallel
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
-        if is_main_process():
-            logger.info("[DDP] Model wrapped with DistributedDataParallel")
+        logger.info("[DDP] Model wrapped with DistributedDataParallel")
     
     # Log memory usage after model creation
     log_detailed_memory_usage("after_model_creation")
@@ -2465,8 +2490,7 @@ def main():
     should_checkpoint = instance_profile['enable_gradient_checkpointing'] or optimal_batch_size <= 8
 
     if should_checkpoint:
-        if is_main_process():
-            logger.info("[MEMORY] Enabling gradient checkpointing for memory efficiency")
+        logger.info("[MEMORY] Enabling gradient checkpointing for memory efficiency")
         try:
             # Import checkpoint utilities
             # Removed unused import checkpoint_sequential
@@ -2481,20 +2505,16 @@ def main():
                     model.layer2 = torch.nn.Sequential(*[torch.nn.utils.checkpoint.checkpoint_wrapper(module) for module in model.layer2])
                     model.layer3 = torch.nn.Sequential(*[torch.nn.utils.checkpoint.checkpoint_wrapper(module) for module in model.layer3])
                     model.layer4 = torch.nn.Sequential(*[torch.nn.utils.checkpoint.checkpoint_wrapper(module) for module in model.layer4])
-                    if is_main_process():
-                        logger.info("[MEMORY] Applied gradient checkpointing to ResNet layers")
+                    logger.info("[MEMORY] Applied gradient checkpointing to ResNet layers")
                 else:
                     # Fallback: try to checkpoint the entire model if it's sequential
-                    if is_main_process():
-                        logger.warning("[MEMORY] Could not identify ResNet layers, attempting sequential checkpointing")
+                    logger.warning("[MEMORY] Could not identify ResNet layers, attempting sequential checkpointing")
                     if isinstance(model, torch.nn.Sequential):
                         model = torch.nn.utils.checkpoint.checkpoint_wrapper(model)
-                        if is_main_process():
-                            logger.info("[MEMORY] Applied sequential gradient checkpointing")
+                        logger.info("[MEMORY] Applied sequential gradient checkpointing")
 
             apply_checkpointing(model)
-            if is_main_process():
-                logger.info("[MEMORY] Gradient checkpointing enabled - expect ~50% memory reduction")
+            logger.info("[MEMORY] Gradient checkpointing enabled - expect ~50% memory reduction")
         except Exception as e:
             logger.warning(f"[MEMORY] Could not enable gradient checkpointing: {e}")
             logger.warning("[MEMORY] Continuing without gradient checkpointing")
@@ -2539,13 +2559,12 @@ def main():
         logger.info(f"[GRAD] No gradient accumulation needed (batch size: {optimal_batch_size})")
 
     # Now log the gradient accumulation details after calculation
-    if is_main_process():
-        logger.info(f"[MEMORY] Gradient accumulation steps: {gradient_accumulation_steps}")
-        logger.info(f"[MEMORY] Effective batch size: {optimal_batch_size * gradient_accumulation_steps}")
-        if optimal_batch_size <= 8:
-            logger.info("[MEMORY] Gradient checkpointing: ENABLED")
-        else:
-            logger.info("[MEMORY] Gradient checkpointing: DISABLED")
+    logger.info(f"[MEMORY] Gradient accumulation steps: {gradient_accumulation_steps}")
+    logger.info(f"[MEMORY] Effective batch size: {optimal_batch_size * gradient_accumulation_steps}")
+    if optimal_batch_size <= 8:
+        logger.info("[MEMORY] Gradient checkpointing: ENABLED")
+    else:
+        logger.info("[MEMORY] Gradient checkpointing: DISABLED")
         
     if current_stage in ['START', 'LR_TEST_COMPLETE', 'WD_SEARCH_COMPLETE']:
         history = trainer.train(
