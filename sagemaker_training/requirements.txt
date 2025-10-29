@@ -4,6 +4,7 @@ torchsummary>=1.5.1
 accelerate==0.33.0
 #smdistributed-dataparallel>=1.8.0
 webdataset>=1.0.0
+tensorboard>=2.13.0
 # SageMaker Training Pipeline - Complete Requirements
 
 # Core AWS and SageMaker
