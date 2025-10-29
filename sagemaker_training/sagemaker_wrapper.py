@@ -489,8 +489,9 @@ class ImageNetSageMakerTrainer:
         synchronize_processes()
 
         # Set sys.argv to simulate command line arguments for the training pipeline
+        # Skip the Python executable (cmd[0]) and use script path (cmd[1]) as argv[0]
         original_argv = sys.argv.copy()
-        sys.argv = cmd  # cmd contains the full command including script path and args
+        sys.argv = cmd[1:]  # Skip Python executable, keep script path + args
 
         try:
             # Call the training pipeline main function directly
