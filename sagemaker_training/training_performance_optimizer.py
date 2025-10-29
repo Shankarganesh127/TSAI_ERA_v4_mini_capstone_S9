@@ -1,511 +1,489 @@
 #!/usr/bin/env python3
 """
-Training Performance Optimizer for SageMaker ImageNet Training
+training_performance_optimizer.py
 
-Addresses the critical bottlenecks causing slow training (6+ hours per epoch):
-1. GPU underutilization due to I/O bottlenecks
-2. Inefficient data loading pipelines
-3. Lack of mixed precision training
-4. Suboptimal distributed training setup
-5. Improper batch size and learning rate scaling
+Research-grade utilities:
+- BatchSizeFinder: Find largest batch size that fits in GPU memory (quick OOM-safe search)
+- LRFinder: LR range test (records curve + suggests a max LR)
+- HyperparameterOptimizer: weight_decay_search(...) with DDP-aware parallel partitioning
+- optimize_num_workers: quick dataloader benchmark to suggest a global num_workers
 
-This class provides automated optimization and monitoring to achieve
-target epoch times of 20-40 minutes instead of 6+ hours.
+Design goals:
+- Safe in SageMaker DDP: rank 0 coordinates, all ranks use the same tuned results
+- Minimal side-effects: temporary models/loaders for probes; your main pipeline builds the final ones
+- Produces JSON-ready result dicts (curves, suggestions) for your reporting layer
+
+Assumptions:
+- imagenet_dataset.get_imagenet_dataloaders(...) exists in your project
+- imagenet_models.resnet50_imagenet(...) or a model_fn supplied by caller
 """
 
+from __future__ import annotations
 import os
 import time
+import math
+import json
+from pathlib import Path
+from typing import Callable, Optional, Dict, Any, List
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
 import torch.distributed as dist
-import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
-import psutil
-try:
-    import GPUtil
-    GPU_UTIL_AVAILABLE = True
-except ImportError:
-    GPUtil = None
-    GPU_UTIL_AVAILABLE = False
-from contextlib import contextmanager
-import logging
-from typing import Dict, Any, Optional, Tuple, List
-from pathlib import Path
+from torch.cuda.amp import autocast, GradScaler
 
-logger = logging.getLogger(__name__)
+# Import your dataset loader util
+from imagenet_dataset import get_imagenet_dataloaders
+from logger_setup import get_unified_logger
 
+log = get_unified_logger("tpo")
 
-class TrainingPerformanceOptimizer:
+# ----------------------------
+# Helpers
+# ----------------------------
+def _is_ddp() -> bool:
+    return dist.is_initialized()
+
+def _rank() -> int:
+    return dist.get_rank() if _is_ddp() else 0
+
+def _world() -> int:
+    return dist.get_world_size() if _is_ddp() else 1
+
+def _bcast_scalar(value, dtype, device, src: int = 0):
+    """Broadcast a scalar from src to all ranks; return Python scalar."""
+    if not _is_ddp():
+        return value
+    t = torch.tensor(value, dtype=dtype, device=device)
+    dist.broadcast(t, src=src)
+    return t.item()
+
+def _gather_dicts_local_to_rank0(local: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Gather arbitrary Python dicts from all ranks to rank 0 (using all_gather_object)."""
+    objs = [None for _ in range(_world())]
+    if _is_ddp():
+        dist.all_gather_object(objs, local)
+    else:
+        objs = [local]
+    return objs
+
+def _suggest_max_lr_from_curve(curve: List[Dict[str, float]]) -> float:
     """
-    Comprehensive training optimizer for ImageNet-scale distributed training.
+    Basic heuristic:
+    - Smooth minimal loss L_min
+    - Choose an LR where loss starts increasing sharply: 
+      pick LR at 0.8 * argmin(loss), or 1/10 of LR at loss min, whichever is smaller but > start.
+    """
+    if not curve:
+        return 1e-3
+    losses = [p["loss"] for p in curve]
+    lrs = [p["lr"] for p in curve]
+    i_min = max(0, int(losses.index(min(losses))))
+    # conservative: pick 0.1 * LR at minimal loss, but not smaller than first LR
+    return max(lrs[0], lrs[i_min] * 0.1)
 
-    Addresses the key bottlenecks:
-    - GPU utilization monitoring and optimization
-    - Data loading pipeline optimization
-    - Mixed precision training setup
-    - Distributed training efficiency
-    - Batch size and learning rate scaling
+
+# ----------------------------
+# Batch Size Finder
+# ----------------------------
+class BatchSizeFinder:
+    """
+    Finds the largest per-process batch size that fits in memory with a quick forward/backward loop.
+
+    API:
+        bsf = BatchSizeFinder(model, optimizer_cls, lr, momentum, weight_decay, train_dir, device="cuda")
+        result = bsf.find_max_batch(start_bs=64, max_bs=2048, steps=20)
+        result = {
+            "best_batch_size": 448,
+            "curve": [{"bs": 64, "ok": True, "alloc_gb": 3.1}, ...],
+            "device": "cuda:0",
+            "rank": 0
+        }
     """
 
-    def __init__(self,
-                 model: nn.Module,
-                 optimizer: optim.Optimizer,
-                 criterion: nn.Module,
-                 train_loader: DataLoader,
-                 val_loader: Optional[DataLoader] = None,
-                 device: str = 'cuda',
-                 world_size: int = 1,
-                 rank: int = 0,
-                 enable_amp: bool = True,
-                 enable_profiling: bool = True,
-                 batch_size: int = 32,
-                 num_workers: int = 4):
-        """
-        Initialize the training optimizer.
-
-        Args:
-            model: PyTorch model
-            optimizer: Optimizer (will be wrapped for distributed training)
-            criterion: Loss function
-            train_loader: Training data loader
-            val_loader: Validation data loader (optional)
-            device: Device to use ('cuda' or 'cpu')
-            world_size: Number of processes/GPUs
-            rank: Process rank
-            enable_amp: Enable automatic mixed precision
-            enable_profiling: Enable performance profiling
-        """
+    def __init__(
+        self,
+        model: nn.Module,
+        optimizer_cls: Callable[..., optim.Optimizer],
+        lr: float,
+        momentum: float,
+        weight_decay: float,
+        train_dir: str,
+        device: str = "cuda",
+        num_workers: int = 2,
+    ):
         self.model = model
-        self.optimizer = optimizer
-        self.criterion = criterion
-        self.train_loader = train_loader
-        self.val_loader = val_loader
-        self.device = device
-        self.world_size = world_size
-        self.rank = rank
-        self.enable_amp = enable_amp and torch.cuda.is_available()
-        self.enable_profiling = enable_profiling
-        self.batch_size = batch_size
+        self.optimizer_cls = optimizer_cls
+        self.lr = lr
+        self.momentum = momentum
+        self.weight_decay = weight_decay
+        self.train_dir = train_dir
+        self.device = torch.device(device if torch.cuda.is_available() and device.startswith("cuda") else "cpu")
         self.num_workers = num_workers
 
-        # Performance tracking
-        self.performance_stats = {
-            'gpu_utilization': [],
-            'data_loading_times': [],
-            'forward_pass_times': [],
-            'backward_pass_times': [],
-            'step_times': [],
-            'memory_usage': []
-        }
-
-        # Setup mixed precision
-        if self.enable_amp:
-            self.scaler = GradScaler(enabled=torch.cuda.is_available())
-        else:
-            self.scaler = GradScaler(enabled=torch.cuda.is_available())
-        
-        # Setup distributed training
-        self.is_distributed = torch.cuda.device_count() > 1 or world_size > 1
-
-        logger.info(f"🚀 Training Optimizer initialized:")
-        logger.info(f"   - Device: {device}")
-        logger.info(f"   - World Size: {world_size}")
-        logger.info(f"   - Rank: {rank}")
-        logger.info(f"   - AMP: {self.enable_amp}")
-        logger.info(f"   - Distributed: {self.is_distributed}")
-        logger.info(f"   - Profiling: {enable_profiling}")
-
-    def optimize_data_loading(self, target_workers: int = 32) -> Tuple[DataLoader, Optional[DataLoader]]:
-        """
-        Optimize data loading for maximum GPU utilization.
-
-        Args:
-            target_workers: Target number of DataLoader workers
-
-        Returns:
-            Tuple of (optimized_train_loader, optimized_val_loader)
-        """
-        logger.info(f"🔧 Optimizing data loading pipelines with {target_workers} workers")
-        logger.info(f"   Current train_loader settings:")
-        logger.info(f"     - batch_size: {self.train_loader.batch_size}")
-        logger.info(f"     - num_workers: {self.train_loader.num_workers}")
-        logger.info(f"     - pin_memory: {self.train_loader.pin_memory}")
-        logger.info(f"     - persistent_workers: {getattr(self.train_loader, 'persistent_workers', 'N/A')}")
-        logger.info(f"   Target optimization: num_workers → {target_workers}")
-
-        # Optimize training loader
-        train_current_workers = self.train_loader.num_workers
-        logger.info(f"   Training loader: {train_current_workers} → {target_workers} workers")
-        target_workers = min(train_current_workers,target_workers)
-
-        # Check if shuffle is enabled by examining the sampler type
-        from torch.utils.data import RandomSampler
-        train_shuffle = isinstance(self.train_loader.sampler, RandomSampler)
-
-        optimized_train_loader = DataLoader(
-            self.train_loader.dataset,
-            batch_size=self.train_loader.batch_size,
-            shuffle=train_shuffle,
-            sampler=self.train_loader.sampler,
-            num_workers=target_workers,
-            pin_memory=self.train_loader.pin_memory,
-            drop_last=self.train_loader.drop_last,
-            prefetch_factor=2,  # Prefetch 2 batches per worker
-            persistent_workers=True  # Keep workers alive between epochs
+    def _probe(self, bs: int, steps: int = 20) -> Dict[str, Any]:
+        # small loader for a few iterations
+        train_loader, _, train_batches, _ = get_imagenet_dataloaders(
+            self.train_dir, self.train_dir,
+            batch_size=bs,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            # BS finder runs standalone; do not split across ranks
+            disable_distributed_splitting=True,
         )
 
-        # Optimize validation loader if available
-        optimized_val_loader = None
-        if self.val_loader is not None:
-            val_current_workers = self.val_loader.num_workers
-            logger.info(f"   Validation loader: {val_current_workers} → {min(target_workers, 8)} workers")
-            target_workers = min(val_current_workers,target_workers,8)
+        model = self.model.to(self.device)
+        model.train()
+        opt = self.optimizer_cls(model.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.weight_decay)
+        scaler = GradScaler(enabled=torch.cuda.is_available())
 
-            # Check if shuffle is enabled by examining the sampler type
-            val_shuffle = isinstance(self.val_loader.sampler, RandomSampler)
+        torch.cuda.reset_peak_memory_stats(self.device) if torch.cuda.is_available() else None
 
-            optimized_val_loader = DataLoader(
-                self.val_loader.dataset,
-                batch_size=self.val_loader.batch_size,
-                shuffle=val_shuffle,
-                sampler=self.val_loader.sampler,
-                num_workers=target_workers,  # Use fewer workers for validation (typically smaller)
-                pin_memory=self.val_loader.pin_memory,
-                drop_last=self.val_loader.drop_last,
-                prefetch_factor=2,
-                persistent_workers=True
-            )
-
-        logger.info("✅ Data loading optimization complete")
-        return optimized_train_loader, optimized_val_loader
-
-    def get_optimal_batch_size(self, max_memory_gb: float = 14.0) -> int:
-        """
-        Find optimal batch size that maximizes GPU memory utilization.
-
-        Args:
-            max_memory_gb: Maximum GPU memory to use (GB)
-
-        Returns:
-            Optimal batch size per GPU
-        """
-        base_batch_size = 32
-        max_batch_size = 1024
-        logger.info(f"🔍 Finding optimal batch size (max {max_memory_gb}GB GPU memory)")
-        # Test different batch sizes
-        optimal_batch = base_batch_size
-        for batch_size in [32, 64, 128, 256, 512, 1024]:
-            try:
-                # Clear gradients and cache
-                self.optimizer.zero_grad()
-                torch.cuda.empty_cache()
-                # Test memory usage with dummy batch
-                dummy_input = torch.randn(batch_size, 3, 224, 224).to(self.device)
-                dummy_target = torch.randint(0, 1000, (batch_size,)).to(self.device)
-                with autocast(enabled=self.enable_amp):
-                    output = self.model(dummy_input)
-                    loss = self.criterion(output, dummy_target)
-                    if self.scaler:
-                        self.scaler.scale(loss).backward()
-                    else:
-                        loss.backward()
-                # Check memory usage
-                memory_gb = torch.cuda.memory_allocated() / (1024**3)
-                optimal_batch = batch_size
-                logger.info(f"   ✅ Batch size {batch_size}: {memory_gb:.1f}GB")
-            except RuntimeError as e:
-                # 3. Rely on the OOM exception to break the loop
-                if "out of memory" in str(e):
-                    logger.warning(f"  ❌ Batch size {batch_size} failed: CUDA Out of Memory.")
-                    # This is CRITICAL: free memory right after an OOM error
-                    del dummy_input, dummy_target, output, loss
-                    torch.cuda.empty_cache() 
-                    break
+        ok = True
+        iters = min(steps, train_batches)
+        try:
+            it_count = 0
+            for it, (x, y) in enumerate(train_loader):
+                x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
+                with autocast(enabled=scaler.is_enabled()):
+                    out = model(x)
+                    loss = nn.functional.cross_entropy(out, y)
+                if scaler.is_enabled():
+                    scaler.scale(loss).backward()
+                    scaler.step(opt)
+                    scaler.update()
                 else:
-                    # Handle other RuntimeErrors
-                    logger.warning(f"  ❌ Batch size {batch_size} failed with non-OOM error: {e}")
+                    loss.backward()
+                    opt.step()
+                opt.zero_grad(set_to_none=True)
+
+                it_count += 1
+                if it_count >= iters:
                     break
-        logger.info(f"🎯 Optimal batch size: {optimal_batch}")
-        self.batch_size = optimal_batch
-        return optimal_batch
-
-    def scale_learning_rate_for_batch_size(self,
-                                         base_lr: float,
-                                         base_batch_size: int,
-                                         current_batch_size: int,
-                                         scaling_factor: float = 1.0) -> float:
-        """
-        Scale learning rate based on batch size changes.
-
-        Args:
-            base_lr: Original learning rate
-            base_batch_size: Original batch size
-            current_batch_size: New batch size
-            scaling_factor: Additional scaling factor
-
-        Returns:
-            Scaled learning rate
-        """
-        # Linear scaling rule: LR_new = LR_old * (batch_new / batch_old)
-        batch_ratio = current_batch_size / base_batch_size
-        scaled_lr = base_lr * batch_ratio * scaling_factor
-
-        logger.info(f"📈 LR scaling: {base_lr:.2e} → {scaled_lr:.2e} "
-                   f"(batch: {base_batch_size} → {current_batch_size})")
-
-        return scaled_lr
-
-    @contextmanager
-    def profile_step(self, step_name: str):
-        """Context manager for profiling training steps."""
-        if not self.enable_profiling:
-            yield
-            return
-
-        start_time = time.time()
-        start_memory = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-
-        try:
-            yield
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                ok = False
+            else:
+                raise
         finally:
-            end_time = time.time()
-            end_memory = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+            del model, opt
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
-            duration = end_time - start_time
-            memory_delta = end_memory - start_memory
+        alloc_gb = 0.0
+        if torch.cuda.is_available():
+            alloc_gb = torch.cuda.max_memory_allocated(self.device) / (1024**3)
 
-            self.performance_stats[f'{step_name}_times'].append(duration)
-            if 'memory' in step_name.lower():
-                self.performance_stats['memory_usage'].append(memory_delta)
+        return {"bs": bs, "ok": ok, "alloc_gb": float(alloc_gb), "device": str(self.device), "rank": _rank()}
 
-    def monitor_gpu_utilization(self) -> Dict[str, float]:
+    def find_max_batch(self, start_bs: int = 64, max_bs: int = 2048, steps: int = 20) -> Dict[str, Any]:
         """
-        Monitor current GPU utilization and system stats.
-
-        Returns:
-            Dictionary with utilization metrics
+        1) Geometric growth until OOM (or max)
+        2) Binary search between last OK and first OOM
         """
-        gpu_stats = {}
+        curve = []
+        bs = max(1, int(start_bs))
+        last_ok = 0
+        first_oom = None
 
-        # CPU stats (always available)
-        try:
-            cpu_percent = psutil.cpu_percent(interval=0.1)
-            gpu_stats['cpu_util'] = cpu_percent
-        except Exception as e:
-            logger.warning(f"Failed to get CPU stats: {e}")
+        # ramp-up
+        while bs <= max_bs:
+            r = self._probe(bs, steps=steps)
+            curve.append(r)
+            if r["ok"]:
+                last_ok = bs
+                bs *= 2
+            else:
+                first_oom = bs
+                break
 
-        # GPU stats (optional)
-        if GPU_UTIL_AVAILABLE and GPUtil:
-            try:
-                gpus = GPUtil.getGPUs()
-                for i, gpu in enumerate(gpus):
-                    gpu_stats[f'gpu_{i}_util'] = gpu.load * 100
-                    gpu_stats[f'gpu_{i}_memory'] = gpu.memoryUsed / gpu.memoryTotal * 100
-            except Exception as e:
-                logger.warning(f"Failed to get GPU stats: {e}")
-        else:
-            logger.debug("GPUtil not available - GPU monitoring disabled")
+        if last_ok == 0:
+            # even start_bs failed; return conservative choice
+            return {"best_batch_size": start_bs, "curve": curve, "device": str(self.device), "rank": _rank()}
 
-        return gpu_stats
+        # binary search
+        lo, hi = last_ok, (first_oom if first_oom is not None else last_ok)
+        if first_oom is None:
+            # never OOM'ed up to max_bs; accept last_ok
+            return {"best_batch_size": last_ok, "curve": curve, "device": str(self.device), "rank": _rank()}
 
-    def get_performance_report(self) -> Dict[str, Any]:
-        """
-        Generate comprehensive performance report.
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            r = self._probe(mid, steps=steps)
+            curve.append(r)
+            if r["ok"]:
+                lo = mid
+            else:
+                hi = mid
 
-        Returns:
-            Dictionary with performance metrics and recommendations
-        """
-        gpu_stats = self.monitor_gpu_utilization()
+        return {"best_batch_size": lo, "curve": curve, "device": str(self.device), "rank": _rank()}
 
-        report = {
-            'gpu_utilization': gpu_stats,
-            'performance_stats': self.performance_stats,
-            'recommendations': []
+
+# ----------------------------
+# LR Finder
+# ----------------------------
+class LRFinder:
+    """
+    Classic LR range test (Leslie Smith).
+    - linearly/exponentially increase LR across a short run and record loss curve
+    - suggest a conservative max LR based on min loss region
+
+    API:
+        lrf = LRFinder(model, train_dir, batch_size, device)
+        report = lrf.find(start_lr=1e-6, end_lr=1.0, iters=200, mode="exp")
+        report = {"curve":[{"lr":..., "loss":...}, ...], "suggested_max_lr":..., "rank":0}
+    """
+
+    def __init__(self, model: nn.Module, train_dir: str, batch_size: int, device: str = "cuda", num_workers: int = 2):
+        self.model = model
+        self.train_dir = train_dir
+        self.batch_size = batch_size
+        self.device = torch.device(device if torch.cuda.is_available() and device.startswith("cuda") else "cpu")
+        self.num_workers = num_workers
+
+    def find(self, start_lr: float = 1e-6, end_lr: float = 1.0, iters: int = 200, mode: str = "exp") -> Dict[str, Any]:
+        train_loader, _, train_batches, _ = get_imagenet_dataloaders(
+            self.train_dir, self.train_dir,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            # LR finder runs standalone; do not split across ranks
+            disable_distributed_splitting=True,
+        )
+
+        model = self.model.to(self.device)
+        model.train()
+
+        opt = optim.SGD(model.parameters(), lr=start_lr, momentum=0.9)
+        scaler = GradScaler(enabled=torch.cuda.is_available())
+
+        curve = []
+        lr = start_lr
+        gamma = (end_lr / start_lr) ** (1.0 / max(1, iters)) if mode == "exp" else (end_lr - start_lr) / max(1, iters)
+
+        it_count = 0
+        for x, y in train_loader:
+            x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
+            # set LR for this step
+            for pg in opt.param_groups:
+                pg["lr"] = lr
+
+            with autocast(enabled=scaler.is_enabled()):
+                out = model(x)
+                loss = nn.functional.cross_entropy(out, y)
+
+            curve.append({"lr": float(lr), "loss": float(loss.item())})
+
+            if scaler.is_enabled():
+                scaler.scale(loss).backward()
+                scaler.step(opt)
+                scaler.update()
+            else:
+                loss.backward()
+                opt.step()
+            opt.zero_grad(set_to_none=True)
+
+            it_count += 1
+            if it_count >= iters:
+                break
+
+            # update LR
+            if mode == "exp":
+                lr *= gamma
+            else:
+                lr += gamma
+
+        # suggest LR
+        suggested = _suggest_max_lr_from_curve(curve)
+        del model, opt
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        return {"curve": curve, "suggested_max_lr": float(suggested), "rank": _rank()}
+
+
+# ----------------------------
+# Weight Decay Search (DDP-parallel)
+# ----------------------------
+class HyperparameterOptimizer:
+    """
+    DDP-aware weight decay search.
+    - Split candidate WD list across ranks (disjoint subsets)
+    - Each rank trains a small number of steps per candidate, evaluates on a small val split
+    - Gather results to rank 0; choose best WD; return (results, best_wd)
+
+    API:
+        hpo = HyperparameterOptimizer(model_fn, train_dir, val_dir, device="cuda")
+        results, best_wd = hpo.weight_decay_search(lr_config, batch_size, candidates=None, steps=200)
+
+        results = [{"weight_decay": 1e-4, "val_top1": 67.1, "val_loss": 1.49, "rank": 1}, ...]
+    """
+
+    def __init__(
+        self,
+        model_fn: Callable[[], nn.Module],
+        train_dir: str | None = None,
+        val_dir: str | None = None,
+        device: str = "cuda",
+        num_workers: int = 2,
+    ):
+        self.model_fn = model_fn
+        self.train_dir = train_dir
+        self.val_dir = val_dir
+        self.device = torch.device(device if torch.cuda.is_available() and device.startswith("cuda") else "cpu")
+        self.num_workers = num_workers
+
+    def _build_loaders(self, batch_size: int):
+        assert self.train_dir is not None and self.val_dir is not None, \
+            "train_dir and val_dir must be provided for weight_decay_search"
+        train_loader, val_loader, train_batches, val_batches = get_imagenet_dataloaders(
+            self.train_dir, self.val_dir,
+            batch_size=batch_size,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            # WD search runs independently per rank (no DDP sampling)
+            disable_distributed_splitting=True,
+        )
+        
+        # ✅ Sanity check: make sure we received iterable WebDataset loaders
+        assert hasattr(train_loader, "__iter__"), "Expected an iterable train_loader"
+        assert hasattr(val_loader, "__iter__"), "Expected an iterable val_loader"
+
+        return train_loader, val_loader, train_batches, val_batches
+
+    @torch.no_grad()
+    def _validate(self, model: nn.Module, loader) -> Dict[str, float]:
+        model.eval()
+        loss_sum, correct, total = 0.0, 0, 0
+        for x, y in loader:
+            x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
+            out = model(x)
+            loss = nn.functional.cross_entropy(out, y)
+            loss_sum += loss.item() * x.size(0)
+            pred = out.argmax(1)
+            correct += (pred == y).sum().item()
+            total += y.size(0)
+        return {
+            "val_loss": loss_sum / max(1, total),
+            "val_top1": 100.0 * correct / max(1, total),
         }
 
-        # Analyze GPU utilization
-        gpu_utils = [v for k, v in gpu_stats.items() if 'util' in k and 'gpu' in k]
-        if gpu_utils:
-            avg_gpu_util = sum(gpu_utils) / len(gpu_utils)
-            if avg_gpu_util < 80:
-                report['recommendations'].append(
-                    f"⚠️ Low GPU utilization ({avg_gpu_util:.1f}%). "
-                    "Check data loading bottlenecks."
-                )
+    def weight_decay_search(
+        self,
+        lr_config: Dict[str, float],
+        batch_size: int,
+        candidates: Optional[List[float]] = None,
+        steps: int = 200,
+    ):
+        """
+        Distributed strategy:
+        - Build small train/val loaders per process
+        - Split candidates among ranks: each rank trains/evaluates only its subset
+        - all_gather_object to rank 0; choose best_wd; broadcast if caller needs
+
+        lr_config: {"min_lr": ..., "max_lr": ...} -> we'll just use max_lr as constant LR here
+        """
+        if candidates is None:
+            # sensible defaults spanning common WD orders
+            candidates = [1e-5, 3e-5, 1e-4, 3e-4, 1e-3]
+
+        world = _world()
+        rank = _rank()
+        # partition
+        my_cands = [c for i, c in enumerate(candidates) if i % world == rank]
+
+        train_loader, val_loader, train_batches, _ = self._build_loaders(batch_size=batch_size)
+        max_iter = min(steps, train_batches)
+
+        results_local = []
+        for wd in my_cands:
+            model = self.model_fn().to(self.device)
+            model.train()
+            opt = optim.SGD(model.parameters(), lr=float(lr_config.get("max_lr", 0.1)), momentum=0.9, weight_decay=wd, nesterov=True)
+            scaler = GradScaler(enabled=torch.cuda.is_available())
+
+            it = 0
+            for x, y in train_loader:
+                x, y = x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
+                with autocast(enabled=scaler.is_enabled()):
+                    out = model(x)
+                    loss = nn.functional.cross_entropy(out, y)
+                if scaler.is_enabled():
+                    scaler.scale(loss).backward()
+                    scaler.step(opt)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    opt.step()
+                opt.zero_grad(set_to_none=True)
+                it += 1
+                if it >= max_iter:
+                    break
+
+            # quick val
+            metrics = self._validate(model, val_loader)
+            res = {"weight_decay": float(wd), "rank": rank}
+            res.update(metrics)
+            results_local.append(res)
+
+            del model, opt
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # Gather to rank 0
+        results_all = _gather_dicts_local_to_rank0({"results": results_local})
+        if rank == 0:
+            merged = []
+            for pack in results_all:
+                merged.extend(pack.get("results", []))
+            # pick best by val_top1 (desc)
+            if merged:
+                merged_sorted = sorted(merged, key=lambda r: (r.get("val_top1", 0.0), -r.get("val_loss", 1e9)), reverse=True)
+                best_wd = float(merged_sorted[0]["weight_decay"])
             else:
-                report['recommendations'].append(
-                    f"✅ Good GPU utilization ({avg_gpu_util:.1f}%)"
-                )
-
-        # Analyze data loading times
-        if self.performance_stats['data_loading_times']:
-            avg_data_time = sum(self.performance_stats['data_loading_times']) / len(self.performance_stats['data_loading_times'])
-            report['avg_data_loading_time'] = avg_data_time
-
-            if avg_data_time > 0.1:  # More than 100ms per batch
-                report['recommendations'].append(
-                    f"🐌 Slow data loading ({avg_data_time:.3f}s/batch). "
-                    "Consider faster storage or format conversion."
-                )
-
-        return report
-
-    def create_warmup_scheduler(self,
-                               optimizer: optim.Optimizer,
-                               warmup_epochs: int,
-                               total_epochs: int,
-                               base_lr: float,
-                               max_lr: float) -> optim.lr_scheduler.LambdaLR:
-        """
-        Create learning rate warmup scheduler.
-
-        Args:
-            optimizer: Optimizer to schedule
-            warmup_epochs: Number of warmup epochs
-            total_epochs: Total training epochs
-            base_lr: Starting learning rate
-            max_lr: Maximum learning rate
-
-        Returns:
-            Learning rate scheduler
-        """
-
-        def lr_lambda(epoch):
-            if epoch < warmup_epochs:
-                # Linear warmup
-                return base_lr + (max_lr - base_lr) * (epoch / warmup_epochs)
-            else:
-                # Cosine annealing or other schedule
-                progress = (epoch - warmup_epochs) / (total_epochs - warmup_epochs)
-                return max_lr * (1 + torch.cos(torch.pi * progress)) / 2
-
-        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-        logger.info(f"🔥 Warmup scheduler created: {warmup_epochs} warmup epochs, "
-                   f"LR: {base_lr:.2e} → {max_lr:.2e}")
-
-        return scheduler
-
-    def optimize_training_step(self, batch, step_type: str = 'train') -> Dict[str, float]:
-        """
-        Optimized training step with AMP and performance monitoring.
-
-        Args:
-            batch: Input batch (inputs, targets)
-            step_type: 'train' or 'val'
-
-        Returns:
-            Dictionary with step metrics
-        """
-        inputs, targets = batch
-        inputs, targets = inputs.to(self.device), targets.to(self.device)
-
-        metrics = {}
-
-        with self.profile_step(f'{step_type}_step'):
-            # Forward pass
-            with self.profile_step('forward_pass'):
-                with autocast(enabled=self.enable_amp):
-                    outputs = self.model(inputs)
-                    loss = self.criterion(outputs, targets)
-
-            metrics['loss'] = loss.item()
-
-            # Backward pass (only for training)
-            if step_type == 'train':
-                with self.profile_step('backward_pass'):
-                    if self.scaler:
-                        self.scaler.scale(loss).backward()
-                        self.scaler.step(self.optimizer)
-                        self.scaler.update()
-                    else:
-                        loss.backward()
-                        self.optimizer.step()
-
-                self.optimizer.zero_grad()
-
-        # Monitor GPU utilization periodically
-        if len(self.performance_stats['gpu_utilization']) % 10 == 0:
-            gpu_stats = self.monitor_gpu_utilization()
-            self.performance_stats['gpu_utilization'].append(gpu_stats)
-
-        return metrics
-
-    def get_optimization_summary(self) -> str:
-        """
-        Generate optimization summary and recommendations.
-
-        Returns:
-            Formatted summary string
-        """
-        report = self.get_performance_report()
-
-        summary = "🚀 Training Performance Optimization Summary\n"
-        summary += "=" * 50 + "\n\n"
-
-        # GPU utilization
-        gpu_stats = report['gpu_utilization']
-        if gpu_stats:
-            summary += "GPU Utilization:\n"
-            for key, value in gpu_stats.items():
-                if 'util' in key:
-                    summary += f"  {key}: {value:.1f}%\n"
-            summary += "\n"
-
-        # Performance stats
-        stats = report['performance_stats']
-        if stats.get('data_loading_times'):
-            avg_data_time = sum(stats['data_loading_times']) / len(stats['data_loading_times'])
-            summary += f"Average data loading time: {avg_data_time:.3f}s\n"
-
-        if stats.get('step_times'):
-            avg_step_time = sum(stats['step_times']) / len(stats['step_times'])
-            summary += f"Average step time: {avg_step_time:.3f}s\n"
-
-        # Recommendations
-        if report['recommendations']:
-            summary += "\nRecommendations:\n"
-            for rec in report['recommendations']:
-                summary += f"  • {rec}\n"
-
-        # Target improvements
-        summary += "\n🎯 Target Improvements:\n"
-        summary += "  • Epoch time: 6 hours → 20-40 minutes\n"
-        summary += "  • GPU utilization: >90%\n"
-        summary += "  • Data loading: <50ms per batch\n"
-        summary += "  • Mixed precision: 2-3x speedup\n"
-
-        return summary
+                best_wd = candidates[0]
+            return merged, best_wd
+        else:
+            # return local — caller on non-rank0 can ignore or expect broadcast from pipeline
+            return results_local, candidates[0]
 
 
-# Convenience function for easy integration
-def create_optimized_trainer(model: nn.Module,
-                           optimizer: optim.Optimizer,
-                           criterion: nn.Module,
-                           train_loader: DataLoader,
-                           val_loader: Optional[DataLoader] = None,
-                           **kwargs) -> TrainingPerformanceOptimizer:
+# ----------------------------
+# num_workers optimizer
+# ----------------------------
+def optimize_num_workers(dataset_path: str, max_workers: int = 8, probe_batches: int = 64, batch_size: int = 64) -> int:
     """
-    Create an optimized trainer instance with sensible defaults.
-
-    Args:
-        model: PyTorch model
-        optimizer: Optimizer
-        criterion: Loss function
-        train_loader: Training data loader
-        val_loader: Validation data loader (optional)
-        **kwargs: Additional arguments for TrainingPerformanceOptimizer
-
-    Returns:
-        Configured TrainingPerformanceOptimizer instance
+    Very fast, deterministic benchmark to suggest a global num_workers:
+    - iterate workers in [1..max_workers]
+    - time to load 'probe_batches' batches from a tiny loader (no model)
+    - choose the smallest worker count within 5% of the best throughput (to avoid oversubscription)
     """
-    return TrainingPerformanceOptimizer(
-        model=model,
-        optimizer=optimizer,
-        criterion=criterion,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        **kwargs
-    )
+    from time import perf_counter
+
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    stats = []
+
+    for nw in range(1, max(2, max_workers) + 1):
+        loader, _, steps, _ = get_imagenet_dataloaders(
+            dataset_path, dataset_path, batch_size=batch_size, num_workers=nw, pin_memory=True
+        )
+
+        t0 = perf_counter()
+        n = 0
+        for x, y in loader:
+            # emulate GPU pin-transfer cost
+            x = x.to(device, non_blocking=True) if torch.cuda.is_available() else x
+            n += 1
+            if n >= probe_batches:
+                break
+        dt = max(1e-6, perf_counter() - t0)
+        throughput = n / dt
+        stats.append({"num_workers": nw, "throughput_bps": throughput})
+
+    # pick best within 5% of top
+    best = max(stats, key=lambda s: s["throughput_bps"])
+    threshold = best["throughput_bps"] * 0.95
+    candidates = [s["num_workers"] for s in stats if s["throughput_bps"] >= threshold]
+    suggestion = int(min(candidates))
+    log.info(f"[OPT_WORKERS] stats={stats} | best={best} | suggestion={suggestion}")
+    return suggestion
