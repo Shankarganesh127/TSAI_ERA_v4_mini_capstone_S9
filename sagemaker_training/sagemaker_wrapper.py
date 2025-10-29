@@ -20,6 +20,7 @@ import argparse
 import shutil
 from pathlib import Path
 from tqdm import tqdm
+from utils import is_main_process
 
 # Global flag to control tqdm disabling via environment variable
 TQDM_DISABLE = os.environ.get("TQDM_DISABLE", "0") == "1"
@@ -616,4 +617,5 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
+    if is_main_process():
         main()
