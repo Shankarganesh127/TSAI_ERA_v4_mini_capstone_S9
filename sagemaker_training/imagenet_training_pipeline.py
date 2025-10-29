@@ -1274,8 +1274,9 @@ class FullTrainer:
                 'momentum': optimizer.param_groups[0]['momentum'],
                 'timestamp': time.time()
             }
-            log_metrics_csv(csv_path, csv_fields, metric_row)
-            log_metrics_json(json_path, metric_row)
+            if is_main_process():
+                log_metrics_csv(csv_path, csv_fields, metric_row)
+                log_metrics_json(json_path, metric_row)
 
             # Update tqdm progress bar
             bar.n = epoch + 1
@@ -1291,7 +1292,8 @@ class FullTrainer:
                 best_val_acc = val_acc
                 patience_counter = 0
                 if save_checkpoints:
-                    self._save_checkpoint(epoch, val_acc, optimizer, scheduler)
+                    if is_main_process():
+                        self._save_checkpoint(epoch, val_acc, optimizer, scheduler)
             else:
                 patience_counter += 1
 
@@ -1595,9 +1597,11 @@ def main():
                 status = json.load(f)
             current_stage = status.get('last_completed_stage', 'START')
             global logger
-            logger.info(f"🔄 Resuming pipeline. Last completed stage: {current_stage}")
+            if is_main_process():
+                logger.info(f"🔄 Resuming pipeline. Last completed stage: {current_stage}")
         except Exception as e:
-            logger.error(f"❌ Failed to load pipeline status: {e}. Starting from scratch.")
+            if is_main_process():
+                logger.error(f"❌ Failed to load pipeline status: {e}. Starting from scratch.")
 
     def reload_current_stage():
         """Reload current stage from status file"""
@@ -1615,7 +1619,7 @@ def main():
     # =============================================================================
     # SAGEMAKER TRAINING STARTED - SIMPLE STATUS LOG
     # =============================================================================
-    if (is_main_process()):
+    if is_main_process():
         logger.info("=" * 80)
         logger.info("[START] SAGEMAKER IMAGENET TRAINING PIPELINE STARTED")
         logger.info("=" * 80)
@@ -1650,81 +1654,88 @@ def main():
     parser.add_argument('--local-rank', type=int, default=0, help='Local rank for DDP')
     args = parser.parse_args()
     
-    # Step 2: Start resource monitor before training
-    if (is_main_process()):
+    # Step 2: Start resource monitor before training (only main process)
+    if is_main_process():
         monitor = ResourceMonitor(interval=5.0)
         monitor.start()
+    else:
+        monitor = None  # Non-main processes don't need resource monitoring
     
     # -----------------------------
-    # Log config and environment info
+    # Log config and environment info (only main process)
     # -----------------------------
-    output_dir = args.output if hasattr(args, 'output') else './imagenet_pipeline_results'
-    os.makedirs(output_dir, exist_ok=True)
-    config_path = os.path.join(output_dir, 'run_config.json')
-    run_config = {
-        'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'python_version': sys.version,
-        'pytorch_version': torch.__version__,
-        'working_directory': os.getcwd(),
-        'script_path': sys.argv[0],
-        'command_line_args': sys.argv[1:] if len(sys.argv) > 1 else 'None',
-        'hyperparameters': {
-            'train_data': args.train,
-            'val_data': args.val,
-            'output_dir': args.output,
-            'epochs': args.epochs,
-            'batch_size': args.batch_size,
-            'num_workers': args.num_workers,
-            'quick_mode': args.quick_mode,
-            'no_amp': args.no_amp,
-            'no_compile': args.no_compile,
-            'lightweight_augs': args.lightweight_augs,
-            'skip_lr_test': args.skip_lr_test,
-            'skip_wd_search': args.skip_wd_search,
-            'cuda_compat_mode': getattr(args, 'cuda_compat_mode', False)
+    if is_main_process():
+        output_dir = args.output if hasattr(args, 'output') else './imagenet_pipeline_results'
+        os.makedirs(output_dir, exist_ok=True)
+        config_path = os.path.join(output_dir, 'run_config.json')
+        run_config = {
+            'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'python_version': sys.version,
+            'pytorch_version': torch.__version__,
+            'working_directory': os.getcwd(),
+            'script_path': sys.argv[0],
+            'command_line_args': sys.argv[1:] if len(sys.argv) > 1 else 'None',
+            'hyperparameters': {
+                'train_data': args.train,
+                'val_data': args.val,
+                'output_dir': args.output,
+                'epochs': args.epochs,
+                'batch_size': args.batch_size,
+                'num_workers': args.num_workers,
+                'quick_mode': args.quick_mode,
+                'no_amp': args.no_amp,
+                'no_compile': args.no_compile,
+                'lightweight_augs': args.lightweight_augs,
+                'skip_lr_test': args.skip_lr_test,
+                'skip_wd_search': args.skip_wd_search,
+                'cuda_compat_mode': getattr(args, 'cuda_compat_mode', False)
+            }
         }
-    }
-    log_config_json(config_path, run_config)
-    
-    
-    # DEBUG: Add extensive early debugging
-    logger.info("[DEBUG] DEBUG: Arguments parsed successfully")
-    logger.info(f"[DEBUG] DEBUG: Training data path: {args.train}")
-    logger.info(f"[DEBUG] DEBUG: Validation data path: {args.val}")
-    logger.info(f"[DEBUG] DEBUG: Output path: {args.output}")
-    logger.info(f"[DEBUG] DEBUG: Epochs: {args.epochs}")
-    
-    # Check if paths exist
-    import os
-    logger.info(f"[DEBUG] DEBUG: Train path exists: {os.path.exists(args.train)}")
-    logger.info(f"[DEBUG] DEBUG: Val path exists: {os.path.exists(args.val)}")
-    
-    # Check if paths have content
-    if os.path.exists(args.train):
-        try:
-            train_contents = os.listdir(args.train)
-            logger.info(f"[DEBUG] DEBUG: Train path has {len(train_contents)} items")
-            if len(train_contents) > 0:
-                logger.info(f"[DEBUG] DEBUG: First few train items: {train_contents[:3]}")
-        except Exception as e:
-            logger.error(f"[ERROR] DEBUG: Error listing train directory: {e}")
-    
-    if os.path.exists(args.val):
-        try:
-            val_contents = os.listdir(args.val)
-            logger.info(f"[DEBUG] DEBUG: Val path has {len(val_contents)} items")
-            if len(val_contents) > 0:
-                logger.info(f"[DEBUG] DEBUG: First few val items: {val_contents[:3]}")
-        except Exception as e:
-            logger.error(f"[ERROR] DEBUG: Error listing val directory: {e}")
+        log_config_json(config_path, run_config)
+        
+        
+        # DEBUG: Add extensive early debugging
+        logger.info("[DEBUG] DEBUG: Arguments parsed successfully")
+        logger.info(f"[DEBUG] DEBUG: Training data path: {args.train}")
+        logger.info(f"[DEBUG] DEBUG: Validation data path: {args.val}")
+        logger.info(f"[DEBUG] DEBUG: Output path: {args.output}")
+        logger.info(f"[DEBUG] DEBUG: Epochs: {args.epochs}")
+        
+        # Check if paths exist
+        import os
+        logger.info(f"[DEBUG] DEBUG: Train path exists: {os.path.exists(args.train)}")
+        logger.info(f"[DEBUG] DEBUG: Val path exists: {os.path.exists(args.val)}")
+        
+        # Check if paths have content
+        if os.path.exists(args.train):
+            try:
+                train_contents = os.listdir(args.train)
+                logger.info(f"[DEBUG] DEBUG: Train path has {len(train_contents)} items")
+                if len(train_contents) > 0:
+                    logger.info(f"[DEBUG] DEBUG: First few train items: {train_contents[:3]}")
+            except Exception as e:
+                logger.error(f"[ERROR] DEBUG: Error listing train directory: {e}")
+        
+        if os.path.exists(args.val):
+            try:
+                val_contents = os.listdir(args.val)
+                logger.info(f"[DEBUG] DEBUG: Val path has {len(val_contents)} items")
+                if len(val_contents) > 0:
+                    logger.info(f"[DEBUG] DEBUG: First few val items: {val_contents[:3]}")
+            except Exception as e:
+                logger.error(f"[ERROR] DEBUG: Error listing val directory: {e}")
+    else:
+        # Non-main processes still need output_dir for later operations
+        output_dir = args.output if hasattr(args, 'output') else './imagenet_pipeline_results'
     
     # Setup
     try:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        logger.info(f"[DEVICE]  Using device: {device}")
-        logger.info(f"[DEBUG] DEBUG: CUDA available: {torch.cuda.is_available()}")
-        if torch.cuda.is_available():
-            logger.info(f"[DEBUG] DEBUG: CUDA device count: {torch.cuda.device_count()}")
+        if is_main_process():
+            logger.info(f"[DEVICE]  Using device: {device}")
+            logger.info(f"[DEBUG] DEBUG: CUDA available: {torch.cuda.is_available()}")
+            if torch.cuda.is_available():
+                logger.info(f"[DEBUG] DEBUG: CUDA device count: {torch.cuda.device_count()}")
         # DDP setup - Get values from environment variables (SageMaker/NVIDIA/PyTorch)
         world_size = int(os.environ.get('WORLD_SIZE', getattr(args, 'world_size', 1)))
         local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('RANK', getattr(args, 'local_rank', 0))))
@@ -1734,8 +1745,9 @@ def main():
         raise
     
     try:
-        os.makedirs(args.output, exist_ok=True)
-        logger.info(f"[DEBUG] DEBUG: Output directory created: {args.output}")
+        if is_main_process():
+            os.makedirs(args.output, exist_ok=True)
+            logger.info(f"[DEBUG] DEBUG: Output directory created: {args.output}")
     except Exception as e:
         logger.error(f"[ERROR] DEBUG: Error creating output directory: {e}")
         raise
@@ -1755,21 +1767,24 @@ def main():
             logger.error(f"[ERROR] DEBUG: Error creating model: {e}")
             raise
     
-    # STEP 0: Batch Size Detection (if not specified)
-    logger.info("[DEBUG] DEBUG: No batch size specified, starting batch size detection")
-    logger.info("="*60)
-    logger.info("[CONFIG] STEP 0: Batch Size Detection")
-    logger.info("="*60)
+    # STEP 0: Batch Size Detection (if not specified) - Only main process
+    if is_main_process():
+        logger.info("[DEBUG] DEBUG: No batch size specified, starting batch size detection")
+        logger.info("="*60)
+        logger.info("[CONFIG] STEP 0: Batch Size Detection")
+        logger.info("="*60)
     
     
     try:
         # Clear GPU cache if available
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            logger.info(f"[DEVICE]  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
+            if is_main_process():
+                logger.info(f"[DEVICE]  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB total")
         
         # Create temporary model and optimizer for batch size detection using TrainingPerformanceOptimizer
-        logger.info("[DEBUG] DEBUG: About to create temporary model for batch size detection")
+        if is_main_process():
+            logger.info("[DEBUG] DEBUG: About to create temporary model for batch size detection")
         temp_model = create_model().to(device)
         temp_optimizer = optim.SGD(temp_model.parameters(), lr=1e-3, momentum=0.9)
         temp_criterion = nn.CrossEntropyLoss()
@@ -1801,14 +1816,43 @@ def main():
             logger.info(f"[BATCH] CPU mode: Using {max_memory_gb:.1f}GB memory limit")
 
         # PIPELINE 1 : Find optimal batch size
-        logger.info("="*60)
-        logger.info("[PIPELINE] 1: Detecting optimal batch size...")
-        logger.info("="*60)
-        optimal_batch_size = temp_performance_optimizer.get_optimal_batch_size(max_memory_gb=max_memory_gb)
+        if is_main_process():
+            logger.info("="*60)
+            logger.info("[PIPELINE] 1: Detecting optimal batch size...")
+            logger.info("="*60)
+        
+        # Only main process runs batch size optimization, others wait for result
+        batch_size_file = os.path.join(checkpoint_dir, 'batch_size_results.json')
+        if is_main_process():
+            optimal_batch_size = temp_performance_optimizer.get_optimal_batch_size(max_memory_gb=max_memory_gb)
+            # Save result to file for other processes
+            with open(batch_size_file, 'w') as f:
+                json.dump({'optimal_batch_size': optimal_batch_size}, f, indent=2)
+            logger.info(f"[BATCH] Main process saved optimal batch size {optimal_batch_size} to {batch_size_file}")
+        else:
+            # Non-main processes wait for file and read results
+            logger.info("[BATCH] Non-main process waiting for batch size optimization results...")
+            import time
+            wait_start = time.time()
+            timeout = 300  # 5 minutes timeout
+            while not os.path.exists(batch_size_file):
+                if time.time() - wait_start > timeout:
+                    logger.error(f"[BATCH] Timeout waiting for batch size file after {timeout} seconds")
+                    raise TimeoutError(f"Batch size file not created within {timeout} seconds")
+                time.sleep(1)  # Wait 1 second and check again
+            try:
+                with open(batch_size_file, 'r') as f:
+                    batch_data = json.load(f)
+                    optimal_batch_size = batch_data['optimal_batch_size']
+                logger.info(f"[BATCH] Non-main process loaded optimal batch size: {optimal_batch_size}")
+            except Exception as e:
+                logger.error(f"[BATCH] Failed to load batch size from file: {e}")
+                raise
         
         # 1. Determine Safety Factor
         safety_factor = 0.5 if args.quick_mode else 0.8
-        logger.info(f"[BATCH] Applying safety factor of {safety_factor}")
+        if is_main_process():
+            logger.info(f"[BATCH] Applying safety factor of {safety_factor}")
 
         # 2. Apply Safety Factor
         safe_batch_size = int(optimal_batch_size * safety_factor)
@@ -1822,31 +1866,61 @@ def main():
             
         initial_batch_size = training_batch_size
 
-        logger.info(f"[COMPLETE] Optimal batch size (CPU/GPU if exists): {initial_batch_size} (optimizer: {optimal_batch_size}, safety: {safety_factor})")
+        if is_main_process():
+            logger.info(f"[COMPLETE] Optimal batch size (CPU/GPU if exists): {initial_batch_size} (optimizer: {optimal_batch_size}, safety: {safety_factor})")
 
         # Clean up temporary resources
         #del temp_model, temp_optimizer, temp_criterion, temp_performance_optimizer
         torch.cuda.empty_cache()
         
     except Exception as e:
-        logger.error(f"[ERROR] DEBUG: Error in batch size detection: {e}")
+        if is_main_process():
+            logger.error(f"[ERROR] DEBUG: Error in batch size detection: {e}")
         # Fallback to default batch size
         initial_batch_size = 32
-        logger.warning(f"[FALLBACK] Using default batch size: {initial_batch_size}")
+        if is_main_process():
+            logger.warning(f"[FALLBACK] Using default batch size: {initial_batch_size}")
     
     args.batch_size = initial_batch_size
     
     # PIPELINE 2 : DataLoader num_workers optimization
     # Optimize num_workers for balanced CPU/GPU utilization and memory usage
-    logger.info("="*60)
-    logger.info("[PIPELINE] 2: DataLoader num_workers Optimization")
-    logger.info("="*60)
-    logger.info("[OPTIMIZE] Optimizing num_workers for DataLoader...")
-    optimized_num_workers_i = optimize_num_workers(initial_batch_size)
-    logger.info(f"[OPTIMIZE] Using optimized_num_workers: {optimized_num_workers_i} (batch_size: {initial_batch_size})")
+    if is_main_process():
+        logger.info("="*60)
+        logger.info("[PIPELINE] 2: DataLoader num_workers Optimization")
+        logger.info("="*60)
+        logger.info("[OPTIMIZE] Optimizing num_workers for DataLoader...")
+    
+    # Only main process runs num_workers optimization to avoid duplicate logging
+    num_workers_file = os.path.join(checkpoint_dir, 'num_workers_results.json')
+    if is_main_process():
+        optimized_num_workers_i = optimize_num_workers(initial_batch_size)
+        # Save result to file for other processes
+        with open(num_workers_file, 'w') as f:
+            json.dump({'optimized_num_workers': optimized_num_workers_i}, f, indent=2)
+        logger.info(f"[OPTIMIZE] Using optimized_num_workers: {optimized_num_workers_i} (batch_size: {initial_batch_size})")
+    else:
+        # Non-main processes wait for file and read results
+        logger.info("[OPTIMIZE] Non-main process waiting for num_workers optimization results...")
+        import time
+        wait_start = time.time()
+        timeout = 60  # 1 minute timeout (should be much faster)
+        while not os.path.exists(num_workers_file):
+            if time.time() - wait_start > timeout:
+                logger.error(f"[OPTIMIZE] Timeout waiting for num_workers file after {timeout} seconds")
+                raise TimeoutError(f"Num workers file not created within {timeout} seconds")
+            time.sleep(0.1)  # Wait 0.1 second and check again
+        try:
+            with open(num_workers_file, 'r') as f:
+                workers_data = json.load(f)
+                optimized_num_workers_i = workers_data['optimized_num_workers']
+            logger.info(f"[OPTIMIZE] Non-main process loaded optimized num_workers: {optimized_num_workers_i}")
+        except Exception as e:
+            logger.error(f"[OPTIMIZE] Failed to load num_workers from file: {e}")
+            raise
 
     # Monitor GPU utilization to validate optimization
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() and is_main_process():
         gpu_stats = monitor_gpu_utilization(duration_seconds=2)
         logger.info(f"[GPU] Initial GPU utilization: {gpu_stats['avg_utilization']:.1f}% (bottleneck: {gpu_stats['is_bottleneck']})")
         if gpu_stats['is_bottleneck']:
@@ -1855,24 +1929,28 @@ def main():
     # Override args.num_workers with optimized value
     args.num_workers = optimized_num_workers_i
     
-    logger.info("="*60)
-    logger.info("[PIPELINE] 3: Data Loading")
-    logger.info("="*60)
-    # Load data
-    logger.info("[DATASET] Loading ImageNet dataset...")
-    logger.debug("[DEBUG] DEBUG: About to load dataset")
+    if is_main_process():
+        logger.info("="*60)
+        logger.info("[PIPELINE] 3: Data Loading")
+        logger.info("="*60)
+        # Load data
+        logger.info("[DATASET] Loading ImageNet dataset...")
+        logger.debug("[DEBUG] DEBUG: About to load dataset")
     
     # Create progress bar for dataset loading (2 steps: train + val)
-    progress_manager.create_progress_bar("Dataset Loading", 2)
+    if is_main_process():
+        progress_manager.create_progress_bar("Dataset Loading", 2)
     
     #if dataset_format == 'ilsvrc':
     #    logger.info("Using ILSVRC dataset loader (handles flat validation directory)")
     #    train_loader, val_loader = get_ilsvrc_dataloaders(
     #        args.data, batch_size=initial_batch_size, num_workers=4)
     #else:
-    logger.info("Using standard ImageNet dataset loader")
+    if is_main_process():
+        logger.info("Using standard ImageNet dataset loader")
     try:
-        progress_manager.update_progress(1, {'step': 'Loading training dataset'})
+        if is_main_process():
+            progress_manager.update_progress(1, {'step': 'Loading training dataset'})
         train_loader, val_loader, train_batches_per_epoch, val_batches_per_epoch = get_imagenet_dataloaders(
             train=args.train, val=args.val, batch_size=initial_batch_size, num_workers=args.num_workers, 
             lightweight_augs=args.lightweight_augs)
@@ -1882,20 +1960,24 @@ def main():
         #    train_loader.sampler = DistributedSampler(train_loader.dataset, num_replicas=args.world_size, rank=args.local_rank)
         #    val_loader.sampler = DistributedSampler(val_loader.dataset, num_replicas=args.world_size, rank=args.local_rank)
         #    logger.info("[DDP] Using DistributedSampler for train and val loaders")
-        progress_manager.update_progress(2, {'step': 'Loading validation dataset'})
+        if is_main_process():
+            progress_manager.update_progress(2, {'step': 'Loading validation dataset'})
     except Exception as e:
-        progress_manager.close_progress_bar()
-        logger.error(f"Dataset loading failed: {e}")
+        if is_main_process():
+            progress_manager.close_progress_bar()
+            logger.error(f"Dataset loading failed: {e}")
         raise
     
-    progress_manager.close_progress_bar()
+    if is_main_process():
+        progress_manager.close_progress_bar()
     # For WebLoader, use the calculated batch counts and known dataset sizes
     num_train_batches = train_batches_per_epoch
     num_val_batches = val_batches_per_epoch
     num_train_samples = IMAGENET_TRAIN_SIZE
     num_val_samples = IMAGENET_VAL_SIZE
-    logger.info(f"Dataset loaded - Train batches: {num_train_batches}, Val batches: {num_val_batches}")
-    logger.info(f"Dataset loaded - Train samples: {num_train_samples}, Val samples: {num_val_samples}")
+    if is_main_process():
+        logger.info(f"Dataset loaded - Train batches: {num_train_batches}, Val batches: {num_val_batches}")
+        logger.info(f"Dataset loaded - Train samples: {num_train_samples}, Val samples: {num_val_samples}")
     
     # Not required for webloader
     # Initialize Training Performance Optimizer for data loading optimization
@@ -1942,19 +2024,20 @@ def main():
     # =============================================================================
     # STARTING 7-STEP IMAGENET TRAINING PIPELINE
     # =============================================================================
-    logger.debug("\n" + "=" * 80)
-    logger.debug("[COMPLETE] STARTING 7-STEP IMAGENET TRAINING PIPELINE")
-    logger.debug("=" * 80)
-    logger.debug("[ARGS] Pipeline Steps:")
-    logger.debug("   1️⃣  LR Range Test")
-    logger.debug("   2️⃣  Weight Decay Search") 
-    logger.debug("   3️⃣  Full Training with OneCycle LR")
-    logger.debug(f"[BATCH] Batch Size: {initial_batch_size}")
-    logger.debug(f"[PROGRESS] Total Epochs: {args.epochs}")
-    logger.debug("=" * 80)
-    print("[START] Starting Step 1: LR Range Test...")
-    print("=" * 80)
-    sys.stdout.flush()
+    if is_main_process():
+        logger.debug("\n" + "=" * 80)
+        logger.debug("[COMPLETE] STARTING 7-STEP IMAGENET TRAINING PIPELINE")
+        logger.debug("=" * 80)
+        logger.debug("[ARGS] Pipeline Steps:")
+        logger.debug("   1️⃣  LR Range Test")
+        logger.debug("   2️⃣  Weight Decay Search") 
+        logger.debug("   3️⃣  Full Training with OneCycle LR")
+        logger.debug(f"[BATCH] Batch Size: {initial_batch_size}")
+        logger.debug(f"[PROGRESS] Total Epochs: {args.epochs}")
+        logger.debug("=" * 80)
+        print("[START] Starting Step 1: LR Range Test...")
+        print("=" * 80)
+        sys.stdout.flush()
     
     
     logger.info("="*60)
@@ -2046,11 +2129,10 @@ def main():
 
         
 
-        # Update progress (only main process to avoid conflicts)
-        if is_main_process():
-            progress_manager.update_status(lr_step_key,
-                f"[OK] STEP 1: LR Range Test Complete - Min: {lr_config['min_lr']:.2e}, Max: {lr_config['max_lr']:.2e}")
-            progress_manager.finalize_status(lr_step_key)
+        # Update progress
+        progress_manager.update_status(lr_step_key,
+            f"[OK] STEP 1: LR Range Test Complete - Min: {lr_config['min_lr']:.2e}, Max: {lr_config['max_lr']:.2e}")
+        progress_manager.finalize_status(lr_step_key)
 
         # Save results (only main process to avoid conflicts)
         if is_main_process():
@@ -2090,22 +2172,26 @@ def main():
     else:
         # Default LR config
         lr_config = {'min_lr': 1e-3, 'max_lr': 0.1}
-        lr_skip_key = "lr_skip"
-        progress_manager.create_status_updater(lr_skip_key, "⏭️ STEP 1: Skipping LR Range Test, using default config")
-        progress_manager.finalize_status(lr_skip_key)
+        if is_main_process():
+            lr_skip_key = "lr_skip"
+            progress_manager.create_status_updater(lr_skip_key, "⏭️ STEP 1: Skipping LR Range Test, using default config")
+            progress_manager.finalize_status(lr_skip_key)
     
     # STEP 2 & 3: Already incorporated in lr_config
-    logger.info(f"[OK] STEP 2 and 3: LR bounds selected: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
+    if is_main_process():
+        logger.info(f"[OK] STEP 2 and 3: LR bounds selected: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
     
     # STEP 4: Batch Size Already Optimized
     optimal_batch_size = initial_batch_size
-    logger.info(f"[OK] STEP 4: Using optimized batch size: {optimal_batch_size}")
+    if is_main_process():
+        logger.info(f"[OK] STEP 4: Using optimized batch size: {optimal_batch_size}")
     
     # STEP 5: Weight Decay Search
     best_weight_decay = 1e-4  # Default
     if not args.skip_wd_search:
-        wd_step_key = "weight_decay_search"
-        progress_manager.create_status_updater(wd_step_key, "[WEIGHT] STEP 5: Weight Decay Search - Starting...")
+        if is_main_process():
+            wd_step_key = "weight_decay_search"
+            progress_manager.create_status_updater(wd_step_key, "[WEIGHT] STEP 5: Weight Decay Search - Starting...")
 
         # PARALLEL Weight Decay Search: Distribute across all processes
         wd_values = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3]  # Always use all 5 weight decay values
@@ -2289,7 +2375,7 @@ def main():
             except Exception as e:
                 logger.warning(f"[WEIGHT] Non-main process error loading WD results, using defaults - Best WD: {best_weight_decay:.2e}, Error: {e}")
 
-        # Update progress (only main process to avoid conflicts)
+        # Update progress
         if is_main_process():
             progress_manager.update_status(wd_step_key,
                 f"[OK] STEP 5: Weight Decay Search Complete - Best: {best_weight_decay:.2e}")
@@ -2355,16 +2441,15 @@ def main():
     progress_manager.create_status_updater(full_train_key,
         f"[START] STEP 6: Full OneCycle Training - Starting {training_epochs} epochs...")
 
-    if is_main_process():
-        logger.info("="*60)
-        logger.info("[START] STEP 6: Full OneCycle Training")
-        logger.info("="*60)
-        logger.info(f"[MEMORY] Final batch size: {args.batch_size}")
-        # Note: gradient_accumulation_steps and effective batch size will be logged after calculation
-        if args.batch_size <= 8:
-            logger.info("[MEMORY] Gradient checkpointing: ENABLED")
-        else:
-            logger.info("[MEMORY] Gradient checkpointing: DISABLED")
+    logger.info("="*60)
+    logger.info("[START] STEP 6: Full OneCycle Training")
+    logger.info("="*60)
+    logger.info(f"[MEMORY] Final batch size: {args.batch_size}")
+    # Note: gradient_accumulation_steps and effective batch size will be logged after calculation
+    if args.batch_size <= 8:
+        logger.info("[MEMORY] Gradient checkpointing: ENABLED")
+    else:
+        logger.info("[MEMORY] Gradient checkpointing: DISABLED")
 
     model = create_model().to(device)
     # DDP: Wrap model if multi-GPU
@@ -2439,23 +2524,25 @@ def main():
         logger.info(f"[GRAD] Low batch size detected, using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
     elif optimal_batch_size <= 16:
         gradient_accumulation_steps = base_accumulation
-        logger.info(f"[GRAD] Using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
+        if is_main_process():
+            logger.info(f"[GRAD] Using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
     elif optimal_batch_size <= 32:
         gradient_accumulation_steps = max(1, base_accumulation // 2)
-        if gradient_accumulation_steps > 1:
+        if is_main_process() and gradient_accumulation_steps > 1:
             logger.info(f"[GRAD] Using gradient accumulation: {gradient_accumulation_steps} steps (effective batch size: {optimal_batch_size * gradient_accumulation_steps})")
-        else:
+        elif is_main_process():
             logger.info(f"[GRAD] No gradient accumulation needed (batch size: {optimal_batch_size})")
-    else:
+    elif is_main_process():
         logger.info(f"[GRAD] No gradient accumulation needed (batch size: {optimal_batch_size})")
 
     # Now log the gradient accumulation details after calculation
-    logger.info(f"[MEMORY] Gradient accumulation steps: {gradient_accumulation_steps}")
-    logger.info(f"[MEMORY] Effective batch size: {optimal_batch_size * gradient_accumulation_steps}")
-    if optimal_batch_size <= 8:
-        logger.info("[MEMORY] Gradient checkpointing: ENABLED")
-    else:
-        logger.info("[MEMORY] Gradient checkpointing: DISABLED")
+    if is_main_process():
+        logger.info(f"[MEMORY] Gradient accumulation steps: {gradient_accumulation_steps}")
+        logger.info(f"[MEMORY] Effective batch size: {optimal_batch_size * gradient_accumulation_steps}")
+        if optimal_batch_size <= 8:
+            logger.info("[MEMORY] Gradient checkpointing: ENABLED")
+        else:
+            logger.info("[MEMORY] Gradient checkpointing: DISABLED")
         
     if current_stage in ['START', 'LR_TEST_COMPLETE', 'WD_SEARCH_COMPLETE']:
         history = trainer.train(
@@ -2471,8 +2558,9 @@ def main():
             gradient_accumulation_steps=gradient_accumulation_steps
         )
     
-    progress_manager.update_status(full_train_key, f"[OK] STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")
-    progress_manager.finalize_status(full_train_key)
+    if is_main_process():
+        progress_manager.update_status(full_train_key, f"[OK] STEP 6: Full Training Complete - Best Val Acc: {max(history['val_acc']):.2f}%")
+        progress_manager.finalize_status(full_train_key)
     
     # Performance Optimization Summary
     #if performance_optimizer:
@@ -2576,96 +2664,101 @@ def main():
         # =============================================================================
         # TRAINING PIPELINE COMPLETED!
         # =============================================================================
-        completion_key = "pipeline_complete"
-        progress_manager.create_status_updater(completion_key,
-            f"[SUCCESS] ImageNet Training Pipeline Completed! Best Val Acc: {final_results['best_val_acc']:.2f}%")
-        progress_manager.finalize_status(completion_key)
+        if is_main_process():
+            completion_key = "pipeline_complete"
+            progress_manager.create_status_updater(completion_key,
+                f"[SUCCESS] ImageNet Training Pipeline Completed! Best Val Acc: {final_results['best_val_acc']:.2f}%")
+            progress_manager.finalize_status(completion_key)
 
-        logger.info("[SUCCESS] Pipeline Complete!")
-        logger.info("[ANALYSIS] Final Results:")
-        logger.info(f"   Best Validation Accuracy: {final_results['best_val_acc']:.2f}%")
-        logger.info(f"   Final Training Accuracy: {final_results['final_train_acc']:.2f}%")
-        logger.info(f"   Final Validation Accuracy: {final_results['final_val_acc']:.2f}%")
-        logger.info(f"   Optimal Batch Size: {optimal_batch_size}")
-        logger.info(f"   Best Weight Decay: {best_weight_decay:.2e}")
-        logger.info(f"   LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
-        logger.info(f"[DIR] Results saved to: {args.output}")
+            logger.info("[SUCCESS] Pipeline Complete!")
+            logger.info("[ANALYSIS] Final Results:")
+            logger.info(f"   Best Validation Accuracy: {final_results['best_val_acc']:.2f}%")
+            logger.info(f"   Final Training Accuracy: {final_results['final_train_acc']:.2f}%")
+            logger.info(f"   Final Validation Accuracy: {final_results['final_val_acc']:.2f}%")
+            logger.info(f"   Optimal Batch Size: {optimal_batch_size}")
+            logger.info(f"   Best Weight Decay: {best_weight_decay:.2e}")
+            logger.info(f"   LR Range: {lr_config['min_lr']:.2e} → {lr_config['max_lr']:.2e}")
+            logger.info(f"[DIR] Results saved to: {args.output}")
 
         # Step 2: Stop resource monitor and save metrics after training
         monitor.stop()
-        resource_metrics_path = os.path.join(args.output, 'resource_metrics.json')
-        monitor.save(resource_metrics_path)
-        logger.info(f"[RESOURCE MONITOR] Resource utilization metrics saved to: {resource_metrics_path}")
+        if is_main_process():
+            resource_metrics_path = os.path.join(args.output, 'resource_metrics.json')
+            monitor.save(resource_metrics_path)
+            logger.info(f"[RESOURCE MONITOR] Resource utilization metrics saved to: {resource_metrics_path}")
     
         # Step 3: Plot resource utilization after training
-        try:
-            import matplotlib.pyplot as plt
-            ## removed duplicate import
+        if is_main_process():
+            try:
+                import matplotlib.pyplot as plt
+                ## removed duplicate import
 
-            with open(resource_metrics_path) as f:
-                data = json.load(f)
+                with open(resource_metrics_path) as f:
+                    data = json.load(f)
 
-            timestamps = [m['timestamp'] - data[0]['timestamp'] for m in data]
-            cpu = [m['cpu_percent'] for m in data]
-            ram = [m['ram_gb'] for m in data]
-            gpu_load = [m['gpus'][0]['load'] if m['gpus'] and len(m['gpus']) > 0 else 0 for m in data]
+                timestamps = [m['timestamp'] - data[0]['timestamp'] for m in data]
+                cpu = [m['cpu_percent'] for m in data]
+                ram = [m['ram_gb'] for m in data]
+                gpu_load = [m['gpus'][0]['load'] if m['gpus'] and len(m['gpus']) > 0 else 0 for m in data]
 
-            plt.figure(figsize=(12,6))
-            plt.plot(timestamps, cpu, label='CPU %')
-            plt.plot(timestamps, ram, label='RAM (GB)')
-            plt.plot(timestamps, gpu_load, label='GPU Load %')
-            plt.legend()
-            plt.xlabel('Time (s)')
-            plt.ylabel('Utilization')
-            plt.title('Resource Utilization Over Training')
-            plot_path = os.path.join(args.output, 'resource_utilization.png')
-            plt.savefig(plot_path, dpi=200, bbox_inches='tight')
-            plt.close()
-            logger.info(f"[RESOURCE MONITOR] Resource utilization plot saved to: {plot_path}")
-        except Exception as e:
-            logger.warning(f"[RESOURCE MONITOR] Could not plot resource utilization: {e}")
+                plt.figure(figsize=(12,6))
+                plt.plot(timestamps, cpu, label='CPU %')
+                plt.plot(timestamps, ram, label='RAM (GB)')
+                plt.plot(timestamps, gpu_load, label='GPU Load %')
+                plt.legend()
+                plt.xlabel('Time (s)')
+                plt.ylabel('Utilization')
+                plt.title('Resource Utilization Over Training')
+                plot_path = os.path.join(args.output, 'resource_utilization.png')
+                plt.savefig(plot_path, dpi=200, bbox_inches='tight')
+                plt.close()
+                logger.info(f"[RESOURCE MONITOR] Resource utilization plot saved to: {plot_path}")
+            except Exception as e:
+                logger.warning(f"[RESOURCE MONITOR] Could not plot resource utilization: {e}")
 
         # Log machine summary at the end of pipeline training
-        import time
-        machine_summary = get_hardware_summary()
-        machine_summary['timestamp'] = time.time()
-        logger.info("[MACHINE SUMMARY] Hardware and GPU Details:")
-        for k, v in machine_summary.items():
-            if k == 'gpus' and isinstance(v, list):
-                for idx, gpu in enumerate(v):
-                    logger.info(f"    GPU {idx}: {gpu['name']} ({gpu['memory_gb']} GB)")
-            elif k == 'nvidia_smi':
-                logger.info("    NVIDIA SMI Output:")
-                for line in v.split('\n'):
-                    logger.info(f"        {line}")
-            else:
-                logger.info(f"    {k}: {v}")
+        if is_main_process():
+            import time
+            machine_summary = get_hardware_summary()
+            machine_summary['timestamp'] = time.time()
+            logger.info("[MACHINE SUMMARY] Hardware and GPU Details:")
+            for k, v in machine_summary.items():
+                if k == 'gpus' and isinstance(v, list):
+                    for idx, gpu in enumerate(v):
+                        logger.info(f"    GPU {idx}: {gpu['name']} ({gpu['memory_gb']} GB)")
+                elif k == 'nvidia_smi':
+                    logger.info("    NVIDIA SMI Output:")
+                    for line in v.split('\n'):
+                        logger.info(f"        {line}")
+                else:
+                    logger.info(f"    {k}: {v}")
     
-        final_results_path = os.path.join(checkpoint_dir, 'final_results.json')
-        with open(final_results_path, 'w') as f:
-            json.dump(final_results, f)
-        logger.info(f"✅ Saved final results to {final_results_path}")
-    save_pipeline_status('FULL_TRAINING_COMPLETE', status_file)
+        if is_main_process():
+            final_results_path = os.path.join(checkpoint_dir, 'final_results.json')
+            with open(final_results_path, 'w') as f:
+                json.dump(final_results, f)
+            logger.info(f"✅ Saved final results to {final_results_path}")
+    if is_main_process():
+        save_pipeline_status('FULL_TRAINING_COMPLETE', status_file)
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        if (is_main_process()):
-            # Setup unified logger for error reporting if main logger fails
-            try:
-                from logger_setup import setup_unified_logger
-                logger = setup_unified_logger()
-            except ImportError:
-                import logging
-                logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-                logger = logging.getLogger(__name__)
-            logger.error(f"[ERROR] CRITICAL ERROR: Pipeline failed with exception: {e}")
-            logger.error(f"[ERROR] Exception type: {type(e).__name__}")
-            import traceback
-            logger.error("[ERROR] Full traceback:")
-            for line in traceback.format_exc().split('\n'):
-                if line.strip():
-                    logger.error(f"   {line}")
-            raise
+        # Setup unified logger for error reporting if main logger fails
+        try:
+            from logger_setup import setup_unified_logger
+            logger = setup_unified_logger()
+        except ImportError:
+            import logging
+            logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+            logger = logging.getLogger(__name__)
+        logger.error(f"[ERROR] CRITICAL ERROR: Pipeline failed with exception: {e}")
+        logger.error(f"[ERROR] Exception type: {type(e).__name__}")
+        import traceback
+        logger.error("[ERROR] Full traceback:")
+        for line in traceback.format_exc().split('\n'):
+            if line.strip():
+                logger.error(f"   {line}")
+        raise

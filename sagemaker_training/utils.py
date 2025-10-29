@@ -13,7 +13,13 @@ import torch.distributed as dist
 def is_distributed():
     """
     Checks if the job is running in a distributed environment.
-    (This is already in your model_device_setup_for_ddp but useful as a utility)
+    
+    Returns True if any of the following conditions are met:
+    - WORLD_SIZE > 1 (multi-process setup)
+    - RANK environment variable is set (global rank)
+    - LOCAL_RANK environment variable is set (local rank within node)
+    
+    This covers torchrun, mpirun, and SageMaker distributed setups.
     """
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     return world_size > 1 or 'RANK' in os.environ or 'LOCAL_RANK' in os.environ
@@ -21,21 +27,41 @@ def is_distributed():
 def is_main_process():
     """
     Checks if the current process is the main process (rank 0).
+    
+    Handles three scenarios:
+    1. Single-process execution: Always returns True
+    2. Distributed execution after DDP init: Uses dist.get_rank() == 0
+    3. Distributed execution before DDP init: Uses environment variables
     """
     if not is_distributed():
-        # If DDP is not initialized, assume it's the main process for single-GPU/CPU runs
+        # Single-process execution - this process is always the main process
         return True
     
-    # Check if the process group is initialized and the global rank is 0
+    # Distributed execution
     if dist.is_initialized():
+        # DDP is initialized, use the distributed rank
         return dist.get_rank() == 0
     else:
-        # Fallback for when is_main_process is called before init_process_group
-        # Use environment variables set by the torchrun/mpirun launcher
-        try:
-            return int(os.environ.get('RANK', 0)) == 0
-        except ValueError:
-            return True # Should not happen if torchrun is used
+        # DDP not yet initialized, check environment variables
+        # Try RANK first (global rank)
+        rank_env = os.environ.get('RANK')
+        if rank_env is not None:
+            try:
+                return int(rank_env) == 0
+            except (ValueError, TypeError):
+                pass
+        
+        # Fallback to LOCAL_RANK (local rank within node)
+        local_rank_env = os.environ.get('LOCAL_RANK')
+        if local_rank_env is not None:
+            try:
+                return int(local_rank_env) == 0
+            except (ValueError, TypeError):
+                pass
+        
+        # If no valid rank environment variables found, assume main process
+        # This should not happen in properly configured distributed setups
+        return True
 
 def save_training_config(args, save_dir):
     """Save training configuration to JSON file"""
