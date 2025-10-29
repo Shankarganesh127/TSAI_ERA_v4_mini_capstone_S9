@@ -63,8 +63,7 @@ IMAGENET_VAL_SIZE = 50000
 
 def save_pipeline_status(stage_name, status_file):
     # Use environment variables for coordination (works before and after DDP init)
-    is_rank_0 = int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', 0))) == 0
-    if is_rank_0:
+    if is_main_process():
         status = {
             'last_completed_stage': stage_name,
             'timestamp': datetime.now().isoformat()
@@ -1634,9 +1633,7 @@ def main():
     # =============================================================================
     # SAGEMAKER TRAINING STARTED - SIMPLE STATUS LOG
     # =============================================================================
-    # CRITICAL: Use environment variables directly for coordination before DDP init
-    is_rank_0 = int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', 0))) == 0
-    if (is_rank_0):
+    if (is_main_process()):
         logger.info("=" * 80)
         logger.info("[START] SAGEMAKER IMAGENET TRAINING PIPELINE STARTED")
         logger.info("=" * 80)
@@ -1672,7 +1669,7 @@ def main():
     args = parser.parse_args()
     
     # Step 2: Start resource monitor before training
-    if (is_rank_0):
+    if (is_main_process()):
         monitor = ResourceMonitor(interval=5.0)
         monitor.start()
     
@@ -1795,11 +1792,8 @@ def main():
     logger.info("[CONFIG] STEP 0: Batch Size Detection")
     logger.info("="*60)
 
-    # CRITICAL: Use environment variables directly for coordination before DDP init
-    is_rank_0 = int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', 0))) == 0
-
     # CRITICAL: Batch size must be the same across all processes in distributed training
-    if is_rank_0:
+    if is_main_process():
         logger.info("[BATCH] Rank 0 performing batch size detection...")
 
         try:
@@ -1907,7 +1901,7 @@ def main():
     logger.info("[PIPELINE] 2: DataLoader num_workers Optimization")
     logger.info("="*60)
 
-    if is_rank_0:
+    if is_main_process():
         logger.info("[OPTIMIZE] Rank 0 optimizing num_workers for DataLoader...")
         optimized_num_workers_i = optimize_num_workers(initial_batch_size)
         logger.info(f"[OPTIMIZE] Rank 0 determined num_workers: {optimized_num_workers_i}")
@@ -1945,7 +1939,7 @@ def main():
     logger.info(f"[OPTIMIZE] All processes using num_workers: {optimized_num_workers_i}")
 
     # Monitor GPU utilization to validate optimization (only rank 0 for logging)
-    if is_rank_0 and torch.cuda.is_available():
+    if is_main_process() and torch.cuda.is_available():
         gpu_stats = monitor_gpu_utilization(duration_seconds=2)
         logger.info(f"[GPU] Initial GPU utilization: {gpu_stats['avg_utilization']:.1f}% (bottleneck: {gpu_stats['is_bottleneck']})")
         if gpu_stats['is_bottleneck']:
@@ -2061,13 +2055,10 @@ def main():
         lr_step_key = "lr_range_test"
         progress_manager.create_status_updater(lr_step_key, "[DEBUG] STEP 1: LR Range Test - Starting...")
 
-        # CRITICAL: Use environment variables directly for coordination before DDP init
-        is_rank_0 = int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', 0))) == 0
-
-        # Only rank 0 creates model, optimizer, and LR finder for the range test
+        # Only main process creates model, optimizer, and LR finder for the range test
         lr_finder = None
         lr_test_loader = None
-        if is_rank_0:
+        if is_main_process():
             model = resnet50_imagenet_no_ddp(num_classes=1000, pretrained=False)  # Use no-DDP version for LR finder
             optimizer = optim.SGD(model.parameters(), lr=1e-7, momentum=0.9)
             criterion = nn.CrossEntropyLoss()
@@ -2096,7 +2087,7 @@ def main():
         progress_manager.update_status(lr_step_key, f"[DEBUG] STEP 1: LR Range Test - Running {num_iter} iterations...")
         if current_stage == 'START':
             # Only rank 0 runs LR range test (others wait)
-            if is_rank_0:
+            if is_main_process():
                 lrs, losses = lr_finder.range_test(lr_test_loader, num_iter=num_iter)
                 logger.info("[LR] Rank 0 completed LR range test")
             else:
@@ -2104,7 +2095,7 @@ def main():
                 lrs, losses = None, None  # Non-zero ranks don't run the test
 
             # Rank 0 plots and suggests LR config, then saves to file for others
-            if is_rank_0:
+            if is_main_process():
                 # Plot results
                 fig, min_lr = lr_finder.plot()
                 fig.savefig(os.path.join(args.output, 'lr_range_test.png'))
@@ -2119,7 +2110,7 @@ def main():
             # Rank 0 saves lr_config to file, others wait and read from file
             # Use file-based sync to avoid torch.distributed calls during LR test
             lr_config_file = os.path.join(checkpoint_dir, 'lr_config_results.json')
-            if is_rank_0:
+            if is_main_process():
                 # Save results to file
                 with open(lr_config_file, 'w') as f:
                     json.dump(lr_config, f, indent=2)
@@ -2146,13 +2137,13 @@ def main():
         
 
         # Update progress (only rank 0 to avoid conflicts)
-        if is_rank_0:
+        if is_main_process():
             progress_manager.update_status(lr_step_key,
                 f"[OK] STEP 1: LR Range Test Complete - Min: {lr_config['min_lr']:.2e}, Max: {lr_config['max_lr']:.2e}")
             progress_manager.finalize_status(lr_step_key)
 
         # Save results (only rank 0 to avoid conflicts)
-        if is_rank_0:
+        if is_main_process():
             with open(os.path.join(args.output, 'lr_config.json'), 'w') as f:
                 json.dump({k: float(v) for k, v in lr_config.items()}, f, indent=2)
 
@@ -2326,7 +2317,7 @@ def main():
             logger.info(f"[WEIGHT] Process {local_rank} detected all processes completed WD search")
 
         # Aggregate results from all processes (rank 0 only)
-        if is_rank_0:
+        if is_main_process():
             all_wd_results = []
             global_best_wd = None
             global_best_acc = 0.0
@@ -2389,13 +2380,13 @@ def main():
                 logger.warning(f"[WEIGHT] Non-zero rank error loading WD results, using defaults - Best WD: {best_weight_decay:.2e}, Error: {e}")
 
         # Update progress (only rank 0 to avoid conflicts)
-        if is_rank_0:
+        if is_main_process():
             progress_manager.update_status(wd_step_key,
                 f"[OK] STEP 5: Weight Decay Search Complete - Best: {best_weight_decay:.2e}")
             progress_manager.finalize_status(wd_step_key)
         
         # Save results (only rank 0)
-        if is_rank_0:
+        if is_main_process():
             with open(os.path.join(args.output, 'weight_decay_search.json'), 'w') as f:
                 json.dump(wd_results, f, indent=2)
 
