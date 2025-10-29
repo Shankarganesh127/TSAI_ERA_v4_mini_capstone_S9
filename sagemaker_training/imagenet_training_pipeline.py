@@ -62,7 +62,9 @@ IMAGENET_TRAIN_SIZE = 1281167
 IMAGENET_VAL_SIZE = 50000
 
 def save_pipeline_status(stage_name, status_file):
-    if is_main_process():
+    # Use environment variables for coordination (works before and after DDP init)
+    is_rank_0 = int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', 0))) == 0
+    if is_rank_0:
         status = {
             'last_completed_stage': stage_name,
             'timestamp': datetime.now().isoformat()
@@ -1632,7 +1634,9 @@ def main():
     # =============================================================================
     # SAGEMAKER TRAINING STARTED - SIMPLE STATUS LOG
     # =============================================================================
-    if (is_main_process()):
+    # CRITICAL: Use environment variables directly for coordination before DDP init
+    is_rank_0 = int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', 0))) == 0
+    if (is_rank_0):
         logger.info("=" * 80)
         logger.info("[START] SAGEMAKER IMAGENET TRAINING PIPELINE STARTED")
         logger.info("=" * 80)
@@ -1668,7 +1672,7 @@ def main():
     args = parser.parse_args()
     
     # Step 2: Start resource monitor before training
-    if (is_main_process()):
+    if (is_rank_0):
         monitor = ResourceMonitor(interval=5.0)
         monitor.start()
     
@@ -1791,9 +1795,12 @@ def main():
     logger.info("[CONFIG] STEP 0: Batch Size Detection")
     logger.info("="*60)
 
+    # CRITICAL: Use environment variables directly for coordination before DDP init
+    is_rank_0 = int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', 0))) == 0
+
     # CRITICAL: Batch size must be the same across all processes in distributed training
-    if is_main_process():
-        logger.info("[BATCH] Main process performing batch size detection...")
+    if is_rank_0:
+        logger.info("[BATCH] Rank 0 performing batch size detection...")
 
         try:
             # Clear GPU cache if available
@@ -1833,7 +1840,7 @@ def main():
                 max_memory_gb = 4.0  # Conservative for CPU
                 logger.info(f"[BATCH] CPU mode: Using {max_memory_gb:.1f}GB memory limit")
 
-            # Perform batch size detection on main process
+            # Perform batch size detection on rank 0
             optimal_batch_size = temp_performance_optimizer.get_optimal_batch_size(max_memory_gb=max_memory_gb)
 
             # Apply safety factor
@@ -1848,7 +1855,7 @@ def main():
                 training_batch_size = 1
 
             initial_batch_size = training_batch_size
-            logger.info(f"[BATCH] Main process determined batch size: {initial_batch_size}")
+            logger.info(f"[BATCH] Rank 0 determined batch size: {initial_batch_size}")
 
             # Save batch size to file for other processes
             batch_size_file = os.path.join(checkpoint_dir, 'batch_size_config.json')
@@ -1859,18 +1866,18 @@ def main():
                     'safety_factor': safety_factor,
                     'max_memory_gb': max_memory_gb
                 }, f)
-            logger.info(f"[BATCH] Main process saved batch size config to {batch_size_file}")
+            logger.info(f"[BATCH] Rank 0 saved batch size config to {batch_size_file}")
 
         except Exception as e:
-            logger.error(f"[ERROR] Main process batch size detection failed: {e}")
+            logger.error(f"[ERROR] Rank 0 batch size detection failed: {e}")
             # Fallback batch size
             initial_batch_size = 32
             logger.warning(f"[FALLBACK] Using default batch size: {initial_batch_size}")
             raise
 
     else:
-        # Non-main processes wait for batch size determination
-        logger.info("[BATCH] Non-main process waiting for batch size determination...")
+        # Non-zero ranks wait for batch size determination
+        logger.info("[BATCH] Non-zero rank waiting for batch size determination...")
         batch_size_file = os.path.join(checkpoint_dir, 'batch_size_config.json')
         import time
         wait_start = time.time()
@@ -1885,7 +1892,7 @@ def main():
             with open(batch_size_file, 'r') as f:
                 batch_config = json.load(f)
             initial_batch_size = batch_config['batch_size']
-            logger.info(f"[BATCH] Non-main process loaded batch size: {initial_batch_size}")
+            logger.info(f"[BATCH] Non-zero rank loaded batch size: {initial_batch_size}")
         except Exception as e:
             logger.error(f"[BATCH] Failed to load batch size config: {e}")
             initial_batch_size = 32  # Fallback
@@ -1900,19 +1907,19 @@ def main():
     logger.info("[PIPELINE] 2: DataLoader num_workers Optimization")
     logger.info("="*60)
 
-    if is_main_process():
-        logger.info("[OPTIMIZE] Main process optimizing num_workers for DataLoader...")
+    if is_rank_0:
+        logger.info("[OPTIMIZE] Rank 0 optimizing num_workers for DataLoader...")
         optimized_num_workers_i = optimize_num_workers(initial_batch_size)
-        logger.info(f"[OPTIMIZE] Main process determined num_workers: {optimized_num_workers_i}")
+        logger.info(f"[OPTIMIZE] Rank 0 determined num_workers: {optimized_num_workers_i}")
 
         # Save num_workers config for other processes
         workers_file = os.path.join(checkpoint_dir, 'workers_config.json')
         with open(workers_file, 'w') as f:
             json.dump({'num_workers': optimized_num_workers_i}, f)
-        logger.info(f"[OPTIMIZE] Main process saved workers config to {workers_file}")
+        logger.info(f"[OPTIMIZE] Rank 0 saved workers config to {workers_file}")
     else:
-        # Non-main processes wait for num_workers determination
-        logger.info("[OPTIMIZE] Non-main process waiting for num_workers determination...")
+        # Non-zero ranks wait for num_workers determination
+        logger.info("[OPTIMIZE] Non-zero rank waiting for num_workers determination...")
         workers_file = os.path.join(checkpoint_dir, 'workers_config.json')
         import time
         wait_start = time.time()
@@ -1927,7 +1934,7 @@ def main():
             with open(workers_file, 'r') as f:
                 workers_config = json.load(f)
             optimized_num_workers_i = workers_config['num_workers']
-            logger.info(f"[OPTIMIZE] Non-main process loaded num_workers: {optimized_num_workers_i}")
+            logger.info(f"[OPTIMIZE] Non-zero rank loaded num_workers: {optimized_num_workers_i}")
         except Exception as e:
             logger.error(f"[OPTIMIZE] Failed to load workers config: {e}")
             optimized_num_workers_i = 4  # Fallback
@@ -1937,8 +1944,8 @@ def main():
     args.num_workers = optimized_num_workers_i
     logger.info(f"[OPTIMIZE] All processes using num_workers: {optimized_num_workers_i}")
 
-    # Monitor GPU utilization to validate optimization (only main process for logging)
-    if is_main_process() and torch.cuda.is_available():
+    # Monitor GPU utilization to validate optimization (only rank 0 for logging)
+    if is_rank_0 and torch.cuda.is_available():
         gpu_stats = monitor_gpu_utilization(duration_seconds=2)
         logger.info(f"[GPU] Initial GPU utilization: {gpu_stats['avg_utilization']:.1f}% (bottleneck: {gpu_stats['is_bottleneck']})")
         if gpu_stats['is_bottleneck']:
@@ -2054,10 +2061,13 @@ def main():
         lr_step_key = "lr_range_test"
         progress_manager.create_status_updater(lr_step_key, "[DEBUG] STEP 1: LR Range Test - Starting...")
 
-        # Only main process creates model, optimizer, and LR finder for the range test
+        # CRITICAL: Use environment variables directly for coordination before DDP init
+        is_rank_0 = int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', 0))) == 0
+
+        # Only rank 0 creates model, optimizer, and LR finder for the range test
         lr_finder = None
         lr_test_loader = None
-        if is_main_process():
+        if is_rank_0:
             model = resnet50_imagenet_no_ddp(num_classes=1000, pretrained=False)  # Use no-DDP version for LR finder
             optimizer = optim.SGD(model.parameters(), lr=1e-7, momentum=0.9)
             criterion = nn.CrossEntropyLoss()
@@ -2079,22 +2089,22 @@ def main():
                 disable_distributed_splitting=True, max_train_shards=5, max_val_shards=2)  # Limit to few shards for speed
             lr_test_loader = lr_test_loader[0]  # Only need train loader
         else:
-            logger.info("[LR] Non-main process skipping LR range test initialization...")
+            logger.info("[LR] Non-zero rank skipping LR range test initialization...")
 
         num_iter = 100 if args.quick_mode else 200
 
         progress_manager.update_status(lr_step_key, f"[DEBUG] STEP 1: LR Range Test - Running {num_iter} iterations...")
         if current_stage == 'START':
-            # Only main process runs LR range test (others wait)
-            if is_main_process():
+            # Only rank 0 runs LR range test (others wait)
+            if is_rank_0:
                 lrs, losses = lr_finder.range_test(lr_test_loader, num_iter=num_iter)
-                logger.info("[LR] Main process completed LR range test")
+                logger.info("[LR] Rank 0 completed LR range test")
             else:
-                logger.info("[LR] Non-main process waiting for LR range test results...")
-                lrs, losses = None, None  # Non-main processes don't run the test
+                logger.info("[LR] Non-zero rank waiting for LR range test results...")
+                lrs, losses = None, None  # Non-zero ranks don't run the test
 
-            # Main process plots and suggests LR config, then broadcasts to others
-            if is_main_process():
+            # Rank 0 plots and suggests LR config, then saves to file for others
+            if is_rank_0:
                 # Plot results
                 fig, min_lr = lr_finder.plot()
                 fig.savefig(os.path.join(args.output, 'lr_range_test.png'))
@@ -2103,20 +2113,20 @@ def main():
                 # Get suggestions
                 lr_config = lr_finder.suggest_lr()
             else:
-                # Non-main processes will receive lr_config via broadcasting below
+                # Non-zero ranks will receive lr_config via file below
                 lr_config = None
 
-            # Main process saves lr_config to file, others wait and read from file
+            # Rank 0 saves lr_config to file, others wait and read from file
             # Use file-based sync to avoid torch.distributed calls during LR test
             lr_config_file = os.path.join(checkpoint_dir, 'lr_config_results.json')
-            if is_main_process():
+            if is_rank_0:
                 # Save results to file
                 with open(lr_config_file, 'w') as f:
                     json.dump(lr_config, f, indent=2)
-                logger.info(f"[LR] Main process saved LR config to {lr_config_file}")
+                logger.info(f"[LR] Rank 0 saved LR config to {lr_config_file}")
             else:
-                # Non-main processes wait for file and read results
-                logger.info("[LR] Non-main process waiting for LR config file...")
+                # Non-zero ranks wait for file and read results
+                logger.info("[LR] Non-zero rank waiting for LR config file...")
                 import time
                 wait_start = time.time()
                 timeout = 300  # 5 minutes timeout
@@ -2128,21 +2138,21 @@ def main():
                 try:
                     with open(lr_config_file, 'r') as f:
                         lr_config = json.load(f)
-                    logger.info(f"[LR] Non-main process loaded LR config from {lr_config_file}")
+                    logger.info(f"[LR] Non-zero rank loaded LR config from {lr_config_file}")
                 except Exception as e:
                     logger.error(f"[LR] Failed to load LR config from file: {e}")
                     raise
 
         
 
-        # Update progress (only main process to avoid conflicts)
-        if is_main_process():
+        # Update progress (only rank 0 to avoid conflicts)
+        if is_rank_0:
             progress_manager.update_status(lr_step_key,
                 f"[OK] STEP 1: LR Range Test Complete - Min: {lr_config['min_lr']:.2e}, Max: {lr_config['max_lr']:.2e}")
             progress_manager.finalize_status(lr_step_key)
 
-        # Save results (only main process to avoid conflicts)
-        if is_main_process():
+        # Save results (only rank 0 to avoid conflicts)
+        if is_rank_0:
             with open(os.path.join(args.output, 'lr_config.json'), 'w') as f:
                 json.dump({k: float(v) for k, v in lr_config.items()}, f, indent=2)
 
@@ -2170,7 +2180,7 @@ def main():
             del model, optimizer, criterion, lr_finder, lr_test_loader
             save_pipeline_status('LR_TEST_COMPLETE', status_file)
         else:
-            logger.info("[LR] Non-main process skipping LR config saving...")
+            logger.info("[LR] Non-zero rank skipping LR config saving...")
                 
         # Clean up GPU memory to prevent OOM
         aggressive_memory_cleanup()
@@ -2315,8 +2325,8 @@ def main():
 
             logger.info(f"[WEIGHT] Process {local_rank} detected all processes completed WD search")
 
-        # Aggregate results from all processes (main process only)
-        if is_main_process():
+        # Aggregate results from all processes (rank 0 only)
+        if is_rank_0:
             all_wd_results = []
             global_best_wd = None
             global_best_acc = 0.0
@@ -2349,11 +2359,11 @@ def main():
                     'parallel_search': True,
                     'world_size': world_size
                 }, f)
-            logger.info(f"[WEIGHT] Main process saved aggregated results to {final_results_file}")
+            logger.info(f"[WEIGHT] Rank 0 saved aggregated results to {final_results_file}")
 
         else:
-            # Non-main processes wait for final aggregated results
-            logger.info("[WEIGHT] Non-main process waiting for aggregated weight decay results...")
+            # Non-zero ranks wait for final aggregated results
+            logger.info("[WEIGHT] Non-zero rank waiting for aggregated weight decay results...")
             best_weight_decay = 1e-4  # Default fallback
             wd_results = []  # Default fallback
 
@@ -2372,20 +2382,20 @@ def main():
                         final_data = json.load(f)
                         wd_results = final_data.get('wd_results', wd_results)
                         best_weight_decay = final_data.get('best_weight_decay', best_weight_decay)
-                    logger.info(f"[WEIGHT] Non-main process loaded final results - Best WD: {best_weight_decay:.2e}")
+                    logger.info(f"[WEIGHT] Non-zero rank loaded final results - Best WD: {best_weight_decay:.2e}")
                 else:
-                    logger.warning(f"[WEIGHT] Non-main process timeout waiting for final WD results, using defaults - Best WD: {best_weight_decay:.2e}")
+                    logger.warning(f"[WEIGHT] Non-zero rank timeout waiting for final WD results, using defaults - Best WD: {best_weight_decay:.2e}")
             except Exception as e:
-                logger.warning(f"[WEIGHT] Non-main process error loading WD results, using defaults - Best WD: {best_weight_decay:.2e}, Error: {e}")
+                logger.warning(f"[WEIGHT] Non-zero rank error loading WD results, using defaults - Best WD: {best_weight_decay:.2e}, Error: {e}")
 
-        # Update progress (only main process to avoid conflicts)
-        if is_main_process():
+        # Update progress (only rank 0 to avoid conflicts)
+        if is_rank_0:
             progress_manager.update_status(wd_step_key,
                 f"[OK] STEP 5: Weight Decay Search Complete - Best: {best_weight_decay:.2e}")
             progress_manager.finalize_status(wd_step_key)
         
-        # Save results (only main process)
-        if is_main_process():
+        # Save results (only rank 0)
+        if is_rank_0:
             with open(os.path.join(args.output, 'weight_decay_search.json'), 'w') as f:
                 json.dump(wd_results, f, indent=2)
 
