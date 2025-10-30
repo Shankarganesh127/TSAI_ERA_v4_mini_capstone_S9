@@ -12,6 +12,17 @@ import sys
 import argparse
 from pathlib import Path
 
+# keep numpy / MKL from spawning too many threads
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+import torch
+# 🔐 do this BEFORE ANYTHING ELSE TOUCHES TORCH / DATALOADER / CUDA
+try:
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+except RuntimeError:
+    # if another rank got here earlier, just ignore
+    pass
 from logger_setup import setup_unified_logger, get_unified_logger
 from imagenet_training_pipeline import main as training_main
 

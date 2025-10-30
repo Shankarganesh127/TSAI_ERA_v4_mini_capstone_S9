@@ -51,14 +51,14 @@ from imagenet_dataset import get_imagenet_dataloaders
 from logger_setup import get_unified_logger
 from utils import is_main_process as _is_main_process  # existing util
 
-# --- SAFETY: Prevent PyTorch thread reconfiguration errors ---
-# (set BEFORE any DataLoader or model init)
-torch.set_num_threads(1)
-torch.set_num_interop_threads(1)
 
 # Optional: helps when combined with multi-process DataLoader
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
+# --- SAFETY: Prevent PyTorch thread reconfiguration errors ---
+# (set BEFORE any DataLoader or model init)
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
 
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 os.environ["NCCL_DEBUG"] = "INFO"
@@ -96,7 +96,10 @@ def is_main_process():
     return _is_main_process()
 
 def set_stage_threads(stage: str, prefer_threads: int | None = None) -> int:
-    """Dynamically set PyTorch CPU threads by stage."""
+    """Dynamically set PyTorch CPU threads by stage, safely (won’t crash if too late)."""
+    import psutil, torch, multiprocessing as mp
+    from utils import log  # adjust if logger imported differently
+
     cpu_count = psutil.cpu_count(logical=True) or mp.cpu_count()
     if prefer_threads is not None:
         threads = max(1, int(prefer_threads))
@@ -110,10 +113,17 @@ def set_stage_threads(stage: str, prefer_threads: int | None = None) -> int:
         else:
             threads = max(1, cpu_count // 2 or 1)
 
-    torch.set_num_threads(threads)
-    torch.set_num_interop_threads(min(4, max(1, threads)))
+    # --- 🔒 SAFE SET (won’t crash if late)
+    try:
+        torch.set_num_threads(threads)
+        torch.set_num_interop_threads(min(4, max(1, threads)))
+    except RuntimeError as e:
+        # too late -> just log a warning and continue
+        log.warning(f"[THREADS] Could not change thread count for stage={stage}: {e}")
+
     log.info(f"[THREADS] Stage={stage} num_threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()}")
     return threads
+
 
 
 def init_dist_if_needed(args) -> tuple[bool, int, int, torch.device]:
