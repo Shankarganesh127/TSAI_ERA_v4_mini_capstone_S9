@@ -169,7 +169,6 @@ class BatchSizeFinder:
             del model, opt
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                torch.cuda.synchronize()
 
         alloc_gb = 0.0
         if torch.cuda.is_available():
@@ -383,7 +382,6 @@ class LRFinder:
         del model, opt
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            torch.cuda.synchronize()
 
         return {
             "curve": curve,
