@@ -88,6 +88,24 @@ TQDM_DISABLE = os.environ.get("TQDM_DISABLE", "0") == "1"
 
 log = get_unified_logger("imagenet_pipeline")
 
+def safe_broadcast_scalar(local_value, dtype, device, src=0, tag=""):
+    """
+    Broadcast scalar safely across all ranks. 
+    Ensures every rank reaches the barrier even if one rank fails early.
+    """
+    if not dist.is_initialized():
+        return local_value
+    rank = dist.get_rank()
+    world = dist.get_world_size()
+    try:
+        # Force all ranks to reach the same barrier
+        dist.barrier()
+        tensor = torch.tensor(local_value if rank == src else 0, dtype=dtype, device=device)
+        dist.broadcast(tensor, src=src)
+        return tensor.item()
+    except Exception as e:
+        print(f"[safe_broadcast_scalar:{tag}] Rank {rank}/{world} failed: {e}", flush=True)
+        return local_value
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -412,15 +430,10 @@ def main():
             
         # Broadcast to all ranks so everyone uses the same worker count
         if dist.is_initialized():
-            log.info(f"[DDP] Rank {dist.get_rank()} ready on device {torch.cuda.current_device()}")
-            log.info(f"[DDP] World size = {dist.get_world_size()}")
-            dist.barrier()  # ensure rank-0 wrote the file before broadcast
-            log.info(f"[DDP] Rank {dist.get_rank()} passed barrier.")
-            tensor = torch.tensor(int(optimal_workers) if is_main_process() else 0, dtype=torch.int32, device=device)
-            dist.broadcast(tensor, src=0)
-            optimal_workers = tensor.item()
+            optimal_workers = safe_broadcast_scalar(optimal_workers, torch.int32, device, tag="num_workers")
             args.num_workers = int(optimal_workers)
             log.info(f"[AUTO] num_workers set to {args.num_workers} (global)")
+
     else:
         log.info(f"[AUTO] Skipping num_workers auto-tuning (using {args.num_workers})")
 
@@ -475,22 +488,9 @@ def main():
 
         # --- ✅ Reliable broadcast replaces broadcast_scalar ---
         if dist.is_initialized():
-            log.info(f"[DDP] Rank {dist.get_rank()} ready on device {torch.cuda.current_device()}")
-            log.info(f"[DDP] World size = {dist.get_world_size()}")
-            dist.barrier()  # ensure rank-0 wrote the file before broadcast
-            log.info(f"[DDP] Rank {dist.get_rank()} passed barrier.")
-            tensor = torch.tensor(int(best_bs) if is_main_process() else 0,
-                                  dtype=torch.int32, device=device)
-            dist.broadcast(tensor, src=0)
-            best_bs = tensor.item()
-
-        # --- Re-enable DDP (all ranks re-sync) ---
-        if was_ddp:
-            dist.barrier()
-        best_bs = broadcast_scalar(best_bs, torch.int32, device)
+            best_bs = safe_broadcast_scalar(best_bs, torch.int32, device, tag="batchsize")
         args.batch_size = int(best_bs)
         log.info(f"[AUTO] batch_size set to {args.batch_size}")
-
 
     # (C) LR Finder (rank 0 only)
     if use_lrf:
@@ -522,23 +522,10 @@ def main():
             best_lr = args.lr
             log.info(f"[AUTO] non-main best learning_rate set to {best_lr} (global)")
 
-        # --- Sync + broadcast scalar from rank 0 ---
         if dist.is_initialized():
-            log.info(f"[DDP] Rank {dist.get_rank()} ready on device {torch.cuda.current_device()}")
-            log.info(f"[DDP] World size = {dist.get_world_size()}")
-            dist.barrier()  # ensure rank-0 wrote the file before broadcast
-            log.info(f"[DDP] Rank {dist.get_rank()} passed barrier.")
-            tensor = torch.tensor(float(best_lr) if is_main_process() else 0.0,
-                                  dtype=torch.float32, device=device)
-            dist.broadcast(tensor, src=0)
-            best_lr = float(tensor.item())
-
-        # --- Re-enable DDP (all ranks re-sync) ---
-        if was_ddp:
-            dist.barrier()
+            best_lr = safe_broadcast_scalar(best_lr, torch.float32, device, tag="lr")
         args.lr = float(best_lr)
         log.info(f"[AUTO] lr set to {args.lr}")
-
 
     # (D) Weight-decay search (rank 0 only)
     if use_wds:
@@ -566,20 +553,8 @@ def main():
             best_wd = args.weight_decay
             log.info(f"[AUTO] non-main best weight_decay set to {best_wd} (global)")
     
-        # --- Sync + broadcast scalar from rank 0 ---
         if dist.is_initialized():
-            log.info(f"[DDP] Rank {dist.get_rank()} ready on device {torch.cuda.current_device()}")
-            log.info(f"[DDP] World size = {dist.get_world_size()}")
-            dist.barrier()  # ensure rank-0 wrote the file before broadcast
-            log.info(f"[DDP] Rank {dist.get_rank()} passed barrier.")
-            tensor = torch.tensor(float(best_wd) if is_main_process() else 0.0,
-                                  dtype=torch.float32, device=device)
-            dist.broadcast(tensor, src=0)
-            best_wd = float(tensor.item())
-    
-        # --- Re-enable DDP (all ranks re-sync) ---
-        if was_ddp:
-            dist.barrier()
+            best_wd = safe_broadcast_scalar(best_wd, torch.float32, device, tag="wd")
         args.weight_decay = float(best_wd)
         log.info(f"[AUTO] weight_decay set to {args.weight_decay}")
 

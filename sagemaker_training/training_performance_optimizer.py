@@ -296,7 +296,7 @@ class LRFinder:
     def __init__(self, model: nn.Module, train_dir: str, batch_size: int, device: str = "cuda", num_workers: int = 2):
         self.model = model
         self.train_dir = train_dir
-        self.batch_size = batch_size
+        self.batch_size = max(32, batch_size // (_world() or 1))
         self.device = torch.device(device if torch.cuda.is_available() and device.startswith("cuda") else "cpu")
         self.num_workers = num_workers
 
@@ -511,7 +511,8 @@ class HyperparameterOptimizer:
             f"batch_size={batch_size} | steps={steps}"
         )
 
-        train_loader, val_loader, train_batches, _ = self._build_loaders(batch_size=batch_size)
+        self.batch_size = max(32, batch_size // (_world() or 1))
+        train_loader, val_loader, train_batches, _ = self._build_loaders(batch_size=self.batch_size)
         max_iter = min(steps, train_batches)
 
         results_local = []
@@ -618,12 +619,13 @@ def optimize_num_workers(dataset_path: str, max_workers: int = 8, probe_batches:
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     stats = []
+    batch_size_local = max(32, batch_size // (_world() or 1))
 
     for nw in range(1, max(2, max_workers) + 1):
         loader, _, steps, _ = get_imagenet_dataloaders(
             dataset_path, 
             dataset_path, 
-            batch_size=batch_size, 
+            batch_size=batch_size_local, 
             num_workers=nw, 
             pin_memory=True,
             disable_distributed_splitting=True,
