@@ -1,490 +1,276 @@
-#!/usr/bin/env python3
-"""
-High-performance ImageNet-1K dataset loader using WebDataset (.tar I/O)
-"""
-
 import os
-import glob
-import torch
-import torchvision
-import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
-from PIL import Image
-from logger_setup import get_unified_logger
-
-import webdataset as wds 
-import io
 import math
+import logging
+from typing import Tuple, Optional, List
+
+import torch
+import torch.distributed as dist
+from torch.utils.data import DataLoader
+
+import webdataset as wds
+from torchvision import transforms
+
+# --------------------------------------------------------------------------------------
+# logging
+# --------------------------------------------------------------------------------------
+LOG = logging.getLogger("imagenet_dataset")
+if not LOG.handlers:
+    logging.basicConfig(level=logging.INFO)
+
+# small cache to avoid rebuilding the exact same loader several times in one run
+_DATASET_CACHE = {}
 
 
-# Logger setup
-logger = get_unified_logger("imagenet_dataset")
-
-# Standard ImageNet Constants
-IMAGENET_TRAIN_SIZE = 1281167
-IMAGENET_VAL_SIZE = 50000
+def is_dist() -> bool:
+    return dist.is_initialized()
 
 
-def get_imagenet_transforms(input_size=224, lightweight=False):
-    """
-    Get ImageNet data transforms with optional lightweight mode
-    
-    Args:
-        input_size: Input image size (default: 224 for ResNet)
-        lightweight: If True, use faster but less aggressive augmentations
-    
-    Returns:
-        train_transform, val_transform
-    """
-    
-    if lightweight:
-        # Lightweight version for maximum speed
-        train_transform = transforms.Compose([
-            transforms.RandomResizedCrop(input_size, scale=(0.08, 1.0)),
+def get_rank() -> int:
+    return dist.get_rank() if dist.is_initialized() else 0
+
+
+def get_world_size() -> int:
+    return dist.get_world_size() if dist.is_initialized() else 1
+
+
+# --------------------------------------------------------------------------------------
+# core transforms (you can tweak to match your original file)
+# --------------------------------------------------------------------------------------
+def make_train_transform(img_size: int = 224):
+    return transforms.Compose(
+        [
+            transforms.RandomResizedCrop(img_size),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                               std=[0.229, 0.224, 0.225])
-        ])
-    else:
-        # Full advanced augmentations
-        train_transform = transforms.Compose([
-            # Scale-aware random cropping (8%-100% of image, aspect ratio 3:4 to 4:3)
-            transforms.RandomResizedCrop(input_size, scale=(0.08, 1.0), ratio=(0.75, 1.333)),
-            
-            # Horizontal flip with 50% probability
-            transforms.RandomHorizontalFlip(p=0.5),
-            
-            # Advanced color augmentations for lighting/illumination robustness
-            transforms.ColorJitter(
-                brightness=0.4,  # ±40% brightness change
-                contrast=0.4,    # ±40% contrast change  
-                saturation=0.4,  # ±40% saturation change
-                hue=0.1          # ±10% hue change
+            transforms.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
             ),
-            
-            # Geometric augmentations for spatial robustness
-            transforms.RandomAffine(
-                degrees=0,       # No rotation to preserve object orientation
-                translate=(0.1, 0.1),  # ±10% translation
-                scale=(0.9, 1.1),      # ±10% scaling
-                shear=0.1,             # ±10% shearing
-                fill=0
-            ),
-            
-            # Gaussian blur for noise and focus robustness
-            transforms.GaussianBlur(
-                kernel_size=(3, 3), 
-                sigma=(0.1, 2.0)     # Blur strength range
-            ),
-            
-            transforms.ToTensor(),
-            
-            # Random Erasing (Cutout) for occlusion robustness - applied after ToTensor on [0,1] range
-            transforms.RandomErasing(
-                p=0.25,           # 25% probability
-                scale=(0.02, 0.33),  # Erase 2-33% of image area
-                ratio=(0.3, 3.3),    # Aspect ratio range
-                value='random'       # Fill with random pixel values in [0,1] range
-            ),
-            
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                               std=[0.229, 0.224, 0.225])
-            
-            # Note: RandomErasing after normalization removed - causes issues with normalized tensors
-            # transforms.RandomErasing(
-            #     p=0.25,           # 25% probability
-            #     scale=(0.02, 0.2),   # Smaller erasures after normalization
-            #     ratio=(0.3, 3.3),
-            #     value=0             # Erase to zero (black) after normalization
-            # )
-        ])
-    
-    # Validation transforms (no augmentation)
-    val_transform = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(input_size),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225])
-    ])
-    
-    return train_transform, val_transform
+        ]
+    )
 
 
-def get_test_time_augmentation_transforms(input_size=224, num_augmentations=10):
-    """
-    Get test-time augmentation transforms for improved validation accuracy
-    
-    NOTE: Currently unused in training pipeline. Available for future enhancement
-    to boost validation accuracy by 1-2% at the cost of ~5x slower validation.
-    
-    Args:
-        input_size: Input image size
-        num_augmentations: Number of augmentations per image
-    
-    Returns:
-        List of transforms for test-time augmentation
-    """
-    base_transform = transforms.Compose([
-        transforms.Resize(256),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225])
-    ])
-    
-    # Create multiple augmentation strategies
-    augmentation_transforms = []
-    
-    for _ in range(num_augmentations):
-        # Random crop positions and sizes
-        crop_transforms = transforms.Compose([
+def make_val_transform(img_size: int = 224):
+    return transforms.Compose(
+        [
             transforms.Resize(256),
-            transforms.RandomCrop(input_size, padding=4, padding_mode='reflect'),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),
+            transforms.CenterCrop(img_size),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                               std=[0.229, 0.224, 0.225])
-        ])
-        augmentation_transforms.append(crop_transforms)
-    
-    return augmentation_transforms
+            transforms.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+            ),
+        ]
+    )
 
 
-def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memory=True, lightweight_augs=False, disable_distributed_splitting=False, max_train_shards=None, max_val_shards=None):
+# --------------------------------------------------------------------------------------
+# defensive sample → (image, label) conversion
+# this is the important part for your LR Finder NaN
+# --------------------------------------------------------------------------------------
+def _to_image_and_label(sample, transform, dataset_name="train"):
     """
-    Create ImageNet-1K data loaders
-    
-    Args:
-        train: Path to training dataset directory
-        val: Path to validation dataset directory
-        batch_size: Batch size for training
-        num_workers: Number of worker processes for data loading
-        pin_memory: Whether to pin memory for faster GPU transfer
-        lightweight_augs: Use lightweight augmentations for maximum speed
-        disable_distributed_splitting: Disable distributed data splitting (for independent hyperparameter search)
-        max_train_shards: Maximum number of training shards to use (for quick testing)
-        max_val_shards: Maximum number of validation shards to use (for quick testing)
-    
+    sample: dict coming from WebDataset
+    we try jpg/jpeg/png
+    we try cls / cls.txt / json["label"]
+    everything becomes (C,H,W) float tensor and int64 label in [0,999]
+    """
+    # 1. image
+    img = sample.get("jpg") or sample.get("jpeg") or sample.get("png")
+    if img is None:
+        raise ValueError(f"[{dataset_name}] Sample has no image key: {list(sample.keys())}")
+
+    if transform is not None:
+        img = transform(img)
+
+    # 2. label
+    label = sample.get("cls", None)
+
+    if label is None and "cls.txt" in sample:
+        # often bytes -> decode -> int
+        label = int(sample["cls.txt"].decode("utf-8"))
+    elif label is None and "json" in sample:
+        meta = sample["json"]
+        # try common keys
+        if "label" in meta:
+            label = int(meta["label"])
+        elif "class" in meta:
+            label = int(meta["class"])
+        else:
+            raise ValueError(f"[{dataset_name}] json has no 'label'/'class': {meta}")
+
+    if label is None:
+        raise ValueError(f"[{dataset_name}] Sample has no label (cls/cls.txt/json)")
+
+    # to tensor
+    if not torch.is_tensor(label):
+        label = torch.tensor(label, dtype=torch.long)
+    else:
+        label = label.long()
+
+    # sometimes comes as shape (1,)
+    if label.dim() != 0:
+        label = label.view(-1)[0]
+
+    # clamp to imagenet range
+    label = torch.clamp(label, 0, 999)
+
+    return img, label
+
+
+# --------------------------------------------------------------------------------------
+# helper to turn s3://bucket/prefix/... into list of urls
+# but in SageMaker you often get local mounted paths already, so we just accept a
+# directory path and expand *.tar
+# --------------------------------------------------------------------------------------
+def _expand_shards(root: str) -> List[str]:
+    # root may be 's3://...' in some cases, but in training container it will usually be
+    # something like /opt/ml/input/data/training
+    if root.startswith("s3://"):
+        # webdataset can read s3 urls directly if s3fs/https is available
+        # just return pattern
+        return [os.path.join(root, "*.tar")]
+    # local dir → list all .tar files
+    if os.path.isdir(root):
+        files = sorted(
+            [
+                os.path.join(root, f)
+                for f in os.listdir(root)
+                if f.endswith(".tar")
+            ]
+        )
+        if not files:
+            LOG.warning(f"[imagenet_dataset] No .tar files found under: {root}")
+        return files
+    # single file
+    return [root]
+
+
+# --------------------------------------------------------------------------------------
+# main factory
+# --------------------------------------------------------------------------------------
+def get_imagenet_dataloaders(
+    train_dir: str,
+    val_dir: Optional[str],
+    batch_size: int,
+    num_workers: int,
+    pin_memory: bool = True,
+    disable_distributed_splitting: bool = False,
+    img_size: int = 224,
+    epoch_size_train: Optional[int] = None,
+    epoch_size_val: Optional[int] = None,
+) -> Tuple[DataLoader, Optional[DataLoader], int, int]:
+    """
     Returns:
         train_loader, val_loader, train_batches_per_epoch, val_batches_per_epoch
     """
-    
-    logger = get_unified_logger("imagenet_dataset")
-    logger.info("get_imagenet_dataloaders called with:")
-    logger.info(f"  train={train}")
-    logger.info(f"  val={val}")
-    logger.info(f"  batch_size={batch_size}")
-    logger.info(f"  num_workers={num_workers}")
-    logger.info(f"  pin_memory={pin_memory}")
-    logger.info(f"  lightweight_augs={lightweight_augs}")
-    logger.info(f"  disable_distributed_splitting={disable_distributed_splitting}")
 
-    train_transform, val_transform = get_imagenet_transforms(lightweight=lightweight_augs)
-    if lightweight_augs:
-        logger.info("Using lightweight augmentations for maximum training speed")
-    else:
-        logger.info("Using advanced augmentations for better accuracy")
-    logger.info("Transforms created")
+    # ---- cache key ----
+    cache_key = (
+        train_dir,
+        val_dir,
+        batch_size,
+        num_workers,
+        pin_memory,
+        disable_distributed_splitting,
+        img_size,
+        epoch_size_train,
+        epoch_size_val,
+    )
+    if cache_key in _DATASET_CACHE:
+        return _DATASET_CACHE[cache_key]
 
-    # Check distributed training environment variables (but respect disable_distributed_splitting)
-    import os
-    rank = os.environ.get('RANK', '0')
-    world_size = os.environ.get('WORLD_SIZE', '1')
-    local_rank = os.environ.get('LOCAL_RANK', '0')
-    local_world_size = os.environ.get('LOCAL_WORLD_SIZE', '1')
-    
-    logger.info("Distributed training environment:")
-    logger.info(f"  RANK: {rank}")
-    logger.info(f"  WORLD_SIZE: {world_size}")
-    logger.info(f"  LOCAL_RANK: {local_rank}")
-    logger.info(f"  LOCAL_WORLD_SIZE: {local_world_size}")
-    
-    # Determine if distributed splitting should be used
-    if disable_distributed_splitting:
-        logger.info("🔄 Distributed splitting DISABLED - each process will see all data")
-        is_multi_node = False
-        use_nodesplitter = False
-    else:
-        # Validate multi-node setup (multiple physical nodes, not just multi-GPU on single node)
-        is_multi_node = int(world_size) > int(local_world_size)
-        use_nodesplitter = is_multi_node
-        
-        if is_multi_node:
-            logger.info(f"🔄 Multi-node training detected: {world_size} total processes across {int(world_size)//int(local_world_size)} nodes")
-            logger.info("Using nodesplitter() for shard distribution across nodes")
-            
-            # Additional validation for multi-node setup
-            if rank == '0':
-                logger.info("This is the master node (RANK=0)")
-            else:
-                logger.info(f"This is worker node (RANK={rank})")
-                
-        else:
-            logger.info(f"🔄 Single-node training detected ({world_size} processes on 1 node)")
-            logger.info("All processes will see all shards (no node-level splitting)")
-    
-    # Ensure environment variables are properly set for WebDataset
-    if is_multi_node:
-        # WebDataset nodesplitter() relies on these environment variables
-        required_vars = ['RANK', 'WORLD_SIZE']
-        missing_vars = [var for var in required_vars if os.environ.get(var) is None]
-        if missing_vars:
-            logger.warning(f"⚠️  Missing environment variables for multi-node training: {missing_vars}")
-            logger.warning("WebDataset nodesplitter() may not work correctly")
-            logger.warning("Ensure your distributed training framework sets RANK and WORLD_SIZE")
-        else:
-            logger.info("✅ Required environment variables for multi-node training are set")
+    world_size = get_world_size()
+    rank = get_rank()
 
-    # Use the provided paths directly
-    train_dir = train
-    val_dir = val
-    
-    # 1. Define the local glob patterns (direct directory only)
-    train_url_pattern = os.path.join(train, '*.tar')
-    val_url_pattern = os.path.join(val, '*.tar')
+    train_urls = _expand_shards(train_dir)
+    val_urls = _expand_shards(val_dir) if val_dir else None
 
-    # 2. Use standard Python globbing (glob.glob) to find the FULL list of files
-    train_urls_all = sorted(glob.glob(train_url_pattern))
-    val_urls_all = sorted(glob.glob(val_url_pattern))
+    train_transform = make_train_transform(img_size)
+    val_transform = make_val_transform(img_size)
 
-    # 3. Limit shards if requested (for quick testing)
-    if max_train_shards is not None and len(train_urls_all) > max_train_shards:
-        logger.info(f"Limiting training shards from {len(train_urls_all)} to {max_train_shards}")
-        train_urls_all = train_urls_all[:max_train_shards]
-    if max_val_shards is not None and len(val_urls_all) > max_val_shards:
-        logger.info(f"Limiting validation shards from {len(val_urls_all)} to {max_val_shards}")
-        val_urls_all = val_urls_all[:max_val_shards]
-
-    logger.info(f"Found {len(train_urls_all)} total training shards and {len(val_urls_all)} validation shards locally.")
-
-    # 4. Split URLs across nodes ONLY for actual multi-node training
-    if is_multi_node:
-        logger.info("Splitting shards across nodes using wds.shardlists.split_by_node()")
-        train_urls = wds.shardlists.split_by_node(train_urls_all)
-        val_urls = wds.shardlists.split_by_node(val_urls_all)
-    else:
-        logger.info("Single-node training: using all shards for all processes")
-        train_urls = train_urls_all
-        val_urls = val_urls_all
-
-    if not train_urls_all:
-        # List directory contents for debugging
-        try:
-            logger.error(f"Training directory contents: {os.listdir(train)}")
-            for root, dirs, files in os.walk(train):
-                tar_files = [f for f in files if f.endswith('.tar')]
-                if tar_files:
-                    logger.error(f"Found .tar files in {root}: {tar_files[:5]}...")  # Show first 5
-        except Exception as e:
-            logger.error(f"Could not list training directory: {e}")
-        raise FileNotFoundError(f"No .tar files found in training directory: {train}")
-    
-    if not val_urls_all:
-        # List directory contents for debugging
-        try:
-            logger.error(f"Validation directory contents: {os.listdir(val)}")
-            for root, dirs, files in os.walk(val):
-                tar_files = [f for f in files if f.endswith('.tar')]
-                if tar_files:
-                    logger.error(f"Found .tar files in {root}: {tar_files[:5]}...")  # Show first 5
-        except Exception as e:
-            logger.error(f"Could not list validation directory: {e}")
-        raise FileNotFoundError(f"No .tar files found in validation directory: {val}")
-
-    logger.info(f"Checking paths - train_dir={train_dir}, val_dir={val_dir}")
-    
-    logger.info(f"🚀 Using WebDataset for training from: {train}")
-    logger.info(f"🚀 Using WebDataset for validation from: {val}")
-    
-    # Calculate effective epoch size for the scheduler. This is critical.
-    train_batches_per_epoch = math.ceil(IMAGENET_TRAIN_SIZE / batch_size)
-
-    if not os.path.exists(train_dir):
-        logger.error(f"Training directory does not exist: {train_dir}")
-        raise FileNotFoundError(f"Training data directory not found: {train_dir}")
-    if not os.path.exists(val_dir):
-        logger.error(f"Validation directory does not exist: {val_dir}")
-        raise FileNotFoundError(f"Validation data directory not found: {val_dir}")
-
-    logger.info("Both directories exist, creating datasets")
-    
-    # --- Training DataLoader (WebDataset) ---
-
-    train_dataset = (
+    # ----------------------------------------------------------------------------------
+    # TRAIN DATASET
+    # ----------------------------------------------------------------------------------
+    # resampled=True is important for DDP so that each worker can loop independently
+    train_data = (
         wds.WebDataset(
-            train_urls,  # URLs split by node only if multi-node
-            nodesplitter=wds.shardlists.split_by_node if use_nodesplitter else None,
-            empty_check=True if use_nodesplitter else False  # Disable empty check for limited shards
+            train_urls,
+            resampled=True,
+            shardshuffle=True,
+            nodesplitter=wds.split_by_node if not disable_distributed_splitting else None,
         )
-        
         .shuffle(1000)
-        .repeat()  # 🔄 CRITICAL: Cycle indefinitely for LR range test (avoids StopIteration sync issues in DDP)
-        .decode("pil", handler=wds.handlers.ignore_and_continue)
-        .rename(image="jpg", label="cls")
-        .map_dict(image=train_transform, handler=wds.handlers.ignore_and_continue)
-        
-        # Filter to drop corrupted samples that don't have both image and label
-        .select(lambda sample: "image" in sample and "label" in sample)
-        
-        .to_tuple("image", "label")
-        .with_epoch(train_batches_per_epoch)
-        .batched(batch_size, partial=False)
+        .decode("pil")
+        .map(lambda s: _to_image_and_label(s, train_transform, dataset_name="train"))
     )
 
-    # WebLoader automatically handles worker splitting when num_workers > 0
+    # we do batching inside WebDataset
+    train_data = train_data.batched(batch_size, partial=False)
+
+    # WebLoader is the recommended loader for WebDataset
     train_loader = wds.WebLoader(
-        train_dataset,
-        batch_size=None,  # 🔧 CRITICAL: Prevent double batching (WebDataset already batches)
+        train_data,
+        batch_size=None,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=pin_memory,
     )
-    
-    # --- Validation DataLoader (WebDataset) ---
 
-    val_batches_per_epoch = math.ceil(IMAGENET_VAL_SIZE / batch_size)
+    # with_epoch controls how many batches we see as "one epoch"
+    # if user didn't specify, estimate from #shards
+    if epoch_size_train is None:
+        # simple heuristic: 128k images / batch_size
+        # but we can't count exactly because of resampled=True
+        approx_images = 128000
+        epoch_size_train = math.ceil(approx_images / batch_size)
 
-    val_dataset = (
-        wds.WebDataset(val_urls,
-                       nodesplitter=wds.shardlists.split_by_node if use_nodesplitter else None,
-                       empty_check=True if use_nodesplitter else False  # Disable empty check for limited shards
-                       )
-        
-        .repeat()
-        .decode("pil", handler=wds.handlers.ignore_and_continue)
-        .rename(image="jpg", label="cls")
-        .map_dict(image=val_transform, handler=wds.handlers.ignore_and_continue)
-        
-        # Filter to drop corrupted samples that don't have both image and label
-        .select(lambda sample: "image" in sample and "label" in sample)
-        
-        .to_tuple("image", "label")
-        .with_epoch(val_batches_per_epoch)
-        .batched(batch_size, partial=True)
-    )
-    
-    # Validation doesn't need nodesplitter (uses fewer workers, no sync issues)
-    if use_nodesplitter:
-        logger.info("✅ Validation dataset created with node-split URLs for multi-node training")
+    train_loader = train_loader.with_epoch(epoch_size_train)
+
+    # ----------------------------------------------------------------------------------
+    # VAL DATASET
+    # ----------------------------------------------------------------------------------
+    if val_urls:
+        val_data = (
+            wds.WebDataset(
+                val_urls,
+                resampled=False,  # val is finite
+                shardshuffle=False,
+                nodesplitter=wds.split_by_node if not disable_distributed_splitting else None,
+            )
+            .decode("pil")
+            .map(lambda s: _to_image_and_label(s, val_transform, dataset_name="val"))
+            .batched(batch_size, partial=False)
+        )
+        val_loader = wds.WebLoader(
+            val_data,
+            batch_size=None,
+            num_workers=max(1, num_workers // 2),
+            pin_memory=pin_memory,
+        )
+
+        if epoch_size_val is None:
+            approx_val_images = 50000  # imagenet val
+            epoch_size_val = math.ceil(approx_val_images / batch_size)
+
+        val_loader = val_loader.with_epoch(epoch_size_val)
     else:
-        logger.info("✅ Validation dataset created for single-node training")
+        val_loader = None
+        epoch_size_val = 0
 
-    val_loader = wds.WebLoader(
-        val_dataset,
-        batch_size=None,  # 🔧 CRITICAL: Prevent double batching (WebDataset already batches)
-        num_workers=num_workers,
-        pin_memory=True
-    )
+    # ----------------------------------------------------------------------------------
+    # ONE-TIME SANITY LOG (rank 0 only)
+    # ----------------------------------------------------------------------------------
+    if rank == 0:
+        try:
+            it = iter(train_loader)
+            x, y = next(it)
+            LOG.info(
+                f"[imagenet_dataset] sanity batch: x={tuple(x.shape)} {x.dtype}, "
+                f"y={tuple(y.shape)} {y.dtype}, y_min={int(y.min())}, y_max={int(y.max())}"
+            )
+        except Exception as e:
+            LOG.error(f"[imagenet_dataset] failed to read first batch: {e}")
 
-    return train_loader, val_loader, train_batches_per_epoch, val_batches_per_epoch
-
-''''
-    # Create datasets
-    try:
-        logger.info(f"Creating training dataset from {train_dir}")
-        train_dataset = torchvision.datasets.ImageFolder(train_dir, transform=train_transform)
-        logger.info(f"Training dataset created successfully with {len(train_dataset)} samples")
-    except Exception as e:
-        logger.error(f"Error creating training dataset: {e}")
-        raise
-
-    try:
-        logger.info(f"Creating validation dataset from {val_dir}")
-        val_dataset = torchvision.datasets.ImageFolder(val_dir, transform=val_transform)
-        logger.info(f"Validation dataset created successfully with {len(val_dataset)} samples")
-    except Exception as e:
-        logger.error(f"Error creating validation dataset: {e}")
-        raise
-
-    # Log dataset information if called directly (not from other modules)
-    try:
-        logger.info(f"Training samples: {len(train_dataset)}")
-        logger.info(f"Validation samples: {len(val_dataset)}")
-        logger.info(f"Number of training classes: {len(train_dataset.classes)}")
-        logger.info(f"Number of validation classes: {len(val_dataset.classes)}")
-    except Exception:
-        # Fallback for when logger is not available
-        pass
-
-    # Create data loaders
-    logger.info("Creating data loaders")
-    try:
-        logger.info(f"Creating training data loader with batch_size={batch_size}")
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=2 if num_workers > 0 else None
-        )
-        logger.info("Training data loader created successfully")
-    except Exception as e:
-        logger.error(f"Error creating training data loader: {e}")
-        raise
-
-    try:
-        logger.info(f"Creating validation data loader with batch_size={batch_size}")
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=2 if num_workers > 0 else None
-        )
-        logger.info("Validation data loader created successfully")
-    except Exception as e:
-        logger.error(f"Error creating validation data loader: {e}")
-        raise
-
-    logger.info("Both data loaders created, returning")
-    return train_loader, val_loader
-'''
-
-def get_tiny_imagenet_dataloaders(data_dir, batch_size=32, num_workers=4):
-    """
-    Alternative: Create Tiny ImageNet data loaders (200 classes, 64x64 images)
-    This is much smaller and more manageable for testing
-    """
-    
-    # Transforms for Tiny ImageNet (64x64 images)
-    train_transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(10),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225])
-    ])
-    
-    val_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225])
-    ])
-    
-    train_dir = os.path.join(data_dir, 'train')
-    val_dir = os.path.join(data_dir, 'val')
-    
-    train_dataset = torchvision.datasets.ImageFolder(train_dir, transform=train_transform)
-    val_dataset = torchvision.datasets.ImageFolder(val_dir, transform=val_transform)
-    
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
-                            num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, 
-                          num_workers=num_workers, pin_memory=True)
-    
-    return train_loader, val_loader
-
-
-if __name__ == "__main__":
-    # Test transforms
-    logger = get_unified_logger("imagenet_dataset")
-    
-    train_transform, val_transform = get_imagenet_transforms()
-    logger.info("ImageNet transforms created successfully")
-    logger.info(f"Train transform: {train_transform}")
-    logger.info(f"Val transform: {val_transform}")
+    result = (train_loader, val_loader, epoch_size_train, epoch_size_val)
+    _DATASET_CACHE[cache_key] = result
+    return result
