@@ -148,6 +148,7 @@ class BatchSizeFinder:
             pin_memory=True,
             # BS finder runs standalone; do not split across ranks
             disable_distributed_splitting=True,
+            resampled=False,
         )
 
         model = self.model.to(self.device)
@@ -327,6 +328,7 @@ class LRFinder:
             num_workers=self.num_workers,
             pin_memory=True,
             disable_distributed_splitting=True,  # always single-process
+            resampled=False,
         )
 
         model = self.model.to(self.device)
@@ -449,6 +451,7 @@ class HyperparameterOptimizer:
             pin_memory=True,
             # WD search runs independently per rank (no DDP sampling)
             disable_distributed_splitting=True,
+            resampled=False,
         )
         
         # ✅ Sanity check: make sure we received iterable WebDataset loaders

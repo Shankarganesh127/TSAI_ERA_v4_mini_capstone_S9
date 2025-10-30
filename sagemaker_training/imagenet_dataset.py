@@ -159,6 +159,7 @@ def get_imagenet_dataloaders(
     img_size: int = 224,
     epoch_size_train: Optional[int] = None,
     epoch_size_val: Optional[int] = None,
+    resampled: bool = True,
 ) -> Tuple[DataLoader, Optional[DataLoader], int, int]:
     """
     Returns:
@@ -176,6 +177,7 @@ def get_imagenet_dataloaders(
         img_size,
         epoch_size_train,
         epoch_size_val,
+        resampled,
     )
     if cache_key in _DATASET_CACHE:
         return _DATASET_CACHE[cache_key]
@@ -196,11 +198,11 @@ def get_imagenet_dataloaders(
     train_data = (
         wds.WebDataset(
             train_urls,
-            resampled=True,
+            resampled=resampled,
             shardshuffle=True,
             nodesplitter=wds.split_by_node if not disable_distributed_splitting else None,
         )
-        .shuffle(1000)
+        .shuffle(10000)
         .decode("pil")
         .map(lambda s: _to_image_and_label(s, train_transform, dataset_name="train"))
     )
