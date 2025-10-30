@@ -371,6 +371,17 @@ class LRFinder:
 
             with autocast(enabled=scaler.is_enabled()):
                 out = model(x)
+                # 🧠 DEBUG 1: Check for invalid labels vs output shape
+                if (y < 0).any() or (y >= out.shape[1]).any():
+                    print(f"[LRF][DEBUG] Invalid target detected at step={it_count} | "
+                          f"min={y.min().item()}, max={y.max().item()}, "
+                          f"num_classes={out.shape[1]}")
+
+                # 🧠 DEBUG 2: Check for NaNs/Infs in model outputs
+                if not torch.isfinite(out).all():
+                    bad = (~torch.isfinite(out)).sum().item()
+                    print(f"[LRF][DEBUG] Non-finite values in output at step={it_count}, "
+                          f"count={bad}, lr={lr:.2e}")
                 loss = nn.functional.cross_entropy(out, y)
 
             curve.append({"lr": float(lr), "loss": float(loss.item())})
