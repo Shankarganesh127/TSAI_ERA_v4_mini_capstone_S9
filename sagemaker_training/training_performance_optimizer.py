@@ -155,6 +155,7 @@ class BatchSizeFinder:
         model.train()
         opt = self.optimizer_cls(model.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.weight_decay)
         scaler = GradScaler(enabled=torch.cuda.is_available())
+        log.info(f"[AMP] GradScaler created with enabled={scaler.is_enabled()}")
 
         torch.cuda.reset_peak_memory_stats(self.device) if torch.cuda.is_available() else None
 
@@ -336,6 +337,7 @@ class LRFinder:
 
         opt = torch.optim.SGD(model.parameters(), lr=start_lr, momentum=0.9)
         scaler = GradScaler(enabled=torch.cuda.is_available())
+        log.info(f"[AMP] GradScaler created with enabled={scaler.is_enabled()}")
 
         curve = []
         lr = start_lr
@@ -353,7 +355,11 @@ class LRFinder:
         it_count = 0
         t0 = time.time()
         for batch_idx, (x, y) in enumerate(train_loader):
-            print(x.shape, x.min().item(), x.max().item(), y.min().item(), y.max().item(), y.dtype)
+            
+            import random
+            if random.random() < 0.002:  # ~1 in 500 samples
+                print(x.shape, x.min().item(), x.max().item(), y.min().item(), y.max().item(), y.dtype)
+                
             if it_count >= iters:
                 break
 
@@ -531,6 +537,7 @@ class HyperparameterOptimizer:
                 nesterov=True,
             )
             scaler = GradScaler(enabled=torch.cuda.is_available())
+            log.info(f"[AMP] GradScaler created with enabled={scaler.is_enabled()}")
 
             losses = []
             for it, (x, y) in enumerate(train_loader):

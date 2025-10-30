@@ -247,10 +247,13 @@ def train_one_epoch(model, loader, optimizer, scheduler, device, scaler: GradSca
     total_loss, total_correct, total = 0.0, 0, 0
     optimizer.zero_grad()
     step_idx = 0
+    log.info(f"[AMP] GradScaler created with enabled={scaler.is_enabled()}")
 
     for step_idx, (inputs, targets) in enumerate(loader, start=1):
         inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
         with autocast(enabled=scaler.is_enabled()):
+            if step_idx == 1 and is_main_process():
+                log.info(f"[AMP] autocast active: {torch.is_autocast_enabled()}")
             outputs = model(inputs)
             loss = nn.functional.cross_entropy(outputs, targets)
 
@@ -505,7 +508,7 @@ def main():
                     device=temp_device,
                     num_workers=args.num_workers,
                 )
-                lr_report = lrf.find(start_lr=1e-6, end_lr=1.0, iters=200)
+                lr_report = lrf.find(start_lr=1e-6, end_lr=1e-1, iters=200)
                 best_lr = float(lr_report.get("suggested_max_lr", args.lr))
 
                 # Save report + plot (rank 0 only)
