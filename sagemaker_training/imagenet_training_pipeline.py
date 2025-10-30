@@ -51,6 +51,13 @@ from imagenet_dataset import get_imagenet_dataloaders
 from logger_setup import get_unified_logger
 from utils import is_main_process as _is_main_process  # existing util
 
+os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
+os.environ["NCCL_DEBUG"] = "INFO"
+os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+os.environ["NCCL_BLOCKING_WAIT"] = "1"
+os.environ["NCCL_TIMEOUT"] = "600"  # seconds
+
+
 # Optional imports — fall back gracefully if not present
 _BSF = _LRF = _WDS = _OPTW = None
 try:
@@ -328,7 +335,10 @@ def disable_ddp_model(model: nn.Module) -> nn.Module:
             model_to_use = model.module
         else:
             model_to_use = model
+        log.info(f"[DDP] Rank {dist.get_rank()} ready on device {torch.cuda.current_device()}")
+        log.info(f"[DDP] World size = {dist.get_world_size()}")
         dist.barrier()  # sync before disabling
+        log.info(f"[DDP] Rank {dist.get_rank()} passed barrier.")
     else:
         model_to_use = model
     return was_ddp, model_to_use
@@ -379,17 +389,18 @@ def main():
             save_json(reports_dir / "num_workers.json", {"optimal_workers_global": int(optimal_workers)})
         else:
             # Non-main ranks: just wait for rank-0 to finish
-            if dist.is_initialized():
-                dist.barrier()  # ✅ wait for main process to complete optimization
             optimal_workers = args.num_workers
+            log.info(f"[AUTO] non-main num_workers set to {optimal_workers} (global)")
             
         # Broadcast to all ranks so everyone uses the same worker count
         if dist.is_initialized():
+            log.info(f"[DDP] Rank {dist.get_rank()} ready on device {torch.cuda.current_device()}")
+            log.info(f"[DDP] World size = {dist.get_world_size()}")
             dist.barrier()  # ensure rank-0 wrote the file before broadcast
+            log.info(f"[DDP] Rank {dist.get_rank()} passed barrier.")
             tensor = torch.tensor(int(optimal_workers) if is_main_process() else 0, dtype=torch.int32, device=device)
             dist.broadcast(tensor, src=0)
             optimal_workers = tensor.item()
-
             args.num_workers = int(optimal_workers)
             log.info(f"[AUTO] num_workers set to {args.num_workers} (global)")
     else:
@@ -415,6 +426,7 @@ def main():
                     weight_decay=args.weight_decay,
                     train_dir=args.train,
                     device="cuda" if torch.cuda.is_available() else "cpu",
+                    num_workers=args.num_workers,
                 )
 
                 bsf_result = bsf.find_max_batch(
@@ -440,13 +452,15 @@ def main():
                 log.warning(f"[AUTO] BatchSizeFinder failed, keeping batch_size={args.batch_size}: {e}")
                 best_bs = args.batch_size
         else:
-            # Non-main ranks wait for rank 0 to finish
-            if dist.is_initialized():
-                dist.barrier()
+            best_bs = args.batch_size
+            log.info(f"[AUTO] non-main best batch_size set to {best_bs} (global)")
 
         # --- ✅ Reliable broadcast replaces broadcast_scalar ---
         if dist.is_initialized():
-            dist.barrier()  # ensure file written before broadcast
+            log.info(f"[DDP] Rank {dist.get_rank()} ready on device {torch.cuda.current_device()}")
+            log.info(f"[DDP] World size = {dist.get_world_size()}")
+            dist.barrier()  # ensure rank-0 wrote the file before broadcast
+            log.info(f"[DDP] Rank {dist.get_rank()} passed barrier.")
             tensor = torch.tensor(int(best_bs) if is_main_process() else 0,
                                   dtype=torch.int32, device=device)
             dist.broadcast(tensor, src=0)
@@ -488,10 +502,14 @@ def main():
                 best_lr = args.lr
         else:
             best_lr = args.lr
+            log.info(f"[AUTO] non-main best learning_rate set to {best_lr} (global)")
 
         # --- Sync + broadcast scalar from rank 0 ---
         if dist.is_initialized():
-            dist.barrier()
+            log.info(f"[DDP] Rank {dist.get_rank()} ready on device {torch.cuda.current_device()}")
+            log.info(f"[DDP] World size = {dist.get_world_size()}")
+            dist.barrier()  # ensure rank-0 wrote the file before broadcast
+            log.info(f"[DDP] Rank {dist.get_rank()} passed barrier.")
             tensor = torch.tensor(float(best_lr) if is_main_process() else 0.0,
                                   dtype=torch.float32, device=device)
             dist.broadcast(tensor, src=0)
@@ -528,10 +546,14 @@ def main():
                 best_wd = args.weight_decay
         else:
             best_wd = args.weight_decay
+            log.info(f"[AUTO] non-main best weight_decay set to {best_wd} (global)")
     
         # --- Sync + broadcast scalar from rank 0 ---
         if dist.is_initialized():
-            dist.barrier()
+            log.info(f"[DDP] Rank {dist.get_rank()} ready on device {torch.cuda.current_device()}")
+            log.info(f"[DDP] World size = {dist.get_world_size()}")
+            dist.barrier()  # ensure rank-0 wrote the file before broadcast
+            log.info(f"[DDP] Rank {dist.get_rank()} passed barrier.")
             tensor = torch.tensor(float(best_wd) if is_main_process() else 0.0,
                                   dtype=torch.float32, device=device)
             dist.broadcast(tensor, src=0)
@@ -669,7 +691,10 @@ def main():
         writer.close()
 
     if dist.is_initialized():
-        dist.barrier()
+        log.info(f"[DDP] Rank {dist.get_rank()} ready on device {torch.cuda.current_device()}")
+        log.info(f"[DDP] World size = {dist.get_world_size()}")
+        dist.barrier()  # ensure rank-0 wrote the file before broadcast
+        log.info(f"[DDP] Rank {dist.get_rank()} passed barrier.")
         dist.destroy_process_group()
 
 
