@@ -80,13 +80,13 @@ def _to_image_and_label(sample, transform, dataset_name="train"):
     if img is None:
         raise ValueError(f"[{dataset_name}] Sample has no image key: {list(sample.keys())}")
 
-    if isinstance(img, torch.Tensor):
-        print("[DEBUG-before-transform]", img.min().item(), img.max().item(), img.dtype)
-
-
     if transform is not None:
         img = transform(img)
 
+    if isinstance(img, torch.Tensor):
+        print(f"[DEBUG-after-transform] min={img.min().item():.4f} max={img.max().item():.4f} dtype={img.dtype}")
+
+    
     # 2. label
     label = sample.get("cls", None)
 
