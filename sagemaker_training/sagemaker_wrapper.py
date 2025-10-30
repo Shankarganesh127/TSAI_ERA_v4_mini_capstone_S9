@@ -10,6 +10,7 @@ SageMaker wrapper:
 import os
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
 
 import torch
 

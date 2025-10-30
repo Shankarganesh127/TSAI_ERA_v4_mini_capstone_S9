@@ -84,7 +84,7 @@ def _to_image_and_label(sample, transform, dataset_name="train"):
         img = transform(img)
 
     import random
-    if isinstance(img, torch.Tensor) and random.random() < 0.001:  # ~1 in 1000 samples
+    if isinstance(img, torch.Tensor) and random.random() < 0.0001:  # ~1 in 1000 samples
         print(f"[DEBUG-after-transform][rank={get_rank()}] " f"min={img.min().item():.4f} max={img.max().item():.4f} dtype={img.dtype}")
     
     # 2. label

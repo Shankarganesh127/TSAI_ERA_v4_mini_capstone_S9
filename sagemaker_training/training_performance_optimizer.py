@@ -551,8 +551,8 @@ class HyperparameterOptimizer:
 
                 if not torch.isfinite(loss):
                     lr = float(lr_config.get("max_lr", 0.1))
-                    print(f"[WDS] NaN loss detected at wd={wd:.2e}, lr={lr:.2e} — skipping")
-                    continue
+                    print(f"[WDS] NaN loss detected at wd={wd:.2e}, lr={lr:.2e} — setting loss to zero and continuing.")
+                    loss = torch.zeros_like(loss)
                 else:
                     if it % 10 == 0:
                         print(f"[WDS][INFO] wd={wd:.1e}, lr={lr:.1e}, loss={loss.item():.4f}")
