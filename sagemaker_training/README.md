@@ -11,6 +11,8 @@ python launch_sagemaker.py \
   --bucket "your-s3-bucket" \
   --epochs 30
 
+python sagemaker_orchestrator.py   --role-arn "arn:aws:iam::872109682518:role/service-role/AmazonSageMaker-ExecutionRole-20251009T010774" --source-bucket "tsai-era-v4-mini-capstone" --use-spot --epochs 100 --instance-type "ml.g6.12xlarge" --instance-count 1
+
 # For full pipeline with optimization
 python sagemaker_orchestrator.py \
   --role-arn "arn:aws:iam::ACCOUNT:role/SageMakerRole" \
