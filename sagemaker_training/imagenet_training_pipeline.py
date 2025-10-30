@@ -51,6 +51,15 @@ from imagenet_dataset import get_imagenet_dataloaders
 from logger_setup import get_unified_logger
 from utils import is_main_process as _is_main_process  # existing util
 
+# --- SAFETY: Prevent PyTorch thread reconfiguration errors ---
+# (set BEFORE any DataLoader or model init)
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
+
+# Optional: helps when combined with multi-process DataLoader
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 os.environ["NCCL_DEBUG"] = "INFO"
 os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"

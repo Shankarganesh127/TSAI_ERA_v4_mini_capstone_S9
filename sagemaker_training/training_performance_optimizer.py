@@ -169,6 +169,7 @@ class BatchSizeFinder:
             del model, opt
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()
 
         alloc_gb = 0.0
         if torch.cuda.is_available():
@@ -333,6 +334,7 @@ class LRFinder:
         it_count = 0
         t0 = time.time()
         for batch_idx, (x, y) in enumerate(train_loader):
+            print(x.shape, x.min().item(), x.max().item(), y.min().item(), y.max().item(), y.dtype)
             if it_count >= iters:
                 break
 
@@ -381,6 +383,7 @@ class LRFinder:
         del model, opt
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
         return {
             "curve": curve,
@@ -550,6 +553,7 @@ class HyperparameterOptimizer:
             del model, opt
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()
 
         # Gather all results to rank 0
         results_all = _gather_dicts_local_to_rank0({"results": results_local})
