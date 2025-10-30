@@ -83,8 +83,8 @@ def _to_image_and_label(sample, transform, dataset_name="train"):
     if transform is not None:
         img = transform(img)
 
-    if isinstance(img, torch.Tensor):
-        print(f"[DEBUG-after-transform] min={img.min().item():.4f} max={img.max().item():.4f} dtype={img.dtype}")
+    #if isinstance(img, torch.Tensor):
+    #    print(f"[DEBUG-after-transform] min={img.min().item():.4f} max={img.max().item():.4f} dtype={img.dtype}")
 
     
     # 2. label
