@@ -98,7 +98,6 @@ def is_main_process():
 def set_stage_threads(stage: str, prefer_threads: int | None = None) -> int:
     """Dynamically set PyTorch CPU threads by stage, safely (won’t crash if too late)."""
     import psutil, torch, multiprocessing as mp
-    from utils import log  # adjust if logger imported differently
 
     cpu_count = psutil.cpu_count(logical=True) or mp.cpu_count()
     if prefer_threads is not None:
