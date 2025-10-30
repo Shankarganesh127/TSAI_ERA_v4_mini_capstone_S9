@@ -8,21 +8,32 @@ SageMaker wrapper:
 """
 
 import os
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+import torch
+
+# --- HARD GUARD: freeze torch thread setters so late calls don't crash ---
+def _safe_noop(*args, **kwargs):
+    # just ignore late attempts
+    return
+
+try:
+    # set something sensible once
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+except RuntimeError:
+    # even if it's already started, we ignore
+    pass
+
+# now monkey-patch so nobody else can crash the process later
+torch.set_num_threads = _safe_noop       # type: ignore
+torch.set_num_interop_threads = _safe_noop  # type: ignore
+
 import sys
 import argparse
 from pathlib import Path
 
-# keep numpy / MKL from spawning too many threads
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-import torch
-# 🔐 do this BEFORE ANYTHING ELSE TOUCHES TORCH / DATALOADER / CUDA
-try:
-    torch.set_num_threads(1)
-    torch.set_num_interop_threads(1)
-except RuntimeError:
-    # if another rank got here earlier, just ignore
-    pass
 from logger_setup import setup_unified_logger, get_unified_logger
 from imagenet_training_pipeline import main as training_main
 

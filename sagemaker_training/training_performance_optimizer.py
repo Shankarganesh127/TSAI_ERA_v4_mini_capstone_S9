@@ -32,6 +32,24 @@ import torch.optim as optim
 import torch.distributed as dist
 from torch.cuda.amp import autocast, GradScaler
 
+# training_performance_optimizer.py
+
+# global flag so we don't call it twice
+_TORCH_THREADS_LOCKED = False
+
+def safe_set_torch_threads(num_threads: int = 1, num_interop: int = 1):
+    global _TORCH_THREADS_LOCKED
+    if _TORCH_THREADS_LOCKED:
+        return
+    try:
+        torch.set_num_threads(num_threads)
+        torch.set_num_interop_threads(num_interop)
+    except RuntimeError:
+        # too late -> ignore
+        return
+    _TORCH_THREADS_LOCKED = True
+
+
 # Import your dataset loader util
 from imagenet_dataset import get_imagenet_dataloaders
 from logger_setup import get_unified_logger
