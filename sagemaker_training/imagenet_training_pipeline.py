@@ -544,7 +544,7 @@ def main():
                     device=temp_device,
                     num_workers=args.num_workers,
                 )
-                lr_config = {"min_lr": max(1e-5, args.lr / 10.0), "max_lr": args.lr}
+                lr_config = {"min_lr": max(3e-6, args.lr / 20.0), "max_lr": args.lr / 5.0}
                 results, best_wd = wds.weight_decay_search(lr_config, batch_size=args.batch_size)
     
                 save_json(reports_dir / "weight_decay_search.json",

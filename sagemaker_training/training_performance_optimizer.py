@@ -548,6 +548,15 @@ class HyperparameterOptimizer:
                 with autocast(enabled=scaler.is_enabled()):
                     out = model(x)
                     loss = nn.functional.cross_entropy(out, y)
+
+                if not torch.isfinite(loss):
+                    lr = float(lr_config.get("max_lr", 0.1))
+                    print(f"[WDS] NaN loss detected at wd={wd:.2e}, lr={lr:.2e} — skipping")
+                    continue
+                else:
+                    if it % 10 == 0:
+                        print(f"[WDS][INFO] wd={wd:.1e}, lr={lr:.1e}, loss={loss.item():.4f}")
+
                 losses.append(float(loss.item()))
 
                 if scaler.is_enabled():
