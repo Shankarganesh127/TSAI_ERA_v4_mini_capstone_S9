@@ -245,7 +245,12 @@ class BatchSizeFinder:
                 curve.append(r)
 
                 # Log memory usage and success
-                mem = torch.cuda.memory_allocated(self.device) / (1024 ** 3)
+                #mem = torch.cuda.memory_allocated(self.device) / (1024 ** 3)
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+                mem = torch.cuda.max_memory_allocated(self.device) / (1024 ** 3)
+                torch.cuda.reset_peak_memory_stats(self.device)
+
                 logger.info(f"[BSF][RANK {rank}] ✅ bs={bs:<4d} | mem={mem:.2f}GB | ok={r['ok']} | time={time.time()-t0:.1f}s")
 
                 if r["ok"]:
@@ -265,6 +270,9 @@ class BatchSizeFinder:
                 else:
                     logger.error(f"[BSF][RANK {rank}] Unexpected error at bs={bs}: {e}")
                     raise e
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            gc.collect()
 
         if last_ok == 0:
             logger.warning(f"[BSF][RANK {rank}] ⚠️ Even start_bs={start_bs} failed. Returning conservative default.")
@@ -286,12 +294,20 @@ class BatchSizeFinder:
             t0 = time.time()
             r = self._probe(mid, steps=steps)
             curve.append(r)
-            mem = torch.cuda.memory_allocated(self.device) / (1024 ** 3)
+            #mem = torch.cuda.memory_allocated(self.device) / (1024 ** 3)
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            mem = torch.cuda.max_memory_allocated(self.device) / (1024 ** 3)
+            torch.cuda.reset_peak_memory_stats(self.device)
             logger.info(f"[BSF][RANK {rank}] 🔄 mid={mid} | mem={mem:.2f}GB | ok={r['ok']} | time={time.time()-t0:.1f}s")
             if r["ok"]:
                 lo = mid
             else:
                 hi = mid
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            gc.collect()
+
 
         logger.info(f"[BSF][RANK {rank}] 🏁 Completed. Best batch size = {lo}")
         return {"best_batch_size": lo, "curve": curve, "device": str(self.device), "rank": rank}

@@ -619,15 +619,23 @@ def main():
             best_lr = args.lr
             log.info(f"[AUTO] non-main best learning_rate set to {best_lr} (global)")
 
-        global_batch = args.batch_size * (dist.get_world_size() if dist.is_initialized() else 1)
-        scaled_lr = args.lr * (global_batch / 256.0)
+        # safer LR scaling
+        # Determine global batch
+        world_size = dist.get_world_size() if dist.is_initialized() else 1
+        global_batch = args.batch_size * world_size
+        # Compute scaled learning rate (safe sqrt rule)
+        scaled_lr = args.lr * ((global_batch / 256.0) ** 0.5)
+        scaled_lr = min(scaled_lr, 0.03)
+        
+        # Log on rank 0 only
+        if is_main_process():
+            log.info(f"[LR] base_lr={args.lr:.6f} → scaled_lr={scaled_lr:.6f} (global_batch={global_batch})")
 
+        log.info(f"[AUTO] Final scaled LR = {args.lr:.6f} (global_batch={global_batch})")
+        
         if dist.is_initialized():
             scaled_lr = safe_broadcast_scalar(scaled_lr, torch.float32, device, tag="lr")
 
-        args.lr = scaled_lr
-        log.info(f"[AUTO] Final scaled LR = {args.lr:.6f} (global_batch={global_batch})")
-        
         cleanup_stage("LRFinder")
         
     # (D) Weight-decay search (rank 0 only)
@@ -664,7 +672,11 @@ def main():
 
             log.info("[AUTO] Running Weight-Decay Search...")
             
-            lr_config = {"min_lr": max(3e-6, args.lr / 10.0), "max_lr": args.lr }
+            lr_config = {
+                "min_lr": max(3e-6, scaled_lr / 10.0),
+                "max_lr": scaled_lr,
+            }
+
             results, best_wd = wds.weight_decay_search(lr_config, batch_size=args.batch_size)
             
             log.info("[AUTO] Running Weight-Decay Search complete.")
@@ -711,13 +723,10 @@ def main():
     args.batch_size = safe_batch
     log.info(f"[AUTO] Using {safe_batch} per-GPU (80% of BSF max={best_bs}) for training stability.")
 
-    global_batch = args.batch_size * (dist.get_world_size() if dist.is_initialized() else 1)
-    scaled_lr = args.lr * (global_batch / 256.0)
     if is_main_process():
         log.info(f"[LR] base_lr={args.lr} → scaled_lr={scaled_lr:.6f} (global_batch={global_batch})")
 
     # ----------------- DataLoaders (per-process workers) -----------------
-    #per_proc_workers = max(1, int(args.num_workers // (dist.get_world_size() if dist.is_initialized() else 1)))
     per_proc_workers = max(4, args.num_workers // max(1, dist.get_world_size()))
 
     if is_main_process():
@@ -736,20 +745,38 @@ def main():
         prefetch_factor=2
     )
 
-    # ----------------- Optimizer / Scheduler / AMP -----------------
-    optimizer = optim.SGD(model.parameters(), lr=scaled_lr, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
-    
+    # --- Optimizer / Scheduler / AMP ---
+    optimizer = optim.SGD(
+        model.parameters(),
+        lr=scaled_lr,
+        momentum=args.momentum,
+        weight_decay=args.weight_decay,
+        nesterov=True
+    )
+
     for i, pg in enumerate(optimizer.param_groups):
         print(f"[DEBUG] ParamGroup {i}: lr={pg['lr']:.6f}")
 
     steps_per_epoch = max(1, train_batches_per_epoch)
     total_steps = max(1, args.epochs * steps_per_epoch)
-    scheduler = OneCycleLR(optimizer, max_lr=scaled_lr, total_steps=total_steps)
+
+    scheduler = OneCycleLR(
+        optimizer,
+        max_lr=scaled_lr,
+        total_steps=total_steps,
+        pct_start=0.3,
+        anneal_strategy='cos',
+        div_factor=25.0,
+        final_div_factor=1e4,
+    )
 
     scaler = GradScaler(enabled=(args.enable_amp and torch.cuda.is_available()))
+    log.info(f"[AMP] GradScaler enabled={scaler.is_enabled()}")
 
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+    global_batch = args.batch_size * world_size
     target_effective_batch = 256
-    accumulation_steps = max(1, target_effective_batch // max(1, args.batch_size))
+    accumulation_steps = max(1, target_effective_batch // global_batch)
 
     # ----------------- TensorBoard (rank 0) -----------------
     writer = SummaryWriter(log_dir=str(s3_reports_dir / "tensorboard")) if is_main_process() else None
