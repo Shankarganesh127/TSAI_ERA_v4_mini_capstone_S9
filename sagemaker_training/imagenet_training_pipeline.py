@@ -431,6 +431,10 @@ def main():
 
     Path(args.output).mkdir(parents=True, exist_ok=True)
     reports_dir = ensure_reports_dir(args.output)
+    # Resolve the safe S3-synced output directory
+    s3_path = os.environ.get("SM_OUTPUT_DATA_DIR", "/opt/ml/output/data")
+    s3_reports_dir = Path(s3_path) / "reports"
+    s3_reports_dir.mkdir(parents=True, exist_ok=True)
     (Path(args.output) / "run_args.json").write_text(json.dumps(vars(args), indent=2))
 
     # Init (maybe) distributed for coordination — but don't wrap model yet
@@ -450,7 +454,7 @@ def main():
                 cpu_logical = psutil.cpu_count(logical=True) or mp.cpu_count()
                 optimal_workers = min(args.num_workers, max(1, cpu_logical // 2))
             # Report & persist
-            save_json(reports_dir / "num_workers.json", {"optimal_workers_global": int(optimal_workers)})
+            save_json(s3_reports_dir / "num_workers.json", {"optimal_workers_global": int(optimal_workers)})
         else:
             # Non-main ranks: just wait for rank-0 to finish
             optimal_workers = args.num_workers
@@ -486,7 +490,7 @@ def main():
             log.info("[AUTO] Running BatchSizeFinder model initialized and weights checked.")
             
             #was_ddp, noddp_model = disable_ddp_model(model)
-            reports_dir.mkdir(parents=True, exist_ok=True)
+            s3_reports_dir.mkdir(parents=True, exist_ok=True)
 
             log.info("[AUTO] Running BatchSizeFinder model disabled DDP temporarily.")
 
@@ -512,7 +516,7 @@ def main():
                 log.info("[AUTO] Running BatchSizeFinder batch size search complete.")
 
                 # Save report + plot
-                save_json(reports_dir / "batchsize_finder.json", bsf_result)
+                save_json(s3_reports_dir / "batchsize_finder.json", bsf_result)
                 
                 # clean up
                 del tmp_model, bsf
@@ -528,7 +532,7 @@ def main():
                         "batch_size",
                         "allocated_GB",
                         "Batch Size vs Allocated VRAM",
-                        reports_dir / "batchsize_finder.png",
+                        s3_reports_dir / "batchsize_finder.png",
                     )
 
             except Exception as e:
@@ -566,7 +570,7 @@ def main():
 
             log.info("[AUTO] Running LRFinder model initialized and weights checked.")
 
-            reports_dir.mkdir(parents=True, exist_ok=True)
+            s3_reports_dir.mkdir(parents=True, exist_ok=True)
             
             try:
                 temp_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -596,7 +600,7 @@ def main():
                 log.info("[AUTO] Running LRFinder search complete.")
 
                 # Save report + plot (rank 0 only)
-                save_json(reports_dir / "lr_finder.json", lr_report)
+                save_json(s3_reports_dir / "lr_finder.json", lr_report)
                 
                 del tmp_model, lrf
                 if torch.cuda.is_available():
@@ -606,7 +610,7 @@ def main():
                     xs = [p["lr"] for p in lr_report["curve"]]
                     ys = [p["loss"] for p in lr_report["curve"]]
                     plot_xy(xs, ys, "learning_rate", "loss",
-                            "LR Range Test", reports_dir / "lr_finder.png")
+                            "LR Range Test", s3_reports_dir / "lr_finder.png")
                     
             except Exception as e:
                 log.warning(f"[AUTO] LRFinder failed, keeping lr={args.lr}: {e}")
@@ -644,8 +648,8 @@ def main():
                 )
             
         log.info("[AUTO] Running Weight-Decay Search model initialized and weights checked.")
-                
-        reports_dir.mkdir(parents=True, exist_ok=True)
+
+        s3_reports_dir.mkdir(parents=True, exist_ok=True)
         log.info("[AUTO] Running Weight-Decay Search...")
         try:
             temp_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -664,8 +668,8 @@ def main():
             results, best_wd = wds.weight_decay_search(lr_config, batch_size=args.batch_size)
             
             log.info("[AUTO] Running Weight-Decay Search complete.")
-    
-            save_json(reports_dir / "weight_decay_search.json",
+
+            save_json(s3_reports_dir / "weight_decay_search.json",
                       {"results": results, "best_weight_decay": float(best_wd)})
             
             del tmp_model, wds
@@ -727,7 +731,9 @@ def main():
         pin_memory=True,
         # IMPORTANT: for full DDP training we want per-rank splitting
         disable_distributed_splitting=False,
-        normalize=True
+        normalize=True,
+        persistent_workers=True,
+        prefetch_factor=2
     )
 
     # ----------------- Optimizer / Scheduler / AMP -----------------
@@ -746,12 +752,12 @@ def main():
     accumulation_steps = max(1, target_effective_batch // max(1, args.batch_size))
 
     # ----------------- TensorBoard (rank 0) -----------------
-    writer = SummaryWriter(log_dir=str(reports_dir / "tensorboard")) if is_main_process() else None
+    writer = SummaryWriter(log_dir=str(s3_reports_dir / "tensorboard")) if is_main_process() else None
 
     # ----------------- Training loop -----------------
     set_stage_threads("training")
     best_val = -1.0
-    csv_path = reports_dir / "training_log.csv"
+    csv_path = s3_reports_dir / "training_log.csv"
     csv_fields = ["epoch", "train_loss", "train_top1", "val_loss", "val_top1", "lr", "epoch_time_sec"]
 
     for epoch in range(1, args.epochs + 1):
@@ -795,7 +801,7 @@ def main():
                 "epoch_time_sec": f"{epoch_time:.2f}",
             })
             # per-epoch JSON (optional)
-            save_json(reports_dir / "epoch_reports" / f"epoch_{epoch:03d}.json", {
+            save_json(s3_reports_dir / "epoch_reports" / f"epoch_{epoch:03d}.json", {
                 "epoch": epoch,
                 "train_loss": train_loss, "train_top1": train_top1,
                 "val_loss": val_loss, "val_top1": val_top1,
@@ -821,7 +827,7 @@ def main():
         torch.save({"model": (model.module if hasattr(model, "module") else model).state_dict(),
                     "epoch": epoch, "best_val_top1": best_val},
                    Path(args.output) / "final.pth")
-        save_json(reports_dir / "training_summary.json", {
+        save_json(s3_reports_dir / "training_summary.json", {
             "best_val_top1": best_val,
             "epochs": epoch,
             "batch_size": args.batch_size,

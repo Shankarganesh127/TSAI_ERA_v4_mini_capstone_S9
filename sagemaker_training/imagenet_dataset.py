@@ -166,6 +166,8 @@ def get_imagenet_dataloaders(
     epoch_size_val: Optional[int] = None,
     resampled: bool = True,
     normalize: bool = True,
+    prefetch_factor: int = 2,
+    persistent_workers: bool = True
 ) -> Tuple[DataLoader, Optional[DataLoader], int, int]:
     """
     Returns:
@@ -223,8 +225,8 @@ def get_imagenet_dataloaders(
         batch_size=None,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        persistent_workers=True,
-        prefetch_factor=2,
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor,
     )
 
     # with_epoch controls how many batches we see as "one epoch"
@@ -258,8 +260,8 @@ def get_imagenet_dataloaders(
             batch_size=None,
             num_workers=val_workers,
             pin_memory=pin_memory,
-            persistent_workers=True,
-            prefetch_factor=2,
+            persistent_workers=persistent_workers,
+            prefetch_factor=prefetch_factor,
         )
 
         if epoch_size_val is None:

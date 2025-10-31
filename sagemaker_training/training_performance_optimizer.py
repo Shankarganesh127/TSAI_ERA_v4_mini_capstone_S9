@@ -158,12 +158,14 @@ class BatchSizeFinder:
         train_loader, _, train_batches, _ = get_imagenet_dataloaders(
             self.train_dir, self.train_dir,
             batch_size=bs,
-            num_workers=self.num_workers,
+            num_workers=2,#self.num_workers,
             pin_memory=True,
             # BS finder runs standalone; do not split across ranks
             disable_distributed_splitting=True,
             resampled=False,
             normalize=True,
+            persistent_workers=False,
+            prefetch_factor=1,
         )
 
         model = self.model.to(self.device)
@@ -341,11 +343,13 @@ class LRFinder:
             self.train_dir,
             self.train_dir,
             batch_size=self.batch_size,
-            num_workers=self.num_workers,
+            num_workers=2,#self.num_workers,
             pin_memory=True,
             disable_distributed_splitting=True,  # always single-process
             resampled=False,
             normalize=False,
+            persistent_workers=False,
+            prefetch_factor=1,
         )
 
         model = self.model.to(self.device)
@@ -501,12 +505,14 @@ class HyperparameterOptimizer:
         train_loader, val_loader, train_batches, val_batches = get_imagenet_dataloaders(
             self.train_dir, self.val_dir,
             batch_size=batch_size,
-            num_workers=self.num_workers,
+            num_workers=2,#self.num_workers,
             pin_memory=True,
             # WD search runs independently per rank (no DDP sampling)
             disable_distributed_splitting=True,
             resampled=False,
             normalize=True,
+            persistent_workers=False,
+            prefetch_factor=1,
         )
         
         # ✅ Sanity check: make sure we received iterable WebDataset loaders
