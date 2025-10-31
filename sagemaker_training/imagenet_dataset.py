@@ -36,32 +36,33 @@ def get_world_size() -> int:
 # --------------------------------------------------------------------------------------
 # core transforms (you can tweak to match your original file)
 # --------------------------------------------------------------------------------------
-def make_train_transform(img_size: int = 224):
-    return transforms.Compose(
-        [
-            transforms.RandomResizedCrop(img_size),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            #transforms.Normalize(
-            #    mean=(0.485, 0.456, 0.406),
-            #    std=(0.229, 0.224, 0.225),
-            #),
-        ]
-    )
+def make_train_transform(img_size: int = 224, normalize: bool = True):
+    transform_list = [
+        transforms.RandomResizedCrop(img_size),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+    ]
+    if normalize:
+        transform_list.append(
+            transforms.Normalize(mean=(0.485, 0.456, 0.406),
+                                 std=(0.229, 0.224, 0.225))
+        )
+    return transforms.Compose(transform_list)
 
 
-def make_val_transform(img_size: int = 224):
-    return transforms.Compose(
-        [
-            transforms.Resize(256),
-            transforms.CenterCrop(img_size),
-            transforms.ToTensor(),
-            #transforms.Normalize(
-            #    mean=(0.485, 0.456, 0.406),
-            #    std=(0.229, 0.224, 0.225),
-            #),
-        ]
-    )
+def make_val_transform(img_size: int = 224, normalize: bool = True):
+    transform_list = [
+        transforms.Resize(256),
+        transforms.CenterCrop(img_size),
+        transforms.ToTensor(),
+    ]
+    if normalize:
+        transform_list.append(
+            transforms.Normalize(mean=(0.485, 0.456, 0.406),
+                                 std=(0.229, 0.224, 0.225))
+        )
+    return transforms.Compose(transform_list)
+
 
 
 # --------------------------------------------------------------------------------------
@@ -84,7 +85,7 @@ def _to_image_and_label(sample, transform, dataset_name="train"):
         img = transform(img)
 
     import random
-    if isinstance(img, torch.Tensor) and random.random() < 0.0001:  # ~1 in 1000 samples
+    if isinstance(img, torch.Tensor) and random.random() < 0.00001:  # ~1 in 10000 samples
         print(f"[DEBUG-after-transform][rank={get_rank()}] " f"min={img.min().item():.4f} max={img.max().item():.4f} dtype={img.dtype}")
     
     # 2. label
@@ -164,6 +165,7 @@ def get_imagenet_dataloaders(
     epoch_size_train: Optional[int] = None,
     epoch_size_val: Optional[int] = None,
     resampled: bool = True,
+    normalize: bool = True,
 ) -> Tuple[DataLoader, Optional[DataLoader], int, int]:
     """
     Returns:
@@ -182,6 +184,7 @@ def get_imagenet_dataloaders(
         epoch_size_train,
         epoch_size_val,
         resampled,
+        normalize, 
     )
     if cache_key in _DATASET_CACHE:
         return _DATASET_CACHE[cache_key]
@@ -192,8 +195,8 @@ def get_imagenet_dataloaders(
     train_urls = _expand_shards(train_dir)
     val_urls = _expand_shards(val_dir) if val_dir else None
 
-    train_transform = make_train_transform(img_size)
-    val_transform = make_val_transform(img_size)
+    train_transform = make_train_transform(img_size, normalize=normalize)
+    val_transform = make_val_transform(img_size, normalize=normalize)
 
     # ----------------------------------------------------------------------------------
     # TRAIN DATASET
@@ -220,6 +223,8 @@ def get_imagenet_dataloaders(
         batch_size=None,
         num_workers=num_workers,
         pin_memory=pin_memory,
+        persistent_workers=True,
+        prefetch_factor=2,
     )
 
     # with_epoch controls how many batches we see as "one epoch"
@@ -247,11 +252,14 @@ def get_imagenet_dataloaders(
             .map(lambda s: _to_image_and_label(s, val_transform, dataset_name="val"))
             .batched(batch_size, partial=False)
         )
+        val_workers = max(2, num_workers // 2)
         val_loader = wds.WebLoader(
             val_data,
             batch_size=None,
-            num_workers=max(1, num_workers // 2),
+            num_workers=val_workers,
             pin_memory=pin_memory,
+            persistent_workers=True,
+            prefetch_factor=2,
         )
 
         if epoch_size_val is None:

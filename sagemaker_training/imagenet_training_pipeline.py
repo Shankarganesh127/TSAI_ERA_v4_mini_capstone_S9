@@ -88,6 +88,15 @@ TQDM_DISABLE = os.environ.get("TQDM_DISABLE", "0") == "1"
 
 log = get_unified_logger("imagenet_pipeline")
 
+cpu_cores = os.cpu_count() or 8
+torch.set_num_threads(min(8, cpu_cores))
+torch.set_num_interop_threads(min(4, max(1, cpu_cores // 2)))
+
+log.info(
+    f"[THREADS] Global setup num_threads={torch.get_num_threads()} "
+    f"interop={torch.get_num_interop_threads()}"
+)
+
 def safe_broadcast_scalar(local_value, dtype, device, src=0, tag=""):
     """
     Broadcast scalar safely across all ranks. 
@@ -138,7 +147,11 @@ def set_stage_threads(stage: str, prefer_threads: int | None = None) -> int:
         # too late -> just log a warning and continue
         log.warning(f"[THREADS] Could not change thread count for stage={stage}: {e}")
 
-    log.info(f"[THREADS] Stage={stage} num_threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()}")
+    #log.info(f"[THREADS] Stage={stage} num_threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()}")
+    log.info(
+        f"[imagenet_pipeline] - [THREADS] Stage=training "
+        f"num_threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()}"
+    )
     return threads
 
 
@@ -558,7 +571,16 @@ def main():
                 log.info("[AUTO] Running LRFinder instance created, starting search...")
 
                 lr_report = lrf.find(start_lr=1e-6, end_lr=1, iters=200)
-                best_lr = float(lr_report.get("suggested_max_lr", args.lr))
+                #best_lr = float(lr_report.get("suggested_max_lr", args.lr))
+                
+                suggested_lr = float(lr_report.get("suggested_max_lr", args.lr))
+
+                # Clamp to a sane range (important safety net)
+                if suggested_lr < 1e-4 or suggested_lr > 0.1:
+                    log.warning(f"[AUTO] Adjusting unrealistic LR={suggested_lr:.2e}, resetting to 0.001")
+                    suggested_lr = 0.001
+
+                args.lr = suggested_lr
 
 
                 log.info("[AUTO] Running LRFinder search complete.")
@@ -583,10 +605,14 @@ def main():
             best_lr = args.lr
             log.info(f"[AUTO] non-main best learning_rate set to {best_lr} (global)")
 
+        global_batch = args.batch_size * (dist.get_world_size() if dist.is_initialized() else 1)
+        scaled_lr = args.lr * (global_batch / 256.0)
+
         if dist.is_initialized():
-            best_lr = safe_broadcast_scalar(best_lr, torch.float32, device, tag="lr")
-        args.lr = float(best_lr)
-        log.info(f"[AUTO] lr set to {args.lr}")
+            scaled_lr = safe_broadcast_scalar(scaled_lr, torch.float32, device, tag="lr")
+
+        args.lr = scaled_lr
+        log.info(f"[AUTO] Final scaled LR = {args.lr:.6f} (global_batch={global_batch})")
         
     # (D) Weight-decay search (rank 0 only)
     if use_wds:
@@ -673,7 +699,9 @@ def main():
         log.info(f"[LR] base_lr={args.lr} → scaled_lr={scaled_lr:.6f} (global_batch={global_batch})")
 
     # ----------------- DataLoaders (per-process workers) -----------------
-    per_proc_workers = max(1, int(args.num_workers // (dist.get_world_size() if dist.is_initialized() else 1)))
+    #per_proc_workers = max(1, int(args.num_workers // (dist.get_world_size() if dist.is_initialized() else 1)))
+    per_proc_workers = max(4, args.num_workers // max(1, dist.get_world_size()))
+
     if is_main_process():
         log.info(f"[DATALOADER] global_workers={args.num_workers} world_size={dist.get_world_size() if dist.is_initialized() else 1} → per_proc={per_proc_workers}")
 
@@ -685,10 +713,14 @@ def main():
         pin_memory=True,
         # IMPORTANT: for full DDP training we want per-rank splitting
         disable_distributed_splitting=False,
+        normalize=True
     )
 
     # ----------------- Optimizer / Scheduler / AMP -----------------
     optimizer = optim.SGD(model.parameters(), lr=scaled_lr, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
+    
+    for i, pg in enumerate(optimizer.param_groups):
+        print(f"[DEBUG] ParamGroup {i}: lr={pg['lr']:.6f}")
 
     steps_per_epoch = max(1, train_batches_per_epoch)
     total_steps = max(1, args.epochs * steps_per_epoch)
@@ -721,11 +753,21 @@ def main():
 
         # Metric prints for CloudWatch
         if is_main_process():
-            print(f"epoch={epoch}")
-            print(f"epoch_time_sec={epoch_time:.3f}")
-            print(f"epoch_train_loss={train_loss:.6f}")
-            print(f"epoch_val_loss={val_loss:.6f}")
-            print(f"epoch_val_top1={val_top1:.6f}")
+            epoch_time_sec = time.time() - t0
+            # ✅ Unified, human-readable summary log per epoch
+            log.info(
+                f"[EPOCH {epoch:03d}/{args.epochs}] ⏱ {epoch_time_sec:.1f}s | "
+                f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | "
+                f"train_top1={train_top1:.2f}% | val_top1={val_top1:.2f}%"
+            )
+            # ✅ Also print a simple CloudWatch-friendly key=value format (1 line)
+            print(
+                f"epoch={epoch} "
+                f"epoch_time_sec={epoch_time_sec:.3f} "
+                f"train_loss={train_loss:.6f} val_loss={val_loss:.6f} "
+                f"train_top1={train_top1:.2f} val_top1={val_top1:.2f}",
+                flush=True
+            )
             sys.stdout.flush()
 
         if is_main_process():

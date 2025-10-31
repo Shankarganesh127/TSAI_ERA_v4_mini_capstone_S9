@@ -87,19 +87,33 @@ def _gather_dicts_local_to_rank0(local: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _suggest_max_lr_from_curve(curve: List[Dict[str, float]]) -> float:
     """
-    Basic heuristic:
-    - Smooth minimal loss L_min
-    - Choose an LR where loss starts increasing sharply: 
-      pick LR at 0.8 * argmin(loss), or 1/10 of LR at loss min, whichever is smaller but > start.
+    Smarter heuristic:
+    - Smooth losses (optional)
+    - Find LR where loss stops decreasing fastest (the 'elbow')
+    - Default to ~0.1–0.3 of LR at minimal loss if curve monotonic
     """
     if not curve:
         return 1e-3
+
     losses = [p["loss"] for p in curve]
     lrs = [p["lr"] for p in curve]
-    i_min = max(0, int(losses.index(min(losses))))
-    # conservative: pick 0.1 * LR at minimal loss, but not smaller than first LR
-    return max(lrs[0], lrs[i_min] * 0.1)
 
+    # compute smoothed derivative d(loss)/d(log(lr))
+    import numpy as np
+    log_lrs = np.log10(lrs)
+    losses_np = np.array(losses)
+    dloss = np.gradient(losses_np, log_lrs)
+
+    # find the point where loss decreases fastest
+    i_min_grad = int(np.argmin(dloss))
+
+    # fall back to min loss if derivative unreliable
+    i_min_loss = int(np.argmin(losses))
+    idx = i_min_grad if 0 < i_min_grad < len(lrs) else i_min_loss
+
+    # pick LR slightly before that minimum (0.3× for safety)
+    suggested = lrs[idx] * 0.3
+    return float(max(min(suggested, 1.0), 1e-5))
 
 # ----------------------------
 # Batch Size Finder
@@ -149,6 +163,7 @@ class BatchSizeFinder:
             # BS finder runs standalone; do not split across ranks
             disable_distributed_splitting=True,
             resampled=False,
+            normalize=True,
         )
 
         model = self.model.to(self.device)
@@ -330,6 +345,7 @@ class LRFinder:
             pin_memory=True,
             disable_distributed_splitting=True,  # always single-process
             resampled=False,
+            normalize=False,
         )
 
         model = self.model.to(self.device)
@@ -490,6 +506,7 @@ class HyperparameterOptimizer:
             # WD search runs independently per rank (no DDP sampling)
             disable_distributed_splitting=True,
             resampled=False,
+            normalize=True,
         )
         
         # ✅ Sanity check: make sure we received iterable WebDataset loaders
