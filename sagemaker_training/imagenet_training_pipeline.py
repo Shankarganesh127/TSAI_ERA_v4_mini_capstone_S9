@@ -26,6 +26,7 @@ import sys
 import json
 import time
 import math
+import gc
 import argparse
 from pathlib import Path
 from datetime import datetime
@@ -39,6 +40,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 
 import multiprocessing as mp
 import psutil
+import shutil
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -115,6 +117,12 @@ def safe_broadcast_scalar(local_value, dtype, device, src=0, tag=""):
     except Exception as e:
         print(f"[safe_broadcast_scalar:{tag}] Rank {rank}/{world} failed: {e}", flush=True)
         return local_value
+
+def cleanup_stage(stage_name=""):
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
+    print(f"[CLEANUP] {stage_name} cache cleared.")
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -535,6 +543,8 @@ def main():
             best_bs = safe_broadcast_scalar(best_bs, torch.int32, device, tag="batchsize")
         args.batch_size = int(best_bs)
         log.info(f"[AUTO] batch_size set to {args.batch_size}")
+        
+        cleanup_stage("BatchSizeFinder")
 
     # (C) LR Finder (rank 0 only)
     if use_lrf:
@@ -614,6 +624,8 @@ def main():
         args.lr = scaled_lr
         log.info(f"[AUTO] Final scaled LR = {args.lr:.6f} (global_batch={global_batch})")
         
+        cleanup_stage("LRFinder")
+        
     # (D) Weight-decay search (rank 0 only)
     if use_wds:
             
@@ -668,6 +680,8 @@ def main():
             best_wd = safe_broadcast_scalar(best_wd, torch.float32, device, tag="wd")
         args.weight_decay = float(best_wd)
         log.info(f"[AUTO] weight_decay set to {args.weight_decay}")
+        
+        cleanup_stage("WeightDecaySearch")
 
     # ----------------- Build final model & wrap for DDP -----------------
     # Always create a fresh model here – never reuse noddp_model or anything from finders.
@@ -830,6 +844,11 @@ def main():
         dist.barrier()  # ensure rank-0 wrote the file before broadcast
         log.info(f"[DDP] Rank {dist.get_rank()} passed barrier.")
         dist.destroy_process_group()
+    
+    for d in ["./reports", "/opt/ml/checkpoints", "/opt/ml/model/tmp"]:
+        if os.path.exists(d):
+            shutil.rmtree(d, ignore_errors=True)
+            print(f"[CLEANUP] Removed {d} before SageMaker artifact upload")
 
 
 if __name__ == "__main__":
