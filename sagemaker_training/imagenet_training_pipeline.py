@@ -254,6 +254,10 @@ def train_one_epoch(model, loader, optimizer, scheduler, device, scaler: GradSca
         with autocast(enabled=scaler.is_enabled()):
             if step_idx == 1 and is_main_process():
                 log.info(f"[AMP] autocast active: {torch.is_autocast_enabled()}")
+                
+            if step_idx == 1 and is_main_process():
+                print(f"[DEBUG] inputs.device={inputs.device}, model.device={next(model.parameters()).device}")
+
             outputs = model(inputs)
             loss = nn.functional.cross_entropy(outputs, targets)
 
@@ -643,11 +647,22 @@ def main():
         args.weight_decay = float(best_wd)
         log.info(f"[AUTO] weight_decay set to {args.weight_decay}")
 
-    # ----------------- Build final model & DDP wrap -----------------
+    # ----------------- Build final model & wrap for DDP -----------------
+    # Always create a fresh model here – never reuse noddp_model or anything from finders.
     model = resnet50_imagenet(num_classes=1000, pretrained=args.pretrained)
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()        # clear leftover allocations
+
+    # Make sure model and optimizer are on the correct local device
     if dist_on:
-        model = ddp_wrap(model, local_rank)
-        device = torch.device(f"cuda:{local_rank}")
+        torch.cuda.set_device(local_rank)
+        model = model.to(f"cuda:{local_rank}")
+        model = torch.nn.parallel.DistributedDataParallel(
+            model, device_ids=[local_rank], output_device=local_rank,
+            find_unused_parameters=False
+        )
+        log.info(f"[imagenet_training_pipeline] ✅ Model wrapped with DDP on device cuda:{local_rank} (backend=nccl)")
     else:
         model = model.to(device)
 
