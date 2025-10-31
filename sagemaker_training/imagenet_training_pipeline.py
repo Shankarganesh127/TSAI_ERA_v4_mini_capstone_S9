@@ -443,14 +443,24 @@ def main():
     # (B) BatchSize Finder
     if use_bsf:
         
-        model = resnet50_imagenet(
-                        num_classes=1000, pretrained=args.pretrained
-                    ).to("cuda" if torch.cuda.is_available() else "cpu")
-        was_ddp, noddp_model = disable_ddp_model(model)
-        reports_dir.mkdir(parents=True, exist_ok=True)
-
         if is_main_process():
             log.info("[AUTO] Running BatchSizeFinder...")
+            
+            model = resnet50_imagenet(
+                        num_classes=1000, pretrained=False
+                    ).to("cuda" if torch.cuda.is_available() else "cpu")
+            
+            # Safety check for weights
+            for name, p in model.named_parameters():
+                if not torch.isfinite(p).all():
+                    raise RuntimeError(
+                        f"[BSF][INIT] Non-finite weights in {name}: "
+                        f"min={p.data.min().item()}, max={p.data.max().item()}"
+                    )
+            
+            was_ddp, noddp_model = disable_ddp_model(model)
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            
             try:
                 bsf = _BSF(
                     model=noddp_model,
@@ -495,10 +505,31 @@ def main():
         args.batch_size = int(best_bs)
         log.info(f"[AUTO] batch_size set to {args.batch_size}")
 
+    for m in noddp_model.modules():
+        if hasattr(m, "reset_running_stats"):
+            m.reset_running_stats()
+
     # (C) LR Finder (rank 0 only)
     if use_lrf:
+        
         if is_main_process():
             log.info("[AUTO] Running LRFinder...")
+            
+            model = resnet50_imagenet(
+                        num_classes=1000, pretrained=False
+                    ).to("cuda" if torch.cuda.is_available() else "cpu")
+            
+            # Safety check for weights
+            for name, p in model.named_parameters():
+                if not torch.isfinite(p).all():
+                    raise RuntimeError(
+                        f"[BSF][INIT] Non-finite weights in {name}: "
+                        f"min={p.data.min().item()}, max={p.data.max().item()}"
+                    )
+            
+            was_ddp, noddp_model = disable_ddp_model(model)
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            
             try:
                 temp_device = "cuda" if torch.cuda.is_available() else "cpu"
                 lrf = _LRF(
@@ -508,7 +539,7 @@ def main():
                     device=temp_device,
                     num_workers=args.num_workers,
                 )
-                lr_report = lrf.find(start_lr=1e-6, end_lr=1e-1, iters=200)
+                lr_report = lrf.find(start_lr=1e-6, end_lr=1, iters=200)
                 best_lr = float(lr_report.get("suggested_max_lr", args.lr))
 
                 # Save report + plot (rank 0 only)
@@ -529,10 +560,28 @@ def main():
             best_lr = safe_broadcast_scalar(best_lr, torch.float32, device, tag="lr")
         args.lr = float(best_lr)
         log.info(f"[AUTO] lr set to {args.lr}")
+        
+    for m in noddp_model.modules():
+        if hasattr(m, "reset_running_stats"):
+            m.reset_running_stats()
 
     # (D) Weight-decay search (rank 0 only)
     if use_wds:
         if is_main_process():
+            model = resnet50_imagenet(
+                        num_classes=1000, pretrained=False
+                    ).to("cuda" if torch.cuda.is_available() else "cpu")
+            
+            # Safety check for weights
+            for name, p in model.named_parameters():
+                if not torch.isfinite(p).all():
+                    raise RuntimeError(
+                        f"[BSF][INIT] Non-finite weights in {name}: "
+                        f"min={p.data.min().item()}, max={p.data.max().item()}"
+                    )
+                    
+            was_ddp, noddp_model = disable_ddp_model(model)
+            reports_dir.mkdir(parents=True, exist_ok=True)
             log.info("[AUTO] Running Weight-Decay Search...")
             try:
                 temp_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -544,7 +593,7 @@ def main():
                     device=temp_device,
                     num_workers=args.num_workers,
                 )
-                lr_config = {"min_lr": max(3e-6, args.lr / 20.0), "max_lr": args.lr / 5.0}
+                lr_config = {"min_lr": max(3e-6, args.lr / 10.0), "max_lr": args.lr }
                 results, best_wd = wds.weight_decay_search(lr_config, batch_size=args.batch_size)
     
                 save_json(reports_dir / "weight_decay_search.json",
@@ -561,6 +610,9 @@ def main():
         args.weight_decay = float(best_wd)
         log.info(f"[AUTO] weight_decay set to {args.weight_decay}")
 
+    for m in noddp_model.modules():
+        if hasattr(m, "reset_running_stats"):
+            m.reset_running_stats()
 
     # ----------------- Build final model & DDP wrap -----------------
     model = resnet50_imagenet(num_classes=1000, pretrained=args.pretrained)

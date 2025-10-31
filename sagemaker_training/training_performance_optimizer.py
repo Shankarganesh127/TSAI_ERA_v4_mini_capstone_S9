@@ -352,6 +352,11 @@ class LRFinder:
             f"iters={iters}, mode={mode}"
         )
 
+        for name, p in model.named_parameters():
+            if not torch.isfinite(p).all():
+                print(f"[LRF][DEBUG] Non-finite weights in {name}: min={p.data.min().item()}, max={p.data.max().item()}")
+
+        
         it_count = 0
         t0 = time.time()
         for batch_idx, (x, y) in enumerate(train_loader):
@@ -371,23 +376,23 @@ class LRFinder:
 
             with autocast(enabled=scaler.is_enabled()):
                 out = model(x)
-            
+
                 # --- 🧠 DEBUG CHECKS (to trace NaN source) ---
                 # 1️⃣ Target range sanity
                 if (y < 0).any() or (y >= out.shape[1]).any():
                     print(f"[LRF][DEBUG] Invalid target detected at step={it_count} | "
                           f"min={y.min().item()}, max={y.max().item()}, "
                           f"num_classes={out.shape[1]}")
-            
+
                 # 2️⃣ Check model output values
                 if not torch.isfinite(out).all():
                     bad = (~torch.isfinite(out)).sum().item()
                     print(f"[LRF][DEBUG] Non-finite output detected at step={it_count} | "
                           f"count={bad} | lr={lr:.2e}")
-            
+
                 # 3️⃣ Compute loss safely
                 loss = nn.functional.cross_entropy(out, y)
-            
+
                 # 4️⃣ Detect and skip invalid losses
                 if not torch.isfinite(loss):
                     print(f"[LRF][DEBUG] Non-finite loss at step={it_count} | lr={lr:.2e} | "
