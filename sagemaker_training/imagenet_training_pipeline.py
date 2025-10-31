@@ -590,57 +590,53 @@ def main():
         
     # (D) Weight-decay search (rank 0 only)
     if use_wds:
-        if is_main_process():
             
-            log.info("[AUTO] Running WeightDecay Search...")
+        log.info("[AUTO] Running WeightDecay Search...")
             
-            tmp_model = resnet50_imagenet_no_ddp(num_classes=1000, pretrained=False).to("cuda" if torch.cuda.is_available() else "cpu")
+        tmp_model = resnet50_imagenet_no_ddp(num_classes=1000, pretrained=False).to("cuda" if torch.cuda.is_available() else "cpu")
             
-            log.info("[AUTO] Running Weight-Decay Search model initialized.")
+        log.info("[AUTO] Running Weight-Decay Search model initialized.")
             
-            # Safety check for weights
-            for name, p in tmp_model.named_parameters():
-                if not torch.isfinite(p).all():
-                    raise RuntimeError(
-                        f"[BSF][INIT] Non-finite weights in {name}: "
-                        f"min={p.data.min().item()}, max={p.data.max().item()}"
-                    )
-            
-            log.info("[AUTO] Running Weight-Decay Search model initialized and weights checked.")
-                    
-            reports_dir.mkdir(parents=True, exist_ok=True)
-            log.info("[AUTO] Running Weight-Decay Search...")
-            try:
-                temp_device = "cuda" if torch.cuda.is_available() else "cpu"
-                # This HPO runs per-rank independent trials internally when DDP is active
-                wds = _WDS(
-                    model_fn=lambda: tmp_model,
-                    train_dir=args.train,
-                    val_dir=args.val,
-                    device=temp_device,
-                    num_workers=args.num_workers,
+        # Safety check for weights
+        for name, p in tmp_model.named_parameters():
+            if not torch.isfinite(p).all():
+                raise RuntimeError(
+                    f"[BSF][INIT] Non-finite weights in {name}: "
+                    f"min={p.data.min().item()}, max={p.data.max().item()}"
                 )
+            
+        log.info("[AUTO] Running Weight-Decay Search model initialized and weights checked.")
+                
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        log.info("[AUTO] Running Weight-Decay Search...")
+        try:
+            temp_device = "cuda" if torch.cuda.is_available() else "cpu"
+            # This HPO runs per-rank independent trials internally when DDP is active
+            wds = _WDS(
+                model_fn=lambda: tmp_model,
+                train_dir=args.train,
+                val_dir=args.val,
+                device=temp_device,
+                num_workers=args.num_workers,
+            )
 
-                log.info("[AUTO] Running Weight-Decay Search...")
-                
-                lr_config = {"min_lr": max(3e-6, args.lr / 10.0), "max_lr": args.lr }
-                results, best_wd = wds.weight_decay_search(lr_config, batch_size=args.batch_size)
-                
-                log.info("[AUTO] Running Weight-Decay Search complete.")
+            log.info("[AUTO] Running Weight-Decay Search...")
+            
+            lr_config = {"min_lr": max(3e-6, args.lr / 10.0), "max_lr": args.lr }
+            results, best_wd = wds.weight_decay_search(lr_config, batch_size=args.batch_size)
+            
+            log.info("[AUTO] Running Weight-Decay Search complete.")
     
-                save_json(reports_dir / "weight_decay_search.json",
-                          {"results": results, "best_weight_decay": float(best_wd)})
-                
-                del tmp_model, wds
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                
-            except Exception as e:
-                log.warning(f"[AUTO] WD search failed, keeping weight_decay={args.weight_decay}: {e}")
-                best_wd = args.weight_decay
-        else:
+            save_json(reports_dir / "weight_decay_search.json",
+                      {"results": results, "best_weight_decay": float(best_wd)})
+            
+            del tmp_model, wds
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+        except Exception as e:
+            log.warning(f"[AUTO] WD search failed, keeping weight_decay={args.weight_decay}: {e}")
             best_wd = args.weight_decay
-            log.info(f"[AUTO] non-main best weight_decay set to {best_wd} (global)")
     
         if dist.is_initialized():
             best_wd = safe_broadcast_scalar(best_wd, torch.float32, device, tag="wd")
