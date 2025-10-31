@@ -174,6 +174,20 @@ def get_imagenet_dataloaders(
         train_loader, val_loader, train_batches_per_epoch, val_batches_per_epoch
     """
 
+    # --- NEW: Optimize PyTorch thread usage ---
+    if dist.is_initialized():
+        world_size = dist.get_world_size()
+    else:
+        world_size = 1
+
+    total_cpus = os.cpu_count() or 8
+    num_threads = max(1, total_cpus // world_size)
+    torch.set_num_threads(num_threads)
+    torch.set_num_interop_threads(2)
+
+    print(f"[THREADS] Stage=training num_threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()}")
+
+
     # ---- cache key ----
     cache_key = (
         train_dir,

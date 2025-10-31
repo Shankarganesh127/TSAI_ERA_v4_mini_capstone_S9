@@ -631,7 +631,7 @@ def main():
         if is_main_process():
             log.info(f"[LR] base_lr={args.lr:.6f} → scaled_lr={scaled_lr:.6f} (global_batch={global_batch})")
 
-        log.info(f"[AUTO] Final scaled LR = {args.lr:.6f} (global_batch={global_batch})")
+        log.info(f"[AUTO] Final scaled LR = {scaled_lr:.6f} (global_batch={global_batch})")
         
         if dist.is_initialized():
             scaled_lr = safe_broadcast_scalar(scaled_lr, torch.float32, device, tag="lr")
