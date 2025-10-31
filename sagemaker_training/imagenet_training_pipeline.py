@@ -663,6 +663,10 @@ def main():
         model = model.to(device)
 
     # ----------------- Scale LR by global batch -----------------
+    safe_batch = int(best_bs * 0.8)  # e.g. 506 → 404
+    args.batch_size = safe_batch
+    log.info(f"[AUTO] Using {safe_batch} per-GPU (80% of BSF max={best_bs}) for training stability.")
+
     global_batch = args.batch_size * (dist.get_world_size() if dist.is_initialized() else 1)
     scaled_lr = args.lr * (global_batch / 256.0)
     if is_main_process():
