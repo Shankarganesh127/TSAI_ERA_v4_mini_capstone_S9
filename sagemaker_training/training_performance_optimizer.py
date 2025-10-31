@@ -568,6 +568,7 @@ class HyperparameterOptimizer:
                 weight_decay=wd,
                 nesterov=True,
             )
+            lr = float(lr_config.get("max_lr", 0.1))
             scaler = GradScaler(enabled=torch.cuda.is_available())
             log.info(f"[AMP] GradScaler created with enabled={scaler.is_enabled()}")
 
