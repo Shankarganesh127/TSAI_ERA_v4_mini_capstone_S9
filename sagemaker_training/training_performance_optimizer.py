@@ -376,6 +376,10 @@ class LRFinder:
 
             with autocast(enabled=scaler.is_enabled()):
                 out = model(x)
+                
+                if not torch.isfinite(out).all():
+                    print(f"[LRF][FATAL] Non-finite model output at step={it_count} lr={lr:.2e}")
+                    break
 
                 # --- 🧠 DEBUG CHECKS (to trace NaN source) ---
                 # 1️⃣ Target range sanity
