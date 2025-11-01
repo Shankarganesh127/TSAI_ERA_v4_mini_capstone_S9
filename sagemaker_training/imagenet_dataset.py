@@ -236,8 +236,14 @@ def get_imagenet_dataloaders(
     # we do batching inside WebDataset
     train_data = train_data.batched(batch_size, partial=False)
     
-    train_workers = max(8, (psutil.cpu_count(logical=True) // dist.get_world_size()))
-    val_workers = max(4, train_workers // 2)
+    # Respect pipeline-provided num_workers if passed
+    if num_workers is not None:
+        train_workers = max(1, int(num_workers))
+        val_workers = max(1, int(num_workers // 2))
+    else:
+        cpu_per_rank = (psutil.cpu_count(logical=True) or 8) // max(1, dist.get_world_size())
+        train_workers = max(8, cpu_per_rank)
+        val_workers = max(4, train_workers // 2)
 
     # WebLoader is the recommended loader for WebDataset
     train_loader = wds.WebLoader(

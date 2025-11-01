@@ -851,13 +851,6 @@ def main():
 
     # ----------------- Training loop -----------------
     set_stage_threads("training")
-    # ---- Force thread count before training ----
-    cpu_cores = psutil.cpu_count(logical=True) or os.cpu_count() or 8
-    world = dist.get_world_size() if dist.is_initialized() else 1
-    per_rank_threads = max(2, cpu_cores // world)
-    torch.set_num_threads(per_rank_threads)
-    torch.set_num_interop_threads(min(4, max(1, per_rank_threads // 2)))
-    log.info(f"[THREADS] Pre-training enforced threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()}")
 
     best_val = -1.0
     csv_path = s3_reports_dir / "training_log.csv"
