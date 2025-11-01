@@ -6,6 +6,7 @@ from typing import Tuple, Optional, List
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader
+import psutil
 
 import webdataset as wds
 from torchvision import transforms
@@ -180,13 +181,14 @@ def get_imagenet_dataloaders(
     else:
         world_size = 1
 
-    total_cpus = os.cpu_count() or 8
-    num_threads = max(1, total_cpus // world_size)
-    torch.set_num_threads(num_threads)
-    torch.set_num_interop_threads(2)
+    if torch.get_num_threads() <= 1:
+        total_cpus = psutil.cpu_count(logical=True) or os.cpu_count() or 8
+        world = dist.get_world_size() if dist.is_initialized() else 1
+        threads = max(2, total_cpus // world)
+        torch.set_num_threads(threads)
+        torch.set_num_interop_threads(min(4, max(1, threads // 2)))
 
-    print(f"[THREADS] Stage=training num_threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()}")
-
+    print(f"[THREADS] Stage=training using preconfigured threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()}")
 
     # ---- cache key ----
     cache_key = (

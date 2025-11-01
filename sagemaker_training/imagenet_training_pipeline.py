@@ -802,7 +802,16 @@ def main():
     writer = SummaryWriter(log_dir=str(s3_reports_dir / "tensorboard")) if is_main_process() else None
 
     # ----------------- Training loop -----------------
-    set_stage_threads("training")
+    #set_stage_threads("training")
+    # ---- Force thread count before training ----
+    import psutil
+    cpu_cores = psutil.cpu_count(logical=True) or os.cpu_count() or 8
+    world = dist.get_world_size() if dist.is_initialized() else 1
+    per_rank_threads = max(2, cpu_cores // world)
+    torch.set_num_threads(per_rank_threads)
+    torch.set_num_interop_threads(min(4, max(1, per_rank_threads // 2)))
+    log.info(f"[THREADS] Pre-training enforced threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()}")
+
     best_val = -1.0
     csv_path = s3_reports_dir / "training_log.csv"
     csv_fields = ["epoch", "train_loss", "train_top1", "val_loss", "val_top1", "lr", "epoch_time_sec"]
@@ -813,9 +822,9 @@ def main():
 
         t0 = time.time()
         train_loss, train_top1 = train_one_epoch(model, train_loader, optimizer, scheduler, device, scaler, accumulation_steps, writer, epoch)
-        set_stage_threads("validation")
+        #set_stage_threads("validation")
         val_loss, val_top1 = validate(model, val_loader, device, writer, epoch)
-        set_stage_threads("training")
+        #set_stage_threads("training")
         epoch_time = time.time() - t0
 
         # Metric prints for CloudWatch
