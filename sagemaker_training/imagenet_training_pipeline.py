@@ -31,6 +31,12 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
+# --- Must be BEFORE torch import ---
+os.environ["OMP_NUM_THREADS"] = "8"
+os.environ["MKL_NUM_THREADS"] = "8"
+os.environ["NUMEXPR_NUM_THREADS"] = "8"
+
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
