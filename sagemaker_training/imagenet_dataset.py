@@ -226,6 +226,7 @@ def get_imagenet_dataloaders(
             resampled=resampled,
             shardshuffle=True,
             nodesplitter=wds.split_by_node if not disable_distributed_splitting else None,
+            empty_check=False,
         )
         .shuffle(10000)
         .decode("pil")
@@ -265,6 +266,7 @@ def get_imagenet_dataloaders(
                 resampled=False,  # val is finite
                 shardshuffle=False,
                 nodesplitter=wds.split_by_node if not disable_distributed_splitting else None,
+                empty_check=False,
             )
             .decode("pil")
             .map(lambda s: _to_image_and_label(s, val_transform, dataset_name="val"))
