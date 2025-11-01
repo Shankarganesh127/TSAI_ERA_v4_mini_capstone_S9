@@ -262,6 +262,12 @@ def get_imagenet_dataloaders(
         # but we can't count exactly because of resampled=True
         approx_images = 128000
         epoch_size_train = math.ceil(approx_images / batch_size)
+        
+        # 👇 NEW: if we're in DDP and we're actually splitting by node,
+        # then EACH rank should do only its share.
+        if dist.is_initialized() and not disable_distributed_splitting:
+            world = dist.get_world_size()
+            epoch_size_train = max(1, epoch_size_train // world)
 
     train_loader = train_loader.with_epoch(epoch_size_train)
 
@@ -293,6 +299,9 @@ def get_imagenet_dataloaders(
         if epoch_size_val is None:
             approx_val_images = 50000  # imagenet val
             epoch_size_val = math.ceil(approx_val_images / batch_size)
+            if dist.is_initialized() and not disable_distributed_splitting:
+                world = dist.get_world_size()
+                epoch_size_val = max(1, epoch_size_val // world)
 
         val_loader = val_loader.with_epoch(epoch_size_val)
     else:
