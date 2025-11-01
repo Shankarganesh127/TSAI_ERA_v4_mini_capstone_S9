@@ -31,12 +31,6 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
-# --- Must be BEFORE torch import ---
-os.environ["OMP_NUM_THREADS"] = "8"
-os.environ["MKL_NUM_THREADS"] = "8"
-os.environ["NUMEXPR_NUM_THREADS"] = "8"
-
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -68,8 +62,6 @@ from utils import is_main_process as _is_main_process  # existing util
 #torch.set_num_threads(1)
 #torch.set_num_interop_threads(1)
 # don't hard-cap to 1; we'll set per-rank below after DDP init
-os.environ.setdefault("OMP_NUM_THREADS", "4")
-os.environ.setdefault("MKL_NUM_THREADS", "4")
 
 
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
@@ -616,8 +608,13 @@ def main():
                 suggested_lr = float(lr_report.get("suggested_max_lr", args.lr))
 
                 # Clamp to a sane range (important safety net)
-                if suggested_lr < 1e-4 or suggested_lr > 0.1:
-                    log.warning(f"[AUTO] Adjusting unrealistic LR={suggested_lr:.2e}, resetting to 0.001")
+                #if suggested_lr < 1e-4 or suggested_lr > 0.1:
+                #    log.warning(f"[AUTO] Adjusting unrealistic LR={suggested_lr:.2e}, resetting to 0.001")
+                #    suggested_lr = 0.001
+                
+                # ✅ trust the finder, just avoid obviously broken values (0 or NaN)
+                if not math.isfinite(suggested_lr) or suggested_lr <= 0.0:
+                    log.warning(f"[AUTO] LRFinder returned invalid LR={suggested_lr}, falling back to 0.001")
                     suggested_lr = 0.001
 
                 args.lr = suggested_lr
@@ -651,7 +648,12 @@ def main():
         global_batch = args.batch_size * world_size
         # Compute scaled learning rate (safe sqrt rule)
         scaled_lr = args.lr * ((global_batch / 256.0) ** 0.5)
-        scaled_lr = min(scaled_lr, 0.03)
+        #scaled_lr = min(scaled_lr, 0.03)
+        
+        # hard cap only here
+        if scaled_lr > 0.03:
+            log.warning(f"[AUTO] scaled_lr={scaled_lr:.4f} too high for ResNet-50, capping to 0.03")
+            scaled_lr = 0.03
         
         # Log on rank 0 only
         if is_main_process():
@@ -727,6 +729,7 @@ def main():
 
     # ----------------- Build final model & wrap for DDP -----------------
     # Always create a fresh model here – never reuse noddp_model or anything from finders.
+    
     model = resnet50_imagenet(num_classes=1000, pretrained=args.pretrained)
 
     if torch.cuda.is_available():
@@ -753,6 +756,15 @@ def main():
         log.info(f"[LR] base_lr={args.lr} → scaled_lr={scaled_lr:.6f} (global_batch={global_batch})")
 
     # ----------------- DataLoaders (per-process workers) -----------------
+    # ---- final worker decision (after broadcasts) ----
+    min_workers_per_rank = 6          # 👈 raise this
+    world = dist.get_world_size() if dist.is_initialized() else 1
+    if args.num_workers < min_workers_per_rank * world:
+        log.warning(
+            f"[AUTO] num_workers={args.num_workers} was too small for {world} ranks, "
+            f"bumping to {min_workers_per_rank * world}"
+        )
+        args.num_workers = min_workers_per_rank * world
     per_proc_workers = max(4, args.num_workers // max(1, dist.get_world_size()))
 
     if is_main_process():
@@ -798,7 +810,7 @@ def main():
         disable_distributed_splitting=False,
         normalize=True,
         persistent_workers=True,
-        prefetch_factor=2
+        prefetch_factor=4
     )
 
     # --- Optimizer / Scheduler / AMP ---
@@ -838,7 +850,7 @@ def main():
     writer = SummaryWriter(log_dir=str(s3_reports_dir / "tensorboard")) if is_main_process() else None
 
     # ----------------- Training loop -----------------
-    #set_stage_threads("training")
+    set_stage_threads("training")
     # ---- Force thread count before training ----
     cpu_cores = psutil.cpu_count(logical=True) or os.cpu_count() or 8
     world = dist.get_world_size() if dist.is_initialized() else 1
@@ -857,9 +869,9 @@ def main():
 
         t0 = time.time()
         train_loss, train_top1 = train_one_epoch(model, train_loader, optimizer, scheduler, device, scaler, accumulation_steps, writer, epoch)
-        #set_stage_threads("validation")
+        set_stage_threads("validation")
         val_loss, val_top1 = validate(model, val_loader, device, writer, epoch)
-        #set_stage_threads("training")
+        set_stage_threads("training")
         epoch_time = time.time() - t0
 
         # Metric prints for CloudWatch

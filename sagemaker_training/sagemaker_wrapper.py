@@ -8,13 +8,31 @@ SageMaker wrapper:
 """
 
 import os
+import psutil
+
+# ---- 2. Set environment for NCCL / DDP ----
+os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+os.environ["NCCL_TIMEOUT"] = "600"
+os.environ["NCCL_DEBUG"] = "WARN"
+os.environ["TORCH_DISTRIBUTED_DEBUG"] = "OFF"
+
+# ---- (optional - only if debugging) ----
+# os.environ["NCCL_BLOCKING_WAIT"] = "1"
+# os.environ["NCCL_DEBUG"] = "INFO"
+# os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 
 # --- Must be BEFORE torch import ---
-os.environ["OMP_NUM_THREADS"] = "8"
-os.environ["MKL_NUM_THREADS"] = "8"
-os.environ["NUMEXPR_NUM_THREADS"] = "8"
+os.environ["OMP_NUM_THREADS"] = str(max(4, psutil.cpu_count(logical=True) // 4))
+os.environ["MKL_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
 
 import torch
+
+torch.set_num_threads(int(os.environ["OMP_NUM_THREADS"]))
+torch.set_num_interop_threads(2)
+
+# Optional debug info
+print(f"[THREADS] init num_threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()}")
+print(f"[NCCL] async_error_handling={os.environ.get('NCCL_ASYNC_ERROR_HANDLING')} timeout={os.environ.get('NCCL_TIMEOUT')}")
 
 # --- HARD GUARD: freeze torch thread setters so late calls don't crash ---
 def _safe_noop(*args, **kwargs):
@@ -66,6 +84,11 @@ def parse_hyperparams():
 def main():
     setup_unified_logger()
     log = get_unified_logger("sagemaker_wrapper")
+    
+    log.info(
+        f"[THREADS] Final torch_num_threads={torch.get_num_threads()} "
+        f"interop={torch.get_num_interop_threads()}"
+    )
 
     args = parse_hyperparams()
 

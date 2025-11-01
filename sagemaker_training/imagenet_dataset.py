@@ -235,12 +235,15 @@ def get_imagenet_dataloaders(
 
     # we do batching inside WebDataset
     train_data = train_data.batched(batch_size, partial=False)
+    
+    train_workers = max(8, (psutil.cpu_count(logical=True) // dist.get_world_size()))
+    val_workers = max(4, train_workers // 2)
 
     # WebLoader is the recommended loader for WebDataset
     train_loader = wds.WebLoader(
         train_data,
         batch_size=None,
-        num_workers=num_workers,
+        num_workers=train_workers,
         pin_memory=pin_memory,
         persistent_workers=persistent_workers,
         prefetch_factor=prefetch_factor,
@@ -272,7 +275,6 @@ def get_imagenet_dataloaders(
             .map(lambda s: _to_image_and_label(s, val_transform, dataset_name="val"))
             .batched(batch_size, partial=False)
         )
-        val_workers = max(2, num_workers // 2)
         val_loader = wds.WebLoader(
             val_data,
             batch_size=None,
