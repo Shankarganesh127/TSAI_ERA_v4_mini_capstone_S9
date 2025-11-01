@@ -761,7 +761,6 @@ def main():
     # =============================================================
     # 🔧 Optimize Thread Configuration (per-rank)
     # =============================================================
-    import os, psutil, torch
 
     if torch.get_num_threads() <= 1:
         total_cpus = psutil.cpu_count(logical=True) or 8
@@ -841,7 +840,6 @@ def main():
     # ----------------- Training loop -----------------
     #set_stage_threads("training")
     # ---- Force thread count before training ----
-    import psutil
     cpu_cores = psutil.cpu_count(logical=True) or os.cpu_count() or 8
     world = dist.get_world_size() if dist.is_initialized() else 1
     per_rank_threads = max(2, cpu_cores // world)
