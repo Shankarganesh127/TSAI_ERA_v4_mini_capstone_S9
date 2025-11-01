@@ -758,11 +758,42 @@ def main():
     if is_main_process():
         log.info(f"[DATALOADER] global_workers={args.num_workers} world_size={dist.get_world_size() if dist.is_initialized() else 1} → per_proc={per_proc_workers}")
 
+    # =============================================================
+    # 🔧 Optimize Thread Configuration (per-rank)
+    # =============================================================
+    import os, psutil, torch
+
+    if torch.get_num_threads() <= 1:
+        total_cpus = psutil.cpu_count(logical=True) or 8
+        world = dist.get_world_size() if dist.is_initialized() else 1
+
+        # 💡 Balanced CPU thread usage per rank
+        intraop_threads = max(2, total_cpus // (4 * world))
+        interop_threads = max(1, intraop_threads // 2)
+        dataloader_workers = max(4, total_cpus // (2 * world))
+
+        torch.set_num_threads(intraop_threads)
+        torch.set_num_interop_threads(interop_threads)
+        os.environ["OMP_NUM_THREADS"] = str(intraop_threads)
+        os.environ["MKL_NUM_THREADS"] = str(intraop_threads)
+
+        log.info(
+            f"[THREADS] Setup per-rank threads: cpu={total_cpus}, world={world}, "
+            f"torch_intra={intraop_threads}, interop={interop_threads}, "
+            f"suggested_dataloader_workers={dataloader_workers}"
+        )
+    else:
+        dataloader_workers = 8  # fallback default
+
+    # Pass dataloader_workers to your get_imagenet_dataloaders() call below
+    # =============================================================
+
+
     train_loader, val_loader, train_batches_per_epoch, _ = get_imagenet_dataloaders(
         args.train,
         args.val,
         batch_size=args.batch_size,
-        num_workers=per_proc_workers,
+        num_workers=dataloader_workers,
         pin_memory=True,
         # IMPORTANT: for full DDP training we want per-rank splitting
         disable_distributed_splitting=False,
