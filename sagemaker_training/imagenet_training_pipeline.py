@@ -55,12 +55,16 @@ from utils import is_main_process as _is_main_process  # existing util
 
 
 # Optional: helps when combined with multi-process DataLoader
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
+#os.environ["OMP_NUM_THREADS"] = "1"
+#os.environ["MKL_NUM_THREADS"] = "1"
 # --- SAFETY: Prevent PyTorch thread reconfiguration errors ---
 # (set BEFORE any DataLoader or model init)
-torch.set_num_threads(1)
-torch.set_num_interop_threads(1)
+#torch.set_num_threads(1)
+#torch.set_num_interop_threads(1)
+# don't hard-cap to 1; we'll set per-rank below after DDP init
+os.environ.setdefault("OMP_NUM_THREADS", "4")
+os.environ.setdefault("MKL_NUM_THREADS", "4")
+
 
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 os.environ["NCCL_DEBUG"] = "INFO"
@@ -131,36 +135,36 @@ def is_main_process():
     return _is_main_process()
 
 def set_stage_threads(stage: str, prefer_threads: int | None = None) -> int:
-    """Dynamically set PyTorch CPU threads by stage, safely (won’t crash if too late)."""
-    import psutil, torch, multiprocessing as mp
+    import psutil, multiprocessing as mp
 
     cpu_count = psutil.cpu_count(logical=True) or mp.cpu_count()
+    world = dist.get_world_size() if dist.is_initialized() else 1
+
     if prefer_threads is not None:
         threads = max(1, int(prefer_threads))
     else:
         if stage == "preprocess":
             threads = max(2, min(cpu_count, cpu_count // 2 or 1))
         elif stage == "training":
-            threads = 1
+            # 👈 THIS is the fix: use per-rank share, not 1
+            threads = max(2, min(cpu_count // world, 8))
         elif stage == "validation":
-            threads = max(1, min(4, (cpu_count // 4) or 1))
+            threads = max(2, min(4, (cpu_count // 4) or 1))
         else:
             threads = max(1, cpu_count // 2 or 1)
 
-    # --- 🔒 SAFE SET (won’t crash if late)
     try:
         torch.set_num_threads(threads)
-        torch.set_num_interop_threads(min(4, max(1, threads)))
+        torch.set_num_interop_threads(min(4, max(1, threads // 2)))
     except RuntimeError as e:
-        # too late -> just log a warning and continue
         log.warning(f"[THREADS] Could not change thread count for stage={stage}: {e}")
 
-    #log.info(f"[THREADS] Stage={stage} num_threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()}")
     log.info(
-        f"[imagenet_pipeline] - [THREADS] Stage=training "
+        f"[imagenet_pipeline] - [THREADS] Stage={stage} "
         f"num_threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()}"
     )
     return threads
+
 
 
 
@@ -439,6 +443,22 @@ def main():
 
     # Init (maybe) distributed for coordination — but don't wrap model yet
     dist_on, world_size, local_rank, device = init_dist_if_needed(args)
+
+    # ---- real per-rank thread setup (once) ----
+    cpu_cores = os.cpu_count() or 8
+    world = world_size if world_size > 0 else 1
+    per_rank_threads = max(2, (cpu_cores // world) or 1)
+    try:
+        torch.set_num_threads(per_rank_threads)
+        torch.set_num_interop_threads(min(4, max(1, per_rank_threads // 2)))
+        log.info(
+            f"[THREADS] initial per-rank={per_rank_threads} "
+            f"(cpu={cpu_cores}, world={world}) "
+            f"→ torch={torch.get_num_threads()} interop={torch.get_num_interop_threads()}"
+        )
+    except RuntimeError as e:
+        log.warning(f"[THREADS] could not set initial per-rank threads: {e}")
+
 
     # ----------------- Stage: Preprocessing / Auto-optimizers (rank 0) -----------------
     set_stage_threads("preprocess")
