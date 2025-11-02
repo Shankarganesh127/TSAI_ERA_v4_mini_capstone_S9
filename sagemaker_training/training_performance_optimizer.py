@@ -32,6 +32,8 @@ import torch.optim as optim
 import torch.distributed as dist
 from torch.cuda.amp import autocast, GradScaler
 
+from torch.utils.data import DataLoader
+
 # training_performance_optimizer.py
 
 # global flag so we don't call it twice
@@ -167,6 +169,14 @@ class BatchSizeFinder:
             persistent_workers=False,
             prefetch_factor=1,
             batched=False,
+        )
+        
+        train_loader = DataLoader(
+            train_loader.dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=2,
+            pin_memory=True,
         )
 
         model = self.model.to(self.device)
@@ -369,6 +379,14 @@ class LRFinder:
             prefetch_factor=1,
             batched=False,
         )
+        
+        train_loader = DataLoader(
+            train_loader.dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=2,
+            pin_memory=True,
+        )
 
         model = self.model.to(self.device)
         model.train()
@@ -532,6 +550,22 @@ class HyperparameterOptimizer:
             persistent_workers=False,
             prefetch_factor=1,
             batched=False,
+        )
+        
+        train_loader = DataLoader(
+            train_loader.dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=2,
+            pin_memory=True,
+        )
+        
+        val_loader = DataLoader(
+            val_loader.dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=2,
+            pin_memory=True,
         )
         
         # ✅ Sanity check: make sure we received iterable WebDataset loaders
