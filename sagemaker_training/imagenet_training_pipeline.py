@@ -700,9 +700,10 @@ def main():
 
             log.info("[AUTO] Running Weight-Decay Search...")
             
+            safe_wds_lr = min(0.01, float(args.lr))  # clamp to 1e-2
             lr_config = {
-                "min_lr": max(3e-6, scaled_lr / 10.0),
-                "max_lr": scaled_lr,
+                "min_lr": max(3e-6, safe_wds_lr / 10.0),
+                "max_lr": safe_wds_lr,
             }
 
             results, best_wd = wds.weight_decay_search(lr_config, batch_size=args.batch_size)
@@ -730,7 +731,7 @@ def main():
     # ----------------- Build final model & wrap for DDP -----------------
     # Always create a fresh model here – never reuse noddp_model or anything from finders.
     
-    model = resnet50_imagenet(num_classes=1000, pretrained=args.pretrained)
+    model = resnet50_imagenet_no_ddp(num_classes=1000, pretrained=args.pretrained)
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()        # clear leftover allocations

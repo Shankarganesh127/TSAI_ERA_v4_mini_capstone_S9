@@ -242,11 +242,11 @@ def get_imagenet_dataloaders(
         .shuffle(2000)
         .decode("pil")
         .map(lambda s: _to_image_and_label(s, train_transform, dataset_name="train"))
-        .batched(batch_size, partial=False)
+        #.batched(batch_size, partial=False)
     )
 
     # we do batching inside WebDataset
-    #train_data = train_data.batched(batch_size, partial=False)
+    train_data = train_data.batched(batch_size, partial=False)
     
     # Respect pipeline-provided num_workers if passed
     if num_workers is not None:
