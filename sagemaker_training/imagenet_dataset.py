@@ -223,23 +223,26 @@ def get_imagenet_dataloaders(
     # ----------------------------------------------------------------------------------
     # TRAIN DATASET
     # ----------------------------------------------------------------------------------
-    # resampled=True is important for DDP so that each worker can loop independently
+    # pick a better splitter for class-grouped shards
     splitter = None
     if not disable_distributed_splitting:
-        # worker-level split gives MUCH better mixing when shards are single-class
+        # worker-level split gives better mixing than node-level
         splitter = wds.split_by_worker
-    
+
+    # IMPORTANT: for class-heavy tars, resampled=True will keep giving 1-class bursts,
+    # so force resampled=False here.
     train_data = (
         wds.WebDataset(
             train_urls,
-            resampled=resampled,
+            resampled=False,          # ← ← key change
             shardshuffle=True,
             nodesplitter=splitter,
         )
-        # IMPORTANT: shuffle a bit earlier and bigger
+        # big shuffle BEFORE decode/map
         .shuffle(20000)
         .decode("pil")
         .map(lambda s: _to_image_and_label(s, train_transform, dataset_name="train"))
+        .batched(batch_size, partial=False)
     )
 
     # we do batching inside WebDataset
