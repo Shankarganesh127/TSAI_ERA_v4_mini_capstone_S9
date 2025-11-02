@@ -172,7 +172,7 @@ class BatchSizeFinder:
         )
         
         train_loader = DataLoader(
-            train_loader.dataset,
+            train_loader,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=2,
@@ -381,7 +381,7 @@ class LRFinder:
         )
         
         train_loader = DataLoader(
-            train_loader.dataset,
+            train_loader,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=2,
@@ -553,7 +553,7 @@ class HyperparameterOptimizer:
         )
         
         train_loader = DataLoader(
-            train_loader.dataset,
+            train_loader,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=2,
@@ -561,7 +561,7 @@ class HyperparameterOptimizer:
         )
         
         val_loader = DataLoader(
-            val_loader.dataset,
+            val_loader,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=2,
