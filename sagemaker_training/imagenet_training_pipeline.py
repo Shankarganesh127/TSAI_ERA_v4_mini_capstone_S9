@@ -304,10 +304,11 @@ def train_one_epoch(model, loader, optimizer, scheduler, device, scaler: GradSca
             else:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
-            optimizer.zero_grad()
 
             if scheduler is not None:
                 scheduler.step()
+
+            optimizer.zero_grad()
 
         total_loss += loss.item() * inputs.size(0)
         with torch.no_grad():
@@ -811,8 +812,20 @@ def main():
         disable_distributed_splitting=False,
         normalize=True,
         persistent_workers=True,
-        prefetch_factor=2
+        prefetch_factor=2,
+        batched=True,
     )
+    
+    if is_main_process():
+        try:
+            xb, yb = next(iter(train_loader))
+            bad = (yb < 0) | (yb > 999)
+            if bad.any():
+                log.warning(f"[DATA] Found {bad.sum().item()} bad labels in first batch; "
+                            f"label_range=({yb.min().item()}, {yb.max().item()})")
+        except Exception as e:
+            log.error(f"[DATA] sanity read failed: {e}")
+
 
     # --- Optimizer / Scheduler / AMP ---
     optimizer = optim.SGD(

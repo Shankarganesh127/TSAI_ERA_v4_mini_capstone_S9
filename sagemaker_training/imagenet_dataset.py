@@ -118,11 +118,17 @@ def _to_image_and_label(sample, transform, dataset_name="train"):
     if label.dim() != 0:
         label = label.view(-1)[0]
 
-    # clamp to imagenet range
-    #label = torch.clamp(label, 0, 999)
-    # normalize to [0, 999]
-    label = torch.remainder(label, 1000)
-    label = torch.clamp(label, 0, 999)
+    # --- strict ImageNet check ---
+    label = int(label)
+    if not (0 <= label < 1000):
+        # bad sample – DO NOT silently fix it
+        raise ValueError(
+            f"[{dataset_name}] invalid label {label} (expected 0..999); "
+            f"sample keys={list(sample.keys())}"
+        )
+    label = torch.tensor(label, dtype=torch.long)
+    return img, label
+ 
 
 
     return img, label
@@ -172,7 +178,8 @@ def get_imagenet_dataloaders(
     resampled: bool = True,
     normalize: bool = True,
     prefetch_factor: int = 2,
-    persistent_workers: bool = True
+    persistent_workers: bool = True,
+    batched: bool = True,
 ) -> Tuple[DataLoader, Optional[DataLoader], int, int]:
     """
     Returns:
@@ -206,7 +213,9 @@ def get_imagenet_dataloaders(
         epoch_size_train,
         epoch_size_val,
         resampled,
-        normalize, 
+        normalize,
+        batched,
+        prefetch_factor, 
     )
     if cache_key in _DATASET_CACHE:
         return _DATASET_CACHE[cache_key]
@@ -245,8 +254,9 @@ def get_imagenet_dataloaders(
         #.batched(batch_size, partial=False)
     )
 
-    # we do batching inside WebDataset
-    train_data = train_data.batched(batch_size, partial=False)
+    if batched:
+        # we do batching inside WebDataset
+        train_data = train_data.batched(batch_size, partial=False)
     
     # Respect pipeline-provided num_workers if passed
     if num_workers is not None:
@@ -297,8 +307,13 @@ def get_imagenet_dataloaders(
             )
             .decode("pil")
             .map(lambda s: _to_image_and_label(s, val_transform, dataset_name="val"))
-            .batched(batch_size, partial=False)
+            #.batched(batch_size, partial=False)
         )
+        
+        if batched:
+            # we do batching inside WebDataset
+            val_data = val_data.batched(batch_size, partial=False)
+        
         val_loader = wds.WebLoader(
             val_data,
             batch_size=None,

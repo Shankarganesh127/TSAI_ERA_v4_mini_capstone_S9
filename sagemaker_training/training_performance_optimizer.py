@@ -166,6 +166,7 @@ class BatchSizeFinder:
             normalize=True,
             persistent_workers=False,
             prefetch_factor=1,
+            batched=False,
         )
 
         model = self.model.to(self.device)
@@ -366,6 +367,7 @@ class LRFinder:
             normalize=False,
             persistent_workers=False,
             prefetch_factor=1,
+            batched=False,
         )
 
         model = self.model.to(self.device)
@@ -529,6 +531,7 @@ class HyperparameterOptimizer:
             normalize=True,
             persistent_workers=False,
             prefetch_factor=1,
+            batched=False,
         )
         
         # ✅ Sanity check: make sure we received iterable WebDataset loaders
