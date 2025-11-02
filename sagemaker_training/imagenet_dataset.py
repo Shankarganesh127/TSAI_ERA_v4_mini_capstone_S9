@@ -119,7 +119,11 @@ def _to_image_and_label(sample, transform, dataset_name="train"):
         label = label.view(-1)[0]
 
     # clamp to imagenet range
+    #label = torch.clamp(label, 0, 999)
+    # normalize to [0, 999]
+    label = torch.remainder(label, 1000)
     label = torch.clamp(label, 0, 999)
+
 
     return img, label
 
@@ -228,7 +232,7 @@ def get_imagenet_dataloaders(
             nodesplitter=wds.split_by_node if not disable_distributed_splitting else None,
             empty_check=False,
         )
-        .shuffle(10000)
+        .shuffle(5000)
         .decode("pil")
         .map(lambda s: _to_image_and_label(s, train_transform, dataset_name="train"))
     )

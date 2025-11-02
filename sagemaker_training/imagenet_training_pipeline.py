@@ -651,9 +651,9 @@ def main():
         #scaled_lr = min(scaled_lr, 0.03)
         
         # hard cap only here
-        if scaled_lr > 0.03:
-            log.warning(f"[AUTO] scaled_lr={scaled_lr:.4f} too high for ResNet-50, capping to 0.03")
-            scaled_lr = 0.03
+        #if scaled_lr > 0.03:
+        #    log.warning(f"[AUTO] scaled_lr={scaled_lr:.4f} too high for ResNet-50, capping to 0.03")
+        #    scaled_lr = 0.03
         
         # Log on rank 0 only
         if is_main_process():
