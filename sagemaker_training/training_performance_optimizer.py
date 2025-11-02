@@ -554,7 +554,7 @@ class HyperparameterOptimizer:
         
         train_loader = DataLoader(
             train_loader,
-            batch_size=self.batch_size,
+            batch_size=batch_size,
             shuffle=True,
             num_workers=2,
             pin_memory=True,
@@ -562,7 +562,7 @@ class HyperparameterOptimizer:
         
         val_loader = DataLoader(
             val_loader,
-            batch_size=self.batch_size,
+            batch_size=batch_size,
             shuffle=True,
             num_workers=2,
             pin_memory=True,
