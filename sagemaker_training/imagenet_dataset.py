@@ -246,7 +246,7 @@ def get_imagenet_dataloaders(
     )
 
     # we do batching inside WebDataset
-    train_data = train_data.batched(batch_size, partial=False)
+    #train_data = train_data.batched(batch_size, partial=False)
     
     # Respect pipeline-provided num_workers if passed
     if num_workers is not None:
