@@ -810,7 +810,7 @@ def main():
         disable_distributed_splitting=False,
         normalize=True,
         persistent_workers=True,
-        prefetch_factor=4
+        prefetch_factor=2
     )
 
     # --- Optimizer / Scheduler / AMP ---

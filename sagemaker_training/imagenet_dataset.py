@@ -239,7 +239,7 @@ def get_imagenet_dataloaders(
             nodesplitter=splitter,
         )
         # big shuffle BEFORE decode/map
-        .shuffle(20000)
+        .shuffle(2000)
         .decode("pil")
         .map(lambda s: _to_image_and_label(s, train_transform, dataset_name="train"))
         .batched(batch_size, partial=False)
@@ -254,8 +254,8 @@ def get_imagenet_dataloaders(
         val_workers = max(1, int(num_workers // 2))
     else:
         cpu_per_rank = (psutil.cpu_count(logical=True) or 8) // max(1, dist.get_world_size())
-        train_workers = max(8, cpu_per_rank)
-        val_workers = max(4, train_workers // 2)
+        train_workers = min(4, max(2, cpu_per_rank // 2))
+        val_workers = max(2, train_workers // 2)
 
     # WebLoader is the recommended loader for WebDataset
     train_loader = wds.WebLoader(
