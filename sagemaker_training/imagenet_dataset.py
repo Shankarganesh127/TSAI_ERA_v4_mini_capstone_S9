@@ -340,18 +340,36 @@ def get_imagenet_dataloaders(
     # ----------------------------------------------------------------------------------
     if rank == 0:
         try:
-            it = iter(train_loader)
-            for i in range(3):
-                x, y = next(it)
-                LOG.info(
-                    f"[imagenet_dataset] sanity batch {i}: "
-                    f"x={tuple(x.shape)} {x.dtype}, "
-                    f"y={tuple(y.shape)} {y.dtype}, "
-                    f"y_min={int(y.min())}, y_max={int(y.max())}"
-                )
+            # Pick what to sanity check based on batched mode
+            if batched:
+                it = iter(train_loader)
+                for i in range(3):
+                    x, y = next(it)
+                    LOG.info(
+                        f"[imagenet_dataset] sanity batch {i}: "
+                        f"x={tuple(x.shape)} {x.dtype}, "
+                        f"y={tuple(y.shape)} {y.dtype}, "
+                        f"y_min={int(y.min())}, y_max={int(y.max())}"
+                    )
+            else:
+                it = iter(train_data)
+                for i in range(3):
+                    x, y = next(it)
+                    LOG.info(
+                        f"[imagenet_dataset] sanity sample {i}: "
+                        f"x={tuple(x.shape)} {x.dtype}, "
+                        f"y={y.item() if torch.is_tensor(y) else y}"
+                    )
         except Exception as e:
-            LOG.error(f"[imagenet_dataset] failed to read first batches: {e}")
+            LOG.error(f"[imagenet_dataset] failed to read first samples: {e}")
 
-    result = (train_loader, val_loader, epoch_size_train, epoch_size_val)
-    _DATASET_CACHE[cache_key] = result
-    return result
+    # ----------------------------------------------------------------------------------
+    # RETURN dual mode
+    # ----------------------------------------------------------------------------------
+    if not batched:
+        # For LR finder / BS finder / WD search → return raw datasets
+        return train_data, val_data, 0, 0
+    else:
+        result = (train_loader, val_loader, epoch_size_train, epoch_size_val)
+        _DATASET_CACHE[cache_key] = result
+        return result
