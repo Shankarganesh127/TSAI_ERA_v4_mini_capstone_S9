@@ -224,15 +224,20 @@ def get_imagenet_dataloaders(
     # TRAIN DATASET
     # ----------------------------------------------------------------------------------
     # resampled=True is important for DDP so that each worker can loop independently
+    splitter = None
+    if not disable_distributed_splitting:
+        # worker-level split gives MUCH better mixing when shards are single-class
+        splitter = wds.split_by_worker
+    
     train_data = (
         wds.WebDataset(
             train_urls,
-            resampled=True, #resampled,
+            resampled=resampled,
             shardshuffle=True,
-            nodesplitter=wds.split_by_node if not disable_distributed_splitting else None,
-            empty_check=False,
+            nodesplitter=splitter,
         )
-        .shuffle(5000)
+        # IMPORTANT: shuffle a bit earlier and bigger
+        .shuffle(20000)
         .decode("pil")
         .map(lambda s: _to_image_and_label(s, train_transform, dataset_name="train"))
     )
