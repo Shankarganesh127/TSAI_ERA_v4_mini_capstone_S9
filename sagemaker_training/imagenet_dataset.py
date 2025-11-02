@@ -318,13 +318,16 @@ def get_imagenet_dataloaders(
     if rank == 0:
         try:
             it = iter(train_loader)
-            x, y = next(it)
-            LOG.info(
-                f"[imagenet_dataset] sanity batch: x={tuple(x.shape)} {x.dtype}, "
-                f"y={tuple(y.shape)} {y.dtype}, y_min={int(y.min())}, y_max={int(y.max())}"
-            )
+            for i in range(3):
+                x, y = next(it)
+                LOG.info(
+                    f"[imagenet_dataset] sanity batch {i}: "
+                    f"x={tuple(x.shape)} {x.dtype}, "
+                    f"y={tuple(y.shape)} {y.dtype}, "
+                    f"y_min={int(y.min())}, y_max={int(y.max())}"
+                )
         except Exception as e:
-            LOG.error(f"[imagenet_dataset] failed to read first batch: {e}")
+            LOG.error(f"[imagenet_dataset] failed to read first batches: {e}")
 
     result = (train_loader, val_loader, epoch_size_train, epoch_size_val)
     _DATASET_CACHE[cache_key] = result
