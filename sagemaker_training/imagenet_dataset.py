@@ -227,7 +227,7 @@ def get_imagenet_dataloaders(
     train_data = (
         wds.WebDataset(
             train_urls,
-            resampled=resampled,
+            resampled=True, #resampled,
             shardshuffle=True,
             nodesplitter=wds.split_by_node if not disable_distributed_splitting else None,
             empty_check=False,
