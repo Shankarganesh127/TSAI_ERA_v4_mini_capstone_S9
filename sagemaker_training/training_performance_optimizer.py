@@ -173,7 +173,7 @@ class BatchSizeFinder:
         
         train_loader = DataLoader(
             train_loader,
-            batch_size=self.batch_size,
+            batch_size=bs,
             shuffle=True,
             num_workers=2,
             pin_memory=True,
@@ -214,7 +214,7 @@ class BatchSizeFinder:
             else:
                 raise
         finally:
-            del model, opt
+            del model, opt, train_loader
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -493,7 +493,7 @@ class LRFinder:
             f"[LRF][RANK {rank}] 🏁 Completed LR Finder in {total_time:.1f}s | suggested_max_lr={suggested:.4e}"
         )
 
-        del model, opt
+        del model, opt, train_loader
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -695,7 +695,7 @@ class HyperparameterOptimizer:
                 f"time={time.time()-t0:.1f}s"
             )
 
-            del model, opt
+            del model, opt, train_loader, val_loader
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
