@@ -247,7 +247,7 @@ def get_imagenet_dataloaders(train, val, batch_size=32, num_workers=4, pin_memor
         raise
 
     logger.info("Both data loaders created, returning")
-    return train_loader, val_loader
+    return train_loader, val_loader, len(train_loader), len(val_loader)
 
 
 def get_tiny_imagenet_dataloaders(data_dir, batch_size=32, num_workers=4):
