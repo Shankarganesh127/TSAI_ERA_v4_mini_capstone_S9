@@ -737,6 +737,9 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()        # clear leftover allocations
 
+    if torch.distributed.is_initialized():
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
     # Make sure model and optimizer are on the correct local device
     if dist_on:
         torch.cuda.set_device(local_rank)
