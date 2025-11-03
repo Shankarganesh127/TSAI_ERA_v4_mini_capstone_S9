@@ -695,13 +695,15 @@ class HyperparameterOptimizer:
                 f"time={time.time()-t0:.1f}s"
             )
 
-            del model, opt, train_loader, val_loader
+            del model, opt
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
 
         # Gather all results to rank 0
         results_all = _gather_dicts_local_to_rank0({"results": results_local})
+        
+        del train_loader, val_loader
 
         if rank == 0:
             merged = []
