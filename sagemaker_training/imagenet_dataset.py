@@ -248,7 +248,7 @@ def get_imagenet_dataloaders(
             nodesplitter=splitter,
         )
         # big shuffle BEFORE decode/map
-        .shuffle(2000)
+        .shuffle(10000)
         .decode("pil")
         .map(lambda s: _to_image_and_label(s, train_transform, dataset_name="train"))
         #.batched(batch_size, partial=False)
