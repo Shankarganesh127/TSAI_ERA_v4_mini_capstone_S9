@@ -846,7 +846,7 @@ def main():
         optimizer,
         max_lr=scaled_lr,
         total_steps=total_steps,
-        pct_start=0.3,
+        pct_start=0.05,
         anneal_strategy='cos',
         div_factor=25.0,
         final_div_factor=1e4,
