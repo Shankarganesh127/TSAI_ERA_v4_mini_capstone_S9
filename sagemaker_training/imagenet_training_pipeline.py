@@ -49,7 +49,8 @@ import csv
 from torch.utils.tensorboard import SummaryWriter
 
 from imagenet_models import resnet50_imagenet, resnet50_imagenet_no_ddp
-from imagenet_dataset import get_imagenet_dataloaders
+#from imagenet_dataset import get_imagenet_dataloaders
+from imagenet_dataset_old import get_imagenet_dataloaders
 from logger_setup import get_unified_logger
 from utils import is_main_process as _is_main_process  # existing util
 
@@ -812,11 +813,11 @@ def main():
         num_workers=dataloader_workers,
         pin_memory=True,
         # IMPORTANT: for full DDP training we want per-rank splitting
-        disable_distributed_splitting=False,
-        normalize=True,
-        persistent_workers=True,
-        prefetch_factor=2,
-        batched=True,
+#        disable_distributed_splitting=False,
+#        normalize=True,
+#        persistent_workers=True,
+#        prefetch_factor=2,
+#        batched=True,
     )
     
     if is_main_process():
@@ -851,7 +852,7 @@ def main():
         total_steps=total_steps,
         pct_start=0.05,
         anneal_strategy='cos',
-        div_factor=25.0,
+        div_factor=10.0,
         final_div_factor=1e4,
     )
 

@@ -54,8 +54,8 @@ class SageMakerPipelineOrchestrator:
             },
             "dataset": {
                 "source_bucket": "tsai-era-v4-mini-capstone",
-                #"source_prefix": "Datasets/imagenet1k/ILSVRC",
-                "source_prefix": "webdataset_shards",
+                "source_prefix": "Datasets/imagenet1k/ILSVRC",
+#                "source_prefix": "webdataset_shards",
                 #"target_prefix": "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker",
                 "validation_required": True
             },
@@ -318,14 +318,15 @@ class SageMakerPipelineOrchestrator:
             s3_bucket_uri = f"s3://{source_bucket}" if source_bucket and not source_bucket.startswith("s3://") else source_bucket
             
             # Configure train and validation data paths based on your specific structure
-            source_prefix = training_args.get("source_prefix", "webdataset_shards")
+#            source_prefix = training_args.get("source_prefix", "webdataset_shards")
+            source_prefix = training_args.get("source_prefix", "Datasets/imagenet1k/ILSVRC")
             #target_prefix = training_args.get("target_prefix", "Datasets/imagenet1k/ILSVRC/imagenet-sagemaker")
             
             # Your specific dataset paths
-            #train_data_path = f"{source_prefix}/Data/CLS-LOC/train/"
-            #val_data_path = f"{target_prefix}/val/"
-            train_data_path = f"{source_prefix}/train_tars/"
-            val_data_path = f"{source_prefix}/val_tars/"
+            train_data_path = f"{source_prefix}/Data/CLS-LOC/train/"
+            val_data_path = f"{source_prefix}/val/"
+#            train_data_path = f"{source_prefix}/train_tars/"
+#            val_data_path = f"{source_prefix}/val_tars/"
             
             
             self.logger.info(f"📂 Training data S3 path: {s3_bucket_uri}/{train_data_path}")

@@ -53,7 +53,8 @@ def safe_set_torch_threads(num_threads: int = 1, num_interop: int = 1):
 
 
 # Import your dataset loader util
-from imagenet_dataset import get_imagenet_dataloaders
+#from imagenet_dataset import get_imagenet_dataloaders
+from imagenet_dataset_old import get_imagenet_dataloaders
 from logger_setup import get_unified_logger
 
 log = get_unified_logger("tpo")
@@ -163,21 +164,21 @@ class BatchSizeFinder:
             num_workers=2,#self.num_workers,
             pin_memory=True,
             # BS finder runs standalone; do not split across ranks
-            disable_distributed_splitting=True,
-            resampled=False,
-            normalize=True,
-            persistent_workers=False,
-            prefetch_factor=1,
-            batched=False,
+#            disable_distributed_splitting=True,
+#            resampled=False,
+#            normalize=True,
+#            persistent_workers=False,
+#            prefetch_factor=1,
+#            batched=False,
         )
         
-        train_loader = DataLoader(
-            train_loader,
-            batch_size=bs,
-            #shuffle=True,
-            num_workers=2,
-            pin_memory=True,
-        )
+#        train_loader = DataLoader(
+#            train_loader,
+#            batch_size=bs,
+#            #shuffle=True,
+#            num_workers=2,
+#            pin_memory=True,
+#        )
 
         model = self.model.to(self.device)
         model.train()
@@ -372,21 +373,21 @@ class LRFinder:
             batch_size=self.batch_size,
             num_workers=2,#self.num_workers,
             pin_memory=True,
-            disable_distributed_splitting=True,  # always single-process
-            resampled=False,
-            normalize=False,
-            persistent_workers=False,
-            prefetch_factor=1,
-            batched=False,
+#            disable_distributed_splitting=True,  # always single-process
+#            resampled=False,
+#            normalize=False,
+#            persistent_workers=False,
+#            prefetch_factor=1,
+#            batched=False,
         )
         
-        train_loader = DataLoader(
-            train_loader,
-            batch_size=self.batch_size,
-            #shuffle=True,
-            num_workers=2,
-            pin_memory=True,
-        )
+#        train_loader = DataLoader(
+#            train_loader,
+#            batch_size=self.batch_size,
+#            #shuffle=True,
+#            num_workers=2,
+#            pin_memory=True,
+#        )
 
         model = self.model.to(self.device)
         model.train()
@@ -544,33 +545,33 @@ class HyperparameterOptimizer:
             num_workers=2,#self.num_workers,
             pin_memory=True,
             # WD search runs independently per rank (no DDP sampling)
-            disable_distributed_splitting=True,
-            resampled=False,
-            normalize=True,
-            persistent_workers=False,
-            prefetch_factor=1,
-            batched=False,
+#            disable_distributed_splitting=True,
+#            resampled=False,
+#            normalize=True,
+#            persistent_workers=False,
+#            prefetch_factor=1,
+#            batched=False,
         )
         
-        train_loader = DataLoader(
-            train_loader,
-            batch_size=batch_size,
-            #shuffle=True,
-            num_workers=2,
-            pin_memory=True,
-        )
+#        train_loader = DataLoader(
+#            train_loader,
+#            batch_size=batch_size,
+#            #shuffle=True,
+#            num_workers=2,
+#            pin_memory=True,
+#        )
+#        
+#        val_loader = DataLoader(
+#            val_loader,
+#            batch_size=batch_size,
+#            #shuffle=True,
+#            num_workers=2,
+#            pin_memory=True,
+#        )
         
-        val_loader = DataLoader(
-            val_loader,
-            batch_size=batch_size,
-            #shuffle=True,
-            num_workers=2,
-            pin_memory=True,
-        )
-        
-        # ✅ Sanity check: make sure we received iterable WebDataset loaders
-        assert hasattr(train_loader, "__iter__"), "Expected an iterable train_loader"
-        assert hasattr(val_loader, "__iter__"), "Expected an iterable val_loader"
+#        # ✅ Sanity check: make sure we received iterable WebDataset loaders
+#        assert hasattr(train_loader, "__iter__"), "Expected an iterable train_loader"
+#        assert hasattr(val_loader, "__iter__"), "Expected an iterable val_loader"
 
         return train_loader, val_loader, train_batches, val_batches
 
@@ -755,7 +756,7 @@ def optimize_num_workers(dataset_path: str, max_workers: int = 8, probe_batches:
             batch_size=batch_size_local, 
             num_workers=nw, 
             pin_memory=True,
-            disable_distributed_splitting=True,
+#            disable_distributed_splitting=True,
         )
 
         t0 = perf_counter()
