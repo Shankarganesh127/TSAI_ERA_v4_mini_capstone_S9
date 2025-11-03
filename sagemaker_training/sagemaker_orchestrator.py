@@ -324,7 +324,7 @@ class SageMakerPipelineOrchestrator:
             
             # Your specific dataset paths
             train_data_path = f"{source_prefix}/Data/CLS-LOC/train/"
-            val_data_path = f"{source_prefix}/val/"
+            val_data_path = f"{source_prefix}/imagenet-sagemaker/val/"
 #            train_data_path = f"{source_prefix}/train_tars/"
 #            val_data_path = f"{source_prefix}/val_tars/"
             
