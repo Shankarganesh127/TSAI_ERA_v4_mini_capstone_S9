@@ -4,7 +4,8 @@ processor = ScriptProcessor(
     image_uri="763104351884.dkr.ecr.eu-west-2.amazonaws.com/pytorch-training:2.0.1-cpu-py310",
     role="arn:aws:iam::872109682518:role/service-role/AmazonSageMaker-ExecutionRole-20251009T010774",
     instance_count=1,
-    instance_type="ml.m5.4xlarge"
+    instance_type="ml.m5.4xlarge",
+    command=["python3"],
 )
 
 '''
