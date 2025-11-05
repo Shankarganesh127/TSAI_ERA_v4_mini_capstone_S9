@@ -49,7 +49,7 @@ def make_train_transform(img_size: int = 224, normalize: bool = True):
     #                             std=(0.229, 0.224, 0.225))
     #    )
     # Full advanced augmentations
-    train_transform = transforms.Compose([
+    train_transform_list = [
         # Scale-aware random cropping (8%-100% of image, aspect ratio 3:4 to 4:3)
         transforms.RandomResizedCrop(img_size, scale=(0.08, 1.0), ratio=(0.75, 1.333)),
         
@@ -87,11 +87,14 @@ def make_train_transform(img_size: int = 224, normalize: bool = True):
             scale=(0.02, 0.33),  # Erase 2-33% of image area
             ratio=(0.3, 3.3),    # Aspect ratio range
             value='random'       # Fill with random pixel values in [0,1] range
-        ),
-        
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225])
-        
+        ),]
+    
+    if normalize:
+        train_transform_list.append(
+            transforms.Normalize(mean=(0.485, 0.456, 0.406),
+                                 std=(0.229, 0.224, 0.225))
+        )
+
         # Note: RandomErasing after normalization removed - causes issues with normalized tensors
         # transforms.RandomErasing(
         #     p=0.25,           # 25% probability
@@ -99,9 +102,8 @@ def make_train_transform(img_size: int = 224, normalize: bool = True):
         #     ratio=(0.3, 3.3),
         #     value=0             # Erase to zero (black) after normalization
         # )
-    ])
     #return transforms.Compose(transform_list)
-    return train_transform
+    return transforms.Compose(train_transform_list)
 
 
 def make_val_transform(img_size: int = 224, normalize: bool = True):
