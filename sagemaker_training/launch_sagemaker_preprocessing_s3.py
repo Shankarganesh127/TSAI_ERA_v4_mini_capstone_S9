@@ -6,6 +6,9 @@ processor = ScriptProcessor(
     instance_count=1,
     instance_type="ml.m5.4xlarge",
     command=["python3"],
+    # Use spot instances to save cost (highly recommended for processing jobs)
+    volume_kms_key=None,
+    volume_size_in_gb=500,
 )
 
 '''

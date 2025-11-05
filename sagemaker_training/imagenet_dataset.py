@@ -38,17 +38,70 @@ def get_world_size() -> int:
 # core transforms (you can tweak to match your original file)
 # --------------------------------------------------------------------------------------
 def make_train_transform(img_size: int = 224, normalize: bool = True):
-    transform_list = [
-        transforms.RandomResizedCrop(img_size),
-        transforms.RandomHorizontalFlip(),
+    #transform_list = [
+    #    transforms.RandomResizedCrop(img_size),
+    #    transforms.RandomHorizontalFlip(),
+    #    transforms.ToTensor(),
+    #]
+    #if normalize:
+    #    transform_list.append(
+    #        transforms.Normalize(mean=(0.485, 0.456, 0.406),
+    #                             std=(0.229, 0.224, 0.225))
+    #    )
+    # Full advanced augmentations
+    train_transform = transforms.Compose([
+        # Scale-aware random cropping (8%-100% of image, aspect ratio 3:4 to 4:3)
+        transforms.RandomResizedCrop(img_size, scale=(0.08, 1.0), ratio=(0.75, 1.333)),
+        
+        # Horizontal flip with 50% probability
+        transforms.RandomHorizontalFlip(p=0.5),
+        
+        # Advanced color augmentations for lighting/illumination robustness
+        transforms.ColorJitter(
+            brightness=0.4,  # ±40% brightness change
+            contrast=0.4,    # ±40% contrast change  
+            saturation=0.4,  # ±40% saturation change
+            hue=0.1          # ±10% hue change
+        ),
+        
+        # Geometric augmentations for spatial robustness
+        transforms.RandomAffine(
+            degrees=0,       # No rotation to preserve object orientation
+            translate=(0.1, 0.1),  # ±10% translation
+            scale=(0.9, 1.1),      # ±10% scaling
+            shear=0.1,             # ±10% shearing
+            fill=0
+        ),
+        
+        # Gaussian blur for noise and focus robustness
+        transforms.GaussianBlur(
+            kernel_size=(3, 3), 
+            sigma=(0.1, 2.0)     # Blur strength range
+        ),
+        
         transforms.ToTensor(),
-    ]
-    if normalize:
-        transform_list.append(
-            transforms.Normalize(mean=(0.485, 0.456, 0.406),
-                                 std=(0.229, 0.224, 0.225))
-        )
-    return transforms.Compose(transform_list)
+        
+        # Random Erasing (Cutout) for occlusion robustness - applied after ToTensor on [0,1] range
+        transforms.RandomErasing(
+            p=0.25,           # 25% probability
+            scale=(0.02, 0.33),  # Erase 2-33% of image area
+            ratio=(0.3, 3.3),    # Aspect ratio range
+            value='random'       # Fill with random pixel values in [0,1] range
+        ),
+        
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                           std=[0.229, 0.224, 0.225])
+        
+        # Note: RandomErasing after normalization removed - causes issues with normalized tensors
+        # transforms.RandomErasing(
+        #     p=0.25,           # 25% probability
+        #     scale=(0.02, 0.2),   # Smaller erasures after normalization
+        #     ratio=(0.3, 3.3),
+        #     value=0             # Erase to zero (black) after normalization
+        # )
+    ])
+    #return transforms.Compose(transform_list)
+    return train_transform
 
 
 def make_val_transform(img_size: int = 224, normalize: bool = True):
