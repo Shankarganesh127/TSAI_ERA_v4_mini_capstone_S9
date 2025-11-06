@@ -11,6 +11,8 @@ import psutil
 import webdataset as wds
 from torchvision import transforms
 
+
+
 # --------------------------------------------------------------------------------------
 # logging
 # --------------------------------------------------------------------------------------
@@ -46,38 +48,39 @@ def make_train_transform(img_size: int = 224, normalize: bool = True):
         # Horizontal flip with 50% probability
         transforms.RandomHorizontalFlip(p=0.5),
         
-        # Advanced color augmentations for lighting/illumination robustness
-        transforms.ColorJitter(
-            brightness=0.4,  # ±40% brightness change
-            contrast=0.4,    # ±40% contrast change  
-            saturation=0.4,  # ±40% saturation change
-            hue=0.1          # ±10% hue change
-        ),
+        ## Advanced color augmentations for lighting/illumination robustness
+        #transforms.ColorJitter(
+        #    brightness=0.4,  # ±40% brightness change
+        #    contrast=0.4,    # ±40% contrast change  
+        #    saturation=0.4,  # ±40% saturation change
+        #    hue=0.1          # ±10% hue change
+        #),
         
-        # Geometric augmentations for spatial robustness
-        transforms.RandomAffine(
-            degrees=0,       # No rotation to preserve object orientation
-            translate=(0.1, 0.1),  # ±10% translation
-            scale=(0.9, 1.1),      # ±10% scaling
-            shear=0.1,             # ±10% shearing
-            fill=0
-        ),
+        ## Geometric augmentations for spatial robustness
+        #transforms.RandomAffine(
+        #    degrees=0,       # No rotation to preserve object orientation
+        #    translate=(0.1, 0.1),  # ±10% translation
+        #    scale=(0.9, 1.1),      # ±10% scaling
+        #    shear=0.1,             # ±10% shearing
+        #    fill=0
+        #),
         
-        # Gaussian blur for noise and focus robustness
-        transforms.GaussianBlur(
-            kernel_size=(3, 3), 
-            sigma=(0.1, 2.0)     # Blur strength range
-        ),
+        ## Gaussian blur for noise and focus robustness
+        #transforms.GaussianBlur(
+        #    kernel_size=(3, 3), 
+        #    sigma=(0.1, 2.0)     # Blur strength range
+        #),
         
         transforms.ToTensor(),
         
-        # Random Erasing (Cutout) for occlusion robustness - applied after ToTensor on [0,1] range
-        transforms.RandomErasing(
-            p=0.25,           # 25% probability
-            scale=(0.02, 0.33),  # Erase 2-33% of image area
-            ratio=(0.3, 3.3),    # Aspect ratio range
-            value='random'       # Fill with random pixel values in [0,1] range
-        ),]
+        ## Random Erasing (Cutout) for occlusion robustness - applied after ToTensor on [0,1] range
+        #transforms.RandomErasing(
+        #    p=0.25,           # 25% probability
+        #    scale=(0.02, 0.33),  # Erase 2-33% of image area
+        #    ratio=(0.3, 3.3),    # Aspect ratio range
+        #    value='random'       # Fill with random pixel values in [0,1] range
+        #),
+        ]
     
     if normalize:
         train_transform_list.append(
@@ -122,68 +125,52 @@ def make_val_transform(img_size: int = 224, normalize: bool = True):
 # --------------------------------------------------------------------------------------
 def _to_image_and_label(sample, transform, dataset_name="train"):
     """
-    sample: dict coming from WebDataset
-    we try jpg/jpeg/png
-    we try cls / cls.txt / json["label"]
-    everything becomes (C,H,W) float tensor and int64 label in [0,999]
+    Converts a WebDataset sample dict to (image_tensor, label_tensor).
+    Ensures image ∈ [0,1] before normalization and label ∈ [0,999].
     """
-    # 1. image
-    img = sample.get("jpg") or sample.get("jpeg") or sample.get("png")
-    if img is None:
-        raise ValueError(f"[{dataset_name}] Sample has no image key: {list(sample.keys())}")
+    import io
+    from PIL import Image
+    import torch
 
+    # --- 1. Decode image ---
+    img_bytes = sample.get("jpg") or sample.get("jpeg") or sample.get("png")
+    if img_bytes is None:
+        raise ValueError(f"[{dataset_name}] Missing image key: {list(sample.keys())}")
+
+    if isinstance(img_bytes, (bytes, bytearray)):
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    else:
+        img = img_bytes  # already a PIL image from WebDataset decode("pil")
+
+    # --- 2. Apply transform ---
     if transform is not None:
         img = transform(img)
 
-    import random
-    if isinstance(img, torch.Tensor) and random.random() < 0.00001:  # ~1 in 10000 samples
-        print(f"[DEBUG-after-transform][rank={get_rank()}] " f"min={img.min().item():.4f} max={img.max().item():.4f} dtype={img.dtype}")
-    
-    # 2. label
-    label = sample.get("cls", None)
-
+    # --- 3. Decode label ---
+    label = sample.get("cls")
     if label is None and "cls.txt" in sample:
-        # often bytes -> decode -> int
-        label = int(sample["cls.txt"].decode("utf-8"))
+        label = int(sample["cls.txt"].decode("utf-8").strip())
     elif label is None and "json" in sample:
         meta = sample["json"]
-        # try common keys
-        if "label" in meta:
-            label = int(meta["label"])
-        elif "class" in meta:
-            label = int(meta["class"])
-        else:
-            raise ValueError(f"[{dataset_name}] json has no 'label'/'class': {meta}")
+        if isinstance(meta, (bytes, bytearray)):
+            import json
+            meta = json.loads(meta.decode("utf-8"))
+        label = int(meta.get("label", meta.get("class", -1)))
 
-    if label is None:
-        raise ValueError(f"[{dataset_name}] Sample has no label (cls/cls.txt/json)")
+    if label is None or not (0 <= int(label) < 1000):
+        raise ValueError(f"[{dataset_name}] Invalid label {label}")
 
-    # to tensor
-    if not torch.is_tensor(label):
-        label = torch.tensor(label, dtype=torch.long)
-    else:
-        label = label.long()
+    label = torch.tensor(int(label), dtype=torch.long)
 
-    # sometimes comes as shape (1,)
-    if label.dim() != 0:
-        label = label.view(-1)[0]
+    # Optional: occasional sanity debug
+    import random
+    if isinstance(img, torch.Tensor) and random.random() < 1e-4:
+        print(f"[DEBUG-after-transform][rank={get_rank()}] "
+              f"min={img.min():.4f} max={img.max():.4f}")
 
-    # --- strict ImageNet check ---
-    label = int(label)
-    if not (0 <= label < 1000):
-        # bad sample – DO NOT silently fix it
-        raise ValueError(
-            f"[{dataset_name}] invalid label {label} (expected 0..999); "
-            f"sample keys={list(sample.keys())}"
-        )
-    label = torch.tensor(label, dtype=torch.long)
     return img, label
+
  
-
-
-    return img, label
-
-
 # --------------------------------------------------------------------------------------
 # helper to turn s3://bucket/prefix/... into list of urls
 # but in SageMaker you often get local mounted paths already, so we just accept a
@@ -195,7 +182,7 @@ def _expand_shards(root: str) -> List[str]:
     if root.startswith("s3://"):
         # webdataset can read s3 urls directly if s3fs/https is available
         # just return pattern
-        return [os.path.join(root, "*.tar")]
+        return os.path.join(root, "*.tar")
     # local dir → list all .tar files
     if os.path.isdir(root):
         files = sorted(
@@ -209,7 +196,8 @@ def _expand_shards(root: str) -> List[str]:
             LOG.warning(f"[imagenet_dataset] No .tar files found under: {root}")
         return files
     # single file
-    return [root]
+    LOG.info(f"[imagenet_dataset] Using single shard file: {root}")
+    return root
 
 
 # --------------------------------------------------------------------------------------
@@ -288,6 +276,10 @@ def get_imagenet_dataloaders(
         # worker-level split gives better mixing than node-level
         splitter = wds.split_by_worker
 
+    LOG.info(f"[imagenet_dataset] world_size={world_size} rank={rank} " f"disable_distributed_splitting={disable_distributed_splitting} splitter={splitter}")
+    LOG.info(f"[imagenet_dataset] train_urls={train_urls}")
+    LOG.info(f"[imagenet_dataset] val_urls={val_urls}")
+    
     # IMPORTANT: for class-heavy tars, resampled=True will keep giving 1-class bursts,
     # so force resampled=False here.
     train_data = (
