@@ -271,8 +271,13 @@ def train_one_epoch(model, loader, optimizer, scheduler, device, scaler: GradSca
     optimizer.zero_grad()
     step_idx = 0
     log.info(f"[AMP] GradScaler created with enabled={scaler.is_enabled()}")
+    
 
     for step_idx, (inputs, targets) in enumerate(loader, start=1):
+        uniq = targets.unique(return_counts=False).numel()
+        if step_idx <= 5 and is_main_process():
+            print(f"[probe] step={step_idx} label_unique_count={uniq}, "
+                  f"y_min={int(targets.min())}, y_max={int(targets.max())}", flush=True)
         inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
         with autocast(enabled=scaler.is_enabled()):
             if step_idx == 1 and is_main_process():
@@ -282,7 +287,10 @@ def train_one_epoch(model, loader, optimizer, scheduler, device, scaler: GradSca
                 print(f"[DEBUG] inputs.device={inputs.device}, model.device={next(model.parameters()).device}")
 
             outputs = model(inputs)
-            loss = nn.functional.cross_entropy(outputs, targets)
+            criterion = torch.nn.CrossEntropyLoss(label_smoothing=0.1).to(device)
+            loss = criterion(outputs, targets)
+
+            #loss = nn.functional.cross_entropy(outputs, targets)
 
         if not torch.isfinite(loss):
             log.error(f"[TRAIN] Non-finite loss detected: {loss.item()}")
